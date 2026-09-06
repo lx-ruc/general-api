@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS users (
   username      TEXT    NOT NULL UNIQUE,
   password_hash TEXT    NOT NULL,
   display_name  TEXT    NOT NULL DEFAULT '',
+  email         TEXT    NOT NULL DEFAULT '',
   role          TEXT    NOT NULL CHECK (role IN ('platform_admin','org_admin','member')),
   quota_limit   INTEGER,
   quota_used    INTEGER NOT NULL DEFAULT 0,

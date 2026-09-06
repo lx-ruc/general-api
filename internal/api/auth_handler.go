@@ -1,6 +1,7 @@
 package api
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -18,6 +19,56 @@ type AuthHandler struct {
 	DB     *gorm.DB
 	Secret string
 	TTL    time.Duration
+	Verif  *service.Verification
+}
+
+// SendCode POST /api/auth/send-code：向邮箱发送注册验证码
+func (h *AuthHandler) SendCode(c *gin.Context) {
+	var req struct {
+		Email string `json:"email" binding:"required"`
+	}
+	if !httpx.BindJSON(c, &req) {
+		return
+	}
+	devCode, retryAfter, err := h.Verif.SendCode(req.Email)
+	if err != nil {
+		status := http.StatusBadRequest
+		if retryAfter > 0 {
+			status = http.StatusTooManyRequests
+		}
+		c.JSON(status, gin.H{"error": gin.H{"message": err.Error(), "retry_after": retryAfter}})
+		return
+	}
+	resp := gin.H{"message": "验证码已发送，请查收邮箱（注意垃圾邮件箱）"}
+	if devCode != "" {
+		// SMTP 未配置（开发模式）：直接返回验证码，方便本地联调
+		resp["dev_code"] = devCode
+		resp["message"] = "SMTP 未配置：验证码以开发模式返回"
+	}
+	httpx.OK(c, resp)
+}
+
+// Register POST /api/auth/register：公司自助注册（公司名+邮箱验证码+账号+密码）
+func (h *AuthHandler) Register(c *gin.Context) {
+	var req struct {
+		OrgName  string `json:"org_name" binding:"required"`
+		Email    string `json:"email" binding:"required"`
+		Code     string `json:"code" binding:"required"`
+		Username string `json:"username" binding:"required,min=3"`
+		Password string `json:"password" binding:"required,min=6"`
+	}
+	if !httpx.BindJSON(c, &req) {
+		return
+	}
+	if err := h.Verif.RegisterCompany(h.DB, req.OrgName, req.Email, req.Code, req.Username, req.Password); err != nil {
+		httpx.Fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	slog.Info("公司自助注册", "org", req.OrgName, "email", req.Email, "admin", req.Username)
+	httpx.OK(c, gin.H{
+		"message": "注册成功，请登录。公司初始额度为 0，请联系平台管理员分配额度后再调用 API",
+		"org_name": req.OrgName, "username": req.Username,
+	})
 }
 
 // Login POST /api/auth/login

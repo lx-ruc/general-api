@@ -3,6 +3,7 @@ import { useAuthStore, homeOf } from '../stores/auth'
 
 const routes: RouteRecordRaw[] = [
   { path: '/login', name: 'login', component: () => import('../views/LoginView.vue') },
+  { path: '/register', name: 'register', component: () => import('../views/RegisterView.vue') },
   { path: '/', redirect: '/home' },
   {
     path: '/',
@@ -40,8 +41,8 @@ const router = createRouter({
 
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
-  if (to.path === '/login') {
-    if (auth.token) return homeOf(auth.user?.role)
+  if (to.path === '/login' || to.path === '/register') {
+    if (auth.token && to.path === '/login') return homeOf(auth.user?.role)
     return true
   }
   if (!auth.token) return '/login'

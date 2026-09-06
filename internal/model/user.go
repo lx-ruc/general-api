@@ -13,6 +13,7 @@ type User struct {
 	Username     string `json:"username"`
 	PasswordHash string `json:"-"` // gorm 自动映射 password_hash 列；仅不出现在 JSON
 	DisplayName  string `json:"display_name"`
+	Email        string `json:"email"`
 	Role         string `json:"role"`
 	QuotaLimit   *int64 `json:"quota_limit"` // NULL=不限额（仅 member 有意义）
 	QuotaUsed    int64  `json:"quota_used"`

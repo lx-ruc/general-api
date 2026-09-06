@@ -110,6 +110,8 @@ async function submit() {
 
           <div class="form-links">
             <button type="button" class="link" @click="forgotVisible = true">忘记密码？</button>
+            <span class="sep">·</span>
+            <button type="button" class="link" @click="router.push('/register')">注册公司</button>
           </div>
         </form>
         <p class="form-foot mono">POST /api/auth/login → JWT · 有效期 12h</p>
@@ -288,6 +290,7 @@ async function submit() {
 }
 
 .form-links { margin-top: 12px; text-align: center; }
+.sep { color: var(--tg-line-strong); margin: 0 6px; font-size: 12px; }
 .link {
   background: none; border: none; cursor: pointer;
   font-size: 12.5px; color: var(--tg-green-ink);

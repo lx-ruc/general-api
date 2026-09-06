@@ -17,6 +17,7 @@ import (
 	"token-gateway/internal/gateway"
 	"token-gateway/internal/middleware"
 	"token-gateway/internal/model"
+	"token-gateway/internal/service"
 	"token-gateway/internal/webui"
 )
 
@@ -51,13 +52,20 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 	}
 
 	// ---- 管理台 /api ----
-	authH := &AuthHandler{DB: db, Secret: cfg.Security.JWTSecret, TTL: cfg.Security.JWTTTL.Duration}
+	verif := service.NewVerification(&cfg.Smtp)
+	authH := &AuthHandler{DB: db, Secret: cfg.Security.JWTSecret, TTL: cfg.Security.JWTTTL.Duration, Verif: verif}
 	loginLimiter := middleware.NewRateLimiter(5, 5)
+	codeLimiter := middleware.NewRateLimiter(3, 3)
 	apiGrp := r.Group("/api")
 	apiGrp.POST("/auth/login", loginLimiter.Middleware(
 		func(c *gin.Context) string { return c.ClientIP() },
 		"rate_limit_error", "尝试过于频繁，请稍后再试",
 	), authH.Login)
+	apiGrp.POST("/auth/send-code", codeLimiter.Middleware(
+		func(c *gin.Context) string { return c.ClientIP() },
+		"rate_limit_error", "发送太频繁，请稍后再试",
+	), authH.SendCode)
+	apiGrp.POST("/auth/register", authH.Register)
 
 	authed := apiGrp.Group("", middleware.JWTAuth(cfg.Security.JWTSecret))
 	{

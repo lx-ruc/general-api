@@ -49,6 +49,16 @@ type Gateway struct {
 	UpstreamFirstByteTimeout Duration `yaml:"upstream_first_byte_timeout"`
 }
 
+// SMTP 邮件发送（注册验证码用）；host 为空 = 未配置，
+// 验证码将写入日志并通过接口 dev_code 返回（仅限内网/开发环境）
+type Smtp struct {
+	Host     string `yaml:"host"`
+	Port     int    `yaml:"port"` // 465=SSL，587/25=STARTTLS
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+	From     string `yaml:"from"`
+}
+
 type Log struct {
 	Level string `yaml:"level"`
 }
@@ -58,6 +68,7 @@ type Config struct {
 	Database    Database `yaml:"database"`
 	Security    Security `yaml:"security"`
 	Gateway     Gateway  `yaml:"gateway"`
+	Smtp        Smtp     `yaml:"smtp"`
 	Log         Log      `yaml:"log"`
 	SeedPresets bool     `yaml:"seed_presets"`
 }
