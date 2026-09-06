@@ -457,18 +457,19 @@ func (h *Handler) UpdateChannelStatus(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// 整型 status 用指针接收：gin 的 required 会把字面 0 当空值拒绝（同 org keys）
 	var req struct {
-		Status int `json:"status" binding:"required"`
+		Status *int `json:"status" binding:"required"`
 	}
 	if !httpx.BindJSON(c, &req) {
 		return
 	}
-	if req.Status != 0 && req.Status != 1 {
+	if *req.Status != 0 && *req.Status != 1 {
 		httpx.Fail(c, http.StatusBadRequest, "status 只能为 0 或 1")
 		return
 	}
 	res := h.DB.Exec("UPDATE channels SET status = ?, updated_at = ? WHERE id = ?",
-		req.Status, time.Now().Unix(), id)
+		*req.Status, time.Now().Unix(), id)
 	if res.Error != nil || res.RowsAffected == 0 {
 		httpx.Fail(c, http.StatusNotFound, "渠道不存在")
 		return

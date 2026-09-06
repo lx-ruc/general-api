@@ -458,17 +458,19 @@ func (h *Handler) UpdateKeyStatus(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// 注意：整型 status 用指针接收 —— gin 的 required 会把字面 0 当空值拒绝，
+	// 导致「禁用(0)」永远 400；*int 只区分「没传(nil)」和「传了(含 0)」
 	var req struct {
-		Status int `json:"status" binding:"required"`
+		Status *int `json:"status" binding:"required"`
 	}
 	if !httpx.BindJSON(c, &req) {
 		return
 	}
-	if req.Status != 0 && req.Status != 1 {
+	if *req.Status != 0 && *req.Status != 1 {
 		httpx.Fail(c, http.StatusBadRequest, "status 只能为 0 或 1")
 		return
 	}
-	res := h.DB.Exec("UPDATE api_keys SET status = ? WHERE id = ? AND org_id = ?", req.Status, id, oid)
+	res := h.DB.Exec("UPDATE api_keys SET status = ? WHERE id = ? AND org_id = ?", *req.Status, id, oid)
 	if res.Error != nil || res.RowsAffected == 0 {
 		httpx.Fail(c, http.StatusNotFound, "密钥不存在")
 		return
