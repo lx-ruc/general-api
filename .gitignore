@@ -1,0 +1,11 @@
+data/
+logs/
+dist/
+config.yaml
+*.db
+*.db-wal
+*.db-shm
+*.log
+web/node_modules/
+web/dist/*
+!web/dist/index.html

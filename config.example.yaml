@@ -1,0 +1,27 @@
+# token 中转站配置示例
+# 复制为 config.yaml 后修改；敏感项可用 TG_* 环境变量覆盖
+
+server:
+  addr: ":8080"            # 单端口同时服务 /api /v1 与前端静态资源
+  # cors_origins:          # 跨域白名单；嵌入部署同源时留空即可
+  #   - http://localhost:5173
+
+database:
+  path: "data/token_.db"   # ENV: TG_DATABASE_PATH
+
+security:
+  jwt_secret: "change-me-to-a-random-string"   # ENV: TG_JWT_SECRET（必填，生产务必修改）
+  jwt_ttl: 12h
+  aes_key: ""               # 32 字节 base64；空=上游渠道 key 明文存储。ENV: TG_AES_KEY
+  bootstrap_admin_username: admin               # 仅首次启动 users 表为空时生效
+  bootstrap_admin_password: "change-me"         # ENV: TG_BOOTSTRAP_ADMIN_PASSWORD
+
+gateway:
+  max_body_mb: 10
+  per_key_rpm: 60           # 每个 API key 每分钟请求数上限
+  upstream_first_byte_timeout: 60s
+
+log:
+  level: info
+
+seed_presets: true          # 启动时确保预置渠道/模型存在（DeepSeek/智谱/通义，见 internal/presets）
