@@ -33,6 +33,11 @@ export const apiAddOrgQuota = (id: number, amount: number, remark: string) =>
 // 公司用量统计（含每个模型的用量明细 by_model / 每个员工 by_user）
 export const apiOrgDetailStats = (id: number) => http.get<any, any>(`/api/platform/orgs/${id}/stats`)
 
+// 重置公司管理员密码（userId 为空时取首任管理员）
+export const apiResetOrgAdminPassword = (orgId: number, newPassword: string, userId?: number) =>
+  http.post<any, any>(`/api/platform/orgs/${orgId}/reset-admin-password`,
+    { new_password: newPassword, user_id: userId || 0 })
+
 // ---- 渠道 ----
 export interface ChannelAbility {
   channel_id?: number

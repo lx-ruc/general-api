@@ -9,6 +9,7 @@ const loading = ref(false)
 const username = ref('')
 const password = ref('')
 const errorMsg = ref('')
+const forgotVisible = ref(false)
 
 // ---- 计量条：token 流动读数 ----
 const relayed = ref(1_283_905)
@@ -106,9 +107,33 @@ async function submit() {
           <button class="submit" type="submit" :disabled="loading">
             {{ loading ? '正在登录…' : '登 录' }}
           </button>
+
+          <div class="form-links">
+            <button type="button" class="link" @click="forgotVisible = true">忘记密码？</button>
+          </div>
         </form>
         <p class="form-foot mono">POST /api/auth/login → JWT · 有效期 12h</p>
       </section>
+
+      <!-- 忘记密码：分层找回指引 -->
+      <el-dialog v-model="forgotVisible" title="忘记密码了？" width="440px">
+        <p class="forgot-lead">按你的账号类型找对应的管理员重置：</p>
+        <ul class="forgot-list">
+          <li>
+            <b>员工账号</b> — 联系本公司管理员：
+            公司管理员在「员工管理 → 更多 → 重置密码」为你重置。
+          </li>
+          <li>
+            <b>公司管理员账号</b> — 联系平台管理员：
+            在「公司管理 → 公司详情 → 重置管理员密码」重置。
+          </li>
+          <li>
+            <b>平台管理员账号</b> — 服务器上执行运维命令重置：
+            <code>./token-gateway -reset-password admin:新密码</code>
+          </li>
+        </ul>
+        <p class="forgot-note">重置后请尽快登录，在右上角「修改密码」改成自己的密码。</p>
+      </el-dialog>
     </main>
   </div>
 </template>
@@ -261,6 +286,22 @@ async function submit() {
   margin: 9px 0 0; text-align: center;
   font-size: 11px; color: var(--tg-graphite);
 }
+
+.form-links { margin-top: 12px; text-align: center; }
+.link {
+  background: none; border: none; cursor: pointer;
+  font-size: 12.5px; color: var(--tg-green-ink);
+}
+.link:hover { text-decoration: underline; }
+
+.forgot-lead { margin: 0 0 10px; font-size: 13.5px; color: var(--tg-ink); }
+.forgot-list { margin: 0; padding-left: 18px; font-size: 13px; color: var(--tg-graphite); line-height: 2; }
+.forgot-list b { color: var(--tg-ink); }
+.forgot-list code {
+  background: var(--tg-green-wash); color: var(--tg-green-ink);
+  border-radius: 4px; padding: 1px 6px; font-size: 12px;
+}
+.forgot-note { margin: 12px 0 0; font-size: 12.5px; color: var(--tg-muted); }
 
 @media (prefers-reduced-motion: reduce) {
   .headline, .sub, .meter-band, .form-wrap { animation: none; }

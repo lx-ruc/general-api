@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { apiGetOrg, apiOrgDetailStats } from '../../api/platform'
+import { ElMessage } from 'element-plus'
+import { apiGetOrg, apiOrgDetailStats, apiResetOrgAdminPassword } from '../../api/platform'
 import LineChart from '../../components/LineChart.vue'
 import { trendOptions, barOption } from '../../utils/chart'
 import { fmtTime, fmtQuota, fmtNum, pointsToYuan, roleNames } from '../../utils/format'
@@ -27,6 +28,25 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+// 重置公司管理员密码（忘记密码时平台管理员的恢复入口）
+const admins = computed(() => (users.value || []).filter((u: any) => u.role === 'org_admin'))
+const resetVisible = ref(false)
+const resetForm = ref({ userId: 0, new_password: '' })
+function openReset() {
+  resetForm.value = { userId: admins.value[0]?.id || 0, new_password: '' }
+  resetVisible.value = true
+}
+async function submitReset() {
+  if (!resetForm.value.new_password || resetForm.value.new_password.length < 6) {
+    ElMessage.warning('新密码至少 6 位')
+    return
+  }
+  const resp = await apiResetOrgAdminPassword(
+    Number(route.params.id), resetForm.value.new_password, resetForm.value.userId || undefined)
+  ElMessage.success(`已重置「${resp.username}」的密码，请立即告知对方`)
+  resetVisible.value = false
 }
 
 const usedPct = computed(() =>
@@ -171,7 +191,12 @@ const usedPct = computed(() =>
       </el-col>
       <el-col :xs="24" :md="12">
         <el-card shadow="never">
-          <template #header>公司账号<span class="unit">（只读，日常管理由公司管理员进行）</span></template>
+          <template #header>
+            <div class="card-head">
+              <span>公司账号<span class="unit">（只读，日常管理由公司管理员进行）</span></span>
+              <el-button size="small" @click="openReset">重置管理员密码</el-button>
+            </div>
+          </template>
           <el-table :data="users" size="small" max-height="420" empty-text="暂无账号">
             <el-table-column prop="username" label="用户名" />
             <el-table-column prop="display_name" label="姓名" />
@@ -197,12 +222,37 @@ const usedPct = computed(() =>
         </el-card>
       </el-col>
     </el-row>
+
+    <!-- 重置管理员密码 -->
+    <el-dialog v-model="resetVisible" title="重置公司管理员密码" width="420px">
+      <p class="reset-hint">
+        用于管理员忘记密码时的恢复。新密码只在此刻有效传递 — 平台侧不保存明文，
+        请重置后立即告知对方，并提醒其登录后在「修改密码」中改成自己的密码。
+      </p>
+      <el-form label-width="80px">
+        <el-form-item v-if="admins.length > 1" label="管理员">
+          <el-select v-model="resetForm.userId" style="width: 100%">
+            <el-option v-for="a in admins" :key="a.id" :label="`${a.username}（${a.display_name || a.username}）`" :value="a.id" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-else label="管理员">{{ admins[0]?.username || '-' }}</el-form-item>
+        <el-form-item label="新密码">
+          <el-input v-model="resetForm.new_password" show-password placeholder="至少 6 位" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="resetVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitReset">重置</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <style scoped>
 .detail { display: flex; flex-direction: column; gap: 16px; }
 .chart-gap { height: 12px; }
+.card-head { display: flex; justify-content: space-between; align-items: center; }
+.reset-hint { margin: 0 0 14px; font-size: 12.5px; color: var(--tg-graphite); line-height: 1.8; }
 .unit { font-size: 12px; color: var(--tg-muted); font-weight: 400; margin-left: 4px; }
 .dim { color: var(--tg-muted); font-size: 12px; }
 .green { color: var(--tg-green-ink); }

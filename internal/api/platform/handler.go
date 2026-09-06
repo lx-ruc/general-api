@@ -269,6 +269,42 @@ func (h *Handler) OrgStats(c *gin.Context) {
 	httpx.OK(c, ov)
 }
 
+// ResetOrgAdminPassword POST /api/platform/orgs/:id/reset-admin-password
+// 平台管理员重置公司管理员密码（忘记密码时的唯一恢复路径）；user_id 为空时取首任管理员
+func (h *Handler) ResetOrgAdminPassword(c *gin.Context) {
+	id, ok := httpx.PathID(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		UserID      int64  `json:"user_id"`
+		NewPassword string `json:"new_password" binding:"required,min=6"`
+	}
+	if !httpx.BindJSON(c, &req) {
+		return
+	}
+	q := h.DB.Where("org_id = ? AND role = ?", id, model.RoleOrgAdmin)
+	if req.UserID > 0 {
+		q = q.Where("id = ?", req.UserID)
+	}
+	var u model.User
+	if err := q.Order("id").First(&u).Error; err != nil || u.ID == 0 {
+		httpx.Fail(c, http.StatusNotFound, "该公司还没有管理员账号")
+		return
+	}
+	hash, err := auth.HashPassword(req.NewPassword)
+	if err != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "密码加密失败")
+		return
+	}
+	if err := h.DB.Exec("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+		hash, time.Now().Unix(), u.ID).Error; err != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "重置失败")
+		return
+	}
+	httpx.OK(c, gin.H{"message": "密码已重置，请立即告知对方", "username": u.Username})
+}
+
 // ---------------- 渠道管理 ----------------
 
 type abilityReq struct {
