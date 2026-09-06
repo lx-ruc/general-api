@@ -6,16 +6,22 @@ import {
   apiResetMemberPassword, apiAddMemberQuota, apiGetMemberModels, apiSetMemberModels,
   type Member,
 } from '../../api/org'
-import { fmtTime, fmtPoints, pointsToYuan } from '../../utils/format'
+import { fmtTime, fmtPoints, fmtPrice, pointsToYuan } from '../../utils/format'
 
 const list = ref<Member[]>([])
 const total = ref(0)
+const loading = ref(false)
 const query = reactive({ page: 1, page_size: 20, query: '' })
 
 async function load() {
-  const resp = await apiListMembers(query)
-  list.value = resp.list
-  total.value = resp.total
+  loading.value = true
+  try {
+    const resp = await apiListMembers(query)
+    list.value = resp.list
+    total.value = resp.total
+  } finally {
+    loading.value = false
+  }
 }
 onMounted(load)
 
@@ -81,20 +87,23 @@ async function submitGrant() {
   load()
 }
 
-async function toggleStatus(m: Member) {
-  await apiUpdateMember(m.id, { status: m.status === 1 ? 0 : 1 })
-  load()
+function toggleStatus(m: Member) {
+  apiUpdateMember(m.id, { status: m.status === 1 ? 0 : 1 }).then(load)
 }
-async function setUnlimited(m: Member, unlimited: boolean) {
-  await apiUpdateMember(m.id, { quota_unlimited: unlimited })
-  ElMessage.success(unlimited ? '已设为不限额' : '已转为限额')
-  load()
+function setUnlimited(m: Member, unlimited: boolean) {
+  apiUpdateMember(m.id, { quota_unlimited: unlimited }).then(() => {
+    ElMessage.success(unlimited ? '已设为不限额' : '已转为限额')
+    load()
+  })
 }
-async function remove(m: Member) {
-  await ElMessageBox.confirm(`删除员工「${m.display_name || m.username}」及其全部密钥？`, '危险操作', { type: 'warning' })
-  await apiDeleteMember(m.id)
-  ElMessage.success('已删除')
-  load()
+function remove(m: Member) {
+  ElMessageBox.confirm(`删除员工「${m.display_name || m.username}」及其全部密钥？`, '危险操作', { type: 'warning' })
+    .then(() => apiDeleteMember(m.id))
+    .then(() => {
+      ElMessage.success('已删除')
+      load()
+    })
+    .catch(() => {})
 }
 </script>
 
@@ -105,48 +114,68 @@ async function remove(m: Member) {
         <span>员工管理</span>
         <div>
           <el-input v-model="query.query" placeholder="搜索用户名/姓名" clearable style="width: 180px; margin-right: 8px"
-            @keyup.enter="query.page = 1; load()" />
+            @keyup.enter="query.page = 1; load()" @clear="query.page = 1; load()" />
           <el-button type="primary" @click="createVisible = true">新建员工</el-button>
         </div>
       </div>
     </template>
 
-    <el-table :data="list">
+    <el-table :data="list" v-loading="loading"
+      empty-text="还没有员工。新建员工并授权模型后，员工即可创建密钥调用 API。">
       <el-table-column prop="username" label="用户名" width="120" />
-      <el-table-column prop="display_name" label="姓名" width="110" />
-      <el-table-column label="额度（已用/上限）" min-width="190">
+      <el-table-column prop="display_name" label="姓名" width="100" />
+      <el-table-column label="已用 / 上限（点）" min-width="180">
         <template #default="{ row }">
-          {{ fmtPoints(row.quota_used) }} /
-          {{ row.quota_limit == null ? '不限' : fmtPoints(row.quota_limit) }}
+          <span class="num">{{ fmtPoints(row.quota_used) }}</span>
+          <span class="dim"> / </span>
+          <span v-if="row.quota_limit == null" class="unlimited">不限</span>
+          <span v-else class="num">{{ fmtPoints(row.quota_limit) }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="剩余" width="110">
+      <el-table-column label="剩余" width="110" align="right">
         <template #default="{ row }">
-          <span v-if="row.quota_limit == null" style="color: #67c23a">不限</span>
-          <span v-else :style="{ color: row.quota_limit - row.quota_used > 0 ? '#67c23a' : '#f56c6c' }">
+          <span v-if="row.quota_limit == null" class="green">不限</span>
+          <span v-else class="num" :class="row.quota_limit - row.quota_used > 0 ? 'green' : 'red'">
             ¥{{ pointsToYuan(row.quota_limit - row.quota_used) }}
           </span>
         </template>
       </el-table-column>
-      <el-table-column prop="grant_count" label="授权模型" width="90" />
-      <el-table-column prop="key_count" label="密钥数" width="80" />
+      <el-table-column prop="grant_count" label="授权模型" width="90" align="center" />
+      <el-table-column prop="key_count" label="密钥数" width="80" align="center" />
       <el-table-column label="状态" width="80">
         <template #default="{ row }">
-          <el-tag :type="row.status === 1 ? 'success' : 'danger'">{{ row.status === 1 ? '启用' : '停用' }}</el-tag>
+          <el-tag :type="row.status === 1 ? 'success' : 'danger'" effect="plain" size="small">
+            {{ row.status === 1 ? '启用' : '停用' }}
+          </el-tag>
         </template>
       </el-table-column>
       <el-table-column label="创建时间" width="160">
         <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="330" fixed="right">
+      <el-table-column label="操作" width="210" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" type="primary" @click="openGrant(row)">模型授权</el-button>
+          <el-button size="small" type="primary" plain @click="openGrant(row)">模型授权</el-button>
           <el-button size="small" @click="openQuota(row)">额度</el-button>
-          <el-button size="small" @click="pwdForm.member = row; pwdVisible = true">重置密码</el-button>
-          <el-button size="small" @click="toggleStatus(row)">{{ row.status === 1 ? '停用' : '启用' }}</el-button>
-          <el-button size="small" v-if="row.quota_limit == null" @click="setUnlimited(row, false)">设限额</el-button>
-          <el-button size="small" v-else @click="setUnlimited(row, true)">不限额</el-button>
-          <el-button size="small" type="danger" @click="remove(row)">删除</el-button>
+          <el-dropdown trigger="click" @command="(cmd: string) => {
+            if (cmd === 'pwd') pwdForm.member = row, pwdVisible = true
+            else if (cmd === 'toggle') toggleStatus(row)
+            else if (cmd === 'unlimited') setUnlimited(row, true)
+            else if (cmd === 'limit') setUnlimited(row, false)
+            else if (cmd === 'delete') remove(row)
+          }">
+            <el-button size="small" class="more-btn">
+              更多<el-icon style="margin-left: 2px"><ArrowDown /></el-icon>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="pwd">重置密码</el-dropdown-item>
+                <el-dropdown-item command="toggle">{{ row.status === 1 ? '停用账号' : '启用账号' }}</el-dropdown-item>
+                <el-dropdown-item v-if="row.quota_limit != null" command="unlimited" divided>设为不限额</el-dropdown-item>
+                <el-dropdown-item v-else command="limit">设为限额</el-dropdown-item>
+                <el-dropdown-item command="delete" class="danger-item">删除员工</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </template>
       </el-table-column>
     </el-table>
@@ -162,7 +191,7 @@ async function remove(m: Member) {
       <el-form-item label="姓名"><el-input v-model="createForm.display_name" /></el-form-item>
       <el-form-item label="初始额度（点）">
         <el-input-number v-model="createForm.quota_amount" :min="0" :step="1000000" />
-        <span class="tip">0 = 不限额</span>
+        <span class="tip">= ¥{{ pointsToYuan(createForm.quota_amount) }}，0 = 不限额</span>
       </el-form-item>
     </el-form>
     <template #footer>
@@ -197,13 +226,13 @@ async function remove(m: Member) {
   </el-dialog>
 
   <el-dialog v-model="grantVisible" :title="`模型授权：${grantMember?.display_name || grantMember?.username || ''}`" width="560px">
-    <p style="color: #909399; font-size: 13px; margin-top: 0">
+    <p class="grant-hint">
       勾选该员工可用 API key 调用的模型（决定其 <code>/v1/models</code> 列表与转发白名单）
     </p>
     <el-checkbox-group v-model="grantedModels">
-      <el-checkbox v-for="m in availableModels" :key="m.name" :value="m.name" style="width: 240px">
-        {{ m.name }}
-        <span style="color: #909399; font-size: 12px">（¥{{ pointsToYuan(m.input_price) }}/¥{{ pointsToYuan(m.output_price) }} 每1M）</span>
+      <el-checkbox v-for="m in availableModels" :key="m.name" :value="m.name" class="grant-item">
+        <code>{{ m.name }}</code>
+        <span class="grant-price">{{ fmtPrice(m.input_price) }} 入 / {{ fmtPrice(m.output_price) }} 出 · 每 1M</span>
       </el-checkbox>
     </el-checkbox-group>
     <template #footer>
@@ -216,4 +245,13 @@ async function remove(m: Member) {
 <style scoped>
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .tip { margin-left: 8px; font-size: 12px; color: #909399; }
+.dim { color: var(--tg-muted); font-size: 12px; }
+.green { color: var(--tg-green-ink); }
+.red { color: var(--tg-red); }
+.unlimited { color: var(--tg-muted); font-size: 12px; }
+.more-btn { margin-left: 8px; }
+:deep(.danger-item) { color: var(--tg-red); }
+.grant-hint { margin: 0 0 14px; font-size: 13px; color: var(--tg-graphite); }
+.grant-item { width: 100%; margin-bottom: 6px; height: auto; }
+.grant-price { color: var(--tg-muted); font-size: 12px; margin-left: 6px; }
 </style>

@@ -6,12 +6,21 @@ import { fmtTime, fmtPoints, pointsToYuan } from '../../utils/format'
 const list = ref<any[]>([])
 const total = ref(0)
 const models = ref<string[]>([])
+const loading = ref(false)
 const filters = reactive({
   page: 1, page_size: 20, model: '', status: '', org_id: '', user_id: '',
   start_date: '', end_date: '',
 })
 
 async function load() {
+  loading.value = true
+  try {
+    await doLoad()
+  } finally {
+    loading.value = false
+  }
+}
+async function doLoad() {
   const params: any = { page: filters.page, page_size: filters.page_size }
   if (filters.model) params.model = filters.model
   if (filters.status) params.status = filters.status
@@ -64,7 +73,7 @@ function reset() {
       </el-form-item>
     </el-form>
 
-    <el-table :data="list" size="small" empty-text="暂无调用记录。用户用 API key 调用 /v1/chat/completions 后会显示在这里。">
+    <el-table :data="list" size="small" v-loading="loading" empty-text="暂无调用记录。用户用 API key 调用 /v1/chat/completions 后会显示在这里。">
       <el-table-column prop="id" label="#" width="70" />
       <el-table-column prop="request_id" label="请求ID" width="130" show-overflow-tooltip />
       <el-table-column prop="org_name" label="公司" width="110" show-overflow-tooltip />

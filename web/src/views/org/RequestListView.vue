@@ -6,12 +6,18 @@ import { fmtTime, fmtPoints, pointsToYuan } from '../../utils/format'
 
 const list = ref<QuotaRequestRow[]>([])
 const total = ref(0)
+const loading = ref(false)
 const filters = reactive({ page: 1, page_size: 20, status: '' })
 
 async function load() {
-  const resp = await apiOrgRequests(filters)
-  list.value = resp.list
-  total.value = resp.total
+  loading.value = true
+  try {
+    const resp = await apiOrgRequests(filters)
+    list.value = resp.list
+    total.value = resp.total
+  } finally {
+    loading.value = false
+  }
 }
 onMounted(load)
 
@@ -53,7 +59,7 @@ const statusName = (s: string) => ({ pending: '待审批', approved: '已批准'
       </div>
     </template>
 
-    <el-table :data="list">
+    <el-table :data="list" v-loading="loading" empty-text="暂无申请记录。员工额度不足时会在这里发起申请。">
       <el-table-column prop="id" label="#" width="60" />
       <el-table-column prop="username" label="申请人" width="110" />
       <el-table-column label="申请额度" width="170">

@@ -6,12 +6,18 @@ import { fmtTime } from '../../utils/format'
 
 const list = ref<OrgKey[]>([])
 const total = ref(0)
+const loading = ref(false)
 const query = reactive({ page: 1, page_size: 20 })
 
 async function load() {
-  const resp = await apiOrgKeys(query)
-  list.value = resp.list
-  total.value = resp.total
+  loading.value = true
+  try {
+    const resp = await apiOrgKeys(query)
+    list.value = resp.list
+    total.value = resp.total
+  } finally {
+    loading.value = false
+  }
 }
 onMounted(load)
 
@@ -25,12 +31,12 @@ async function toggle(k: OrgKey) {
 <template>
   <el-card shadow="never">
     <template #header>密钥一览（公司内全部员工的 API key）</template>
-    <el-table :data="list">
+    <el-table :data="list" v-loading="loading" empty-text="公司内还没有密钥。员工登录后在「我的密钥」里创建。">
       <el-table-column prop="id" label="#" width="60" />
       <el-table-column prop="username" label="所属员工" width="110" />
       <el-table-column prop="name" label="名称" min-width="120" />
-      <el-table-column label="密钥前缀" width="150">
-        <template #default="{ row }"><code>{{ row.key_prefix }}…</code></template>
+      <el-table-column label="密钥" width="160">
+        <template #default="{ row }"><code class="num">{{ row.key_prefix }}…</code></template>
       </el-table-column>
       <el-table-column label="状态" width="80">
         <template #default="{ row }">

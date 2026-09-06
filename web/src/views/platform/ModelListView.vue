@@ -6,9 +6,15 @@ import { fmtPrice, fmtPoints } from '../../utils/format'
 
 const PPY = 1_000_000
 const list = ref<MModel[]>([])
+const loading = ref(false)
 
 async function load() {
-  list.value = await apiListModels()
+  loading.value = true
+  try {
+    list.value = await apiListModels()
+  } finally {
+    loading.value = false
+  }
 }
 onMounted(load)
 
@@ -73,25 +79,30 @@ async function remove(m: MModel) {
       </div>
     </template>
 
-    <el-table :data="list">
-      <el-table-column prop="name" label="模型名" min-width="150" />
+    <el-table :data="list" v-loading="loading"
+      empty-text="还没有模型。新建模型并定价后，才能在渠道能力与员工授权中选用。">
+      <el-table-column prop="name" label="模型名" min-width="150">
+        <template #default="{ row }"><code>{{ row.name }}</code></template>
+      </el-table-column>
       <el-table-column prop="display_name" label="显示名" min-width="150" />
       <el-table-column prop="vendor" label="厂商" width="90" />
-      <el-table-column label="输入单价" width="130">
+      <el-table-column label="输入单价" width="120" align="right">
         <template #default="{ row }">
-          {{ fmtPoints(row.input_price) }}
-          <el-tag size="small" type="info">{{ fmtPrice(row.input_price, PPY) }}/1M</el-tag>
+          <span class="num green">{{ fmtPrice(row.input_price, PPY) }}</span>
+          <span v-if="row.input_price === 0" class="zero">（未定价）</span>
         </template>
       </el-table-column>
-      <el-table-column label="输出单价" width="130">
+      <el-table-column label="输出单价" width="120" align="right">
         <template #default="{ row }">
-          {{ fmtPoints(row.output_price) }}
-          <el-tag size="small" type="info">{{ fmtPrice(row.output_price, PPY) }}/1M</el-tag>
+          <span class="num green">{{ fmtPrice(row.output_price, PPY) }}</span>
+          <span v-if="row.output_price === 0" class="zero">（未定价）</span>
         </template>
       </el-table-column>
       <el-table-column label="状态" width="80">
         <template #default="{ row }">
-          <el-tag :type="row.status === 1 ? 'success' : 'info'">{{ row.status === 1 ? '启用' : '停用' }}</el-tag>
+          <el-tag :type="row.status === 1 ? 'success' : 'info'" effect="plain" size="small">
+            {{ row.status === 1 ? '启用' : '停用' }}
+          </el-tag>
         </template>
       </el-table-column>
       <el-table-column prop="remark" label="备注" min-width="120" show-overflow-tooltip />
@@ -135,4 +146,6 @@ async function remove(m: MModel) {
 <style scoped>
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .tip { margin-left: 8px; font-size: 12px; color: #909399; }
+.green { color: var(--tg-green-ink); }
+.zero { color: var(--tg-amber); font-size: 11px; margin-left: 3px; }
 </style>

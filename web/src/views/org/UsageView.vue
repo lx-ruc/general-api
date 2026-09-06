@@ -6,11 +6,20 @@ import { fmtTime, fmtPoints } from '../../utils/format'
 const list = ref<any[]>([])
 const total = ref(0)
 const members = ref<{ id: number; username: string }[]>([])
+const loading = ref(false)
 const filters = reactive({
   page: 1, page_size: 20, model: '', status: '', user_id: '', start_date: '', end_date: '',
 })
 
 async function load() {
+  loading.value = true
+  try {
+    await doLoad()
+  } finally {
+    loading.value = false
+  }
+}
+async function doLoad() {
   const params: any = { page: filters.page, page_size: filters.page_size }
   if (filters.model) params.model = filters.model
   if (filters.status) params.status = filters.status
@@ -62,7 +71,7 @@ function reset() {
       </el-form-item>
     </el-form>
 
-    <el-table :data="list" size="small" empty-text="本公司还没有调用记录。">
+    <el-table :data="list" size="small" v-loading="loading" empty-text="本公司还没有调用记录。">
       <el-table-column prop="id" label="#" width="70" />
       <el-table-column prop="username" label="用户" width="100" />
       <el-table-column prop="model_name" label="模型" width="130" />

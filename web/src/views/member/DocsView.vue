@@ -13,7 +13,10 @@ onMounted(async () => {
   keys.value = await apiMyKeys()
 })
 
-const exampleKey = computed(() => keys.value[0]?.key_prefix + '<你的完整密钥>' || 'sk-<你的完整密钥>')
+const exampleKey = computed(() => {
+  const prefix = keys.value[0]?.key_prefix
+  return prefix ? `${prefix}<你的完整密钥>` : 'sk-<在「我的密钥」新建后填入>'
+})
 const firstModel = computed(() => models.value[0]?.name || 'deepseek-chat')
 
 const curlExample = computed(() => `curl ${baseURL}/chat/completions \\

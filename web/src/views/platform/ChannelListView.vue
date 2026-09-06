@@ -9,9 +9,15 @@ import { fmtTime } from '../../utils/format'
 
 const list = ref<Channel[]>([])
 const allModels = ref<string[]>([])
+const loading = ref(false)
 
 async function load() {
-  list.value = await apiListChannels()
+  loading.value = true
+  try {
+    list.value = await apiListChannels()
+  } finally {
+    loading.value = false
+  }
 }
 onMounted(async () => {
   await load()
@@ -125,20 +131,21 @@ async function remove(ch: Channel) {
       </div>
     </template>
 
-    <el-table :data="list">
+    <el-table :data="list" v-loading="loading"
+      empty-text="还没有渠道。新建渠道（base_url + 上游密钥 + 模型列表）即可开始转发，预置的 DeepSeek/智谱/通义填入密钥后启用。">
       <el-table-column prop="name" label="渠道" min-width="120" />
       <el-table-column prop="vendor" label="厂商" width="90" />
       <el-table-column prop="base_url" label="Base URL" min-width="220" show-overflow-tooltip />
       <el-table-column label="模型" min-width="160">
         <template #default="{ row }">
-          <el-tag v-for="m in row.models" :key="m.model_name" size="small" style="margin: 1px 3px 1px 0">
+          <code v-for="m in row.models" :key="m.model_name" class="model-chip">
             {{ m.model_name }}
-          </el-tag>
+          </code>
         </template>
       </el-table-column>
-      <el-table-column label="密钥" width="70">
+      <el-table-column label="密钥" width="80" align="center">
         <template #default="{ row }">
-          <el-tag :type="row.has_key ? 'success' : 'danger'" size="small">{{ row.has_key ? '已配' : '缺失' }}</el-tag>
+          <span :class="row.has_key ? 'key-ok' : 'key-miss'">● {{ row.has_key ? '已配' : '缺失' }}</span>
         </template>
       </el-table-column>
       <el-table-column label="优先级/权重" width="100">
@@ -146,18 +153,20 @@ async function remove(ch: Channel) {
       </el-table-column>
       <el-table-column label="状态" width="80">
         <template #default="{ row }">
-          <el-tag :type="row.status === 1 ? 'success' : 'info'">{{ row.status === 1 ? '启用' : '停用' }}</el-tag>
+          <el-tag :type="row.status === 1 ? 'success' : 'info'" effect="plain" size="small">
+            {{ row.status === 1 ? '启用' : '停用' }}
+          </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="最近测试" width="160">
+      <el-table-column label="最近测试" width="170">
         <template #default="{ row }">
           <template v-if="row.last_test_at">
-            {{ fmtTime(row.last_test_at) }}
-            <el-tag :type="row.last_test_ok ? 'success' : 'danger'" size="small">
+            <span class="dim">{{ fmtTime(row.last_test_at) }}</span>
+            <span :class="row.last_test_ok ? 'key-ok' : 'key-miss'" style="margin-left: 6px">
               {{ row.last_test_ok ? 'OK' : '失败' }}
-            </el-tag>
+            </span>
           </template>
-          <span v-else>-</span>
+          <span v-else class="dim">未测试</span>
         </template>
       </el-table-column>
       <el-table-column label="操作" width="250" fixed="right">
@@ -224,4 +233,12 @@ async function remove(ch: Channel) {
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .tip { font-size: 12px; color: #909399; }
 .model-row { display: flex; align-items: center; margin-bottom: 8px; }
+.dim { color: var(--tg-muted); font-size: 12px; }
+.key-ok { color: var(--tg-green-ink); font-size: 12px; }
+.key-miss { color: var(--tg-red); font-size: 12px; }
+.model-chip {
+  display: inline-block; margin: 1px 4px 1px 0; padding: 1px 7px;
+  background: var(--tg-green-wash); border-radius: 4px;
+  font-size: 11.5px; color: var(--tg-green-ink);
+}
 </style>

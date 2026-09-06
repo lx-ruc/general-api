@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { useAuthStore } from '../stores/auth'
 import { roleNames } from '../utils/format'
 import { apiChangePassword } from '../api/auth'
+import { apiOrgRequests } from '../api/org'
 
 const auth = useAuthStore()
 const router = useRouter()
@@ -64,6 +65,17 @@ function handleLogout() {
   router.push('/login')
 }
 
+// 待审批额度申请角标（公司管理员）
+const pendingCount = ref(0)
+onMounted(async () => {
+  if (auth.user?.role === 'org_admin') {
+    try {
+      const r = await apiOrgRequests({ status: 'pending', page: 1, page_size: 1 })
+      pendingCount.value = r.total || 0
+    } catch { /* 拉取失败不打扰 */ }
+  }
+})
+
 // 修改密码
 const pwdVisible = ref(false)
 const pwdForm = ref({ old_password: '', new_password: '', confirm: '' })
@@ -98,6 +110,9 @@ async function submitPassword() {
           :class="{ active: activeMenu === m.index }">
           <el-icon :size="16"><component :is="m.icon" /></el-icon>
           <span>{{ m.title }}</span>
+          <span v-if="m.index === '/org/requests' && pendingCount > 0" class="nav-badge num">
+            {{ pendingCount > 99 ? '99+' : pendingCount }}
+          </span>
         </router-link>
       </nav>
 
@@ -201,6 +216,13 @@ async function submitPassword() {
   width: 3px; border-radius: 0 2px 2px 0; background: var(--tg-green);
 }
 .nav-item .el-icon { flex: none; }
+.nav-badge {
+  margin-left: auto;
+  min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: 9px;
+  background: #c05621; color: #fff;
+  font-size: 11px; line-height: 18px; text-align: center;
+}
 
 .side-foot { padding: 14px 18px; border-top: 1px solid rgba(255, 255, 255, 0.07); }
 .meter { display: flex; align-items: center; gap: 7px; }
