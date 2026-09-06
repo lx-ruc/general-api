@@ -76,6 +76,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		plat.DELETE("/orgs/:id", ph.DeleteOrg)
 		plat.POST("/orgs/:id/quota", ph.AddOrgQuota)
 		plat.GET("/orgs/:id/users", ph.ListOrgUsers)
+		plat.GET("/orgs/:id/stats", ph.OrgStats)
 
 		plat.GET("/channels", ph.ListChannels)
 		plat.POST("/channels", ph.CreateChannel)

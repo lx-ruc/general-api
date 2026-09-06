@@ -30,6 +30,9 @@ export const apiDeleteOrg = (id: number) => http.delete<any, any>(`/api/platform
 export const apiAddOrgQuota = (id: number, amount: number, remark: string) =>
   http.post<any, any>(`/api/platform/orgs/${id}/quota`, { amount, remark })
 
+// 公司用量统计（含每个模型的用量明细 by_model / 每个员工 by_user）
+export const apiOrgDetailStats = (id: number) => http.get<any, any>(`/api/platform/orgs/${id}/stats`)
+
 // ---- 渠道 ----
 export interface ChannelAbility {
   channel_id?: number

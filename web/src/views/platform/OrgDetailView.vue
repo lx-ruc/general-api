@@ -1,24 +1,27 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { apiGetOrg } from '../../api/platform'
-import { fmtTime, fmtQuota, pointsToYuan, roleNames } from '../../utils/format'
+import { apiGetOrg, apiOrgDetailStats } from '../../api/platform'
+import { fmtTime, fmtQuota, fmtNum, pointsToYuan, roleNames } from '../../utils/format'
 
 const route = useRoute()
 const router = useRouter()
 const org = ref<any>(null)
 const grants = ref<any[]>([])
 const users = ref<any[]>([])
+const stats = ref<any>(null)
 const loading = ref(false)
 
 onMounted(load)
 async function load() {
   loading.value = true
   try {
-    const resp = await apiGetOrg(Number(route.params.id))
+    const id = Number(route.params.id)
+    const resp = await apiGetOrg(id)
     org.value = resp.org
     grants.value = resp.quota_grants
     users.value = resp.users
+    stats.value = await apiOrgDetailStats(id)
   } finally {
     loading.value = false
   }
@@ -72,6 +75,53 @@ const usedPct = computed(() =>
         </div>
       </div>
     </el-card>
+
+    <!-- 每个模型 / 每个员工的用量明细 -->
+    <el-row v-if="stats" :gutter="16">
+      <el-col :xs="24" :md="12">
+        <el-card shadow="never">
+          <template #header>各模型用量<span class="unit">（按成本排序）</span></template>
+          <el-table :data="stats.by_model" size="small"
+            empty-text="该公司还没有调用记录。">
+            <el-table-column prop="name" label="模型" min-width="140">
+              <template #default="{ row }">
+                <span v-if="row.name"><code>{{ row.name }}</code></span>
+                <span v-else class="dim">（未路由）</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="requests" label="请求数" width="80" align="right" />
+            <el-table-column label="tokens" width="110" align="right">
+              <template #default="{ row }"><span class="num">{{ fmtNum(row.tokens) }}</span></template>
+            </el-table-column>
+            <el-table-column label="成本" min-width="150" align="right">
+              <template #default="{ row }">
+                <span class="num green">{{ fmtQuota(row.cost) }}</span>
+                <span class="dim"> · ¥{{ pointsToYuan(row.cost) }}</span>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+      </el-col>
+      <el-col :xs="24" :md="12">
+        <el-card shadow="never">
+          <template #header>员工消耗<span class="unit">（按成本排序）</span></template>
+          <el-table :data="stats.by_user" size="small"
+            empty-text="暂无数据">
+            <el-table-column prop="name" label="员工" min-width="110" />
+            <el-table-column prop="requests" label="请求数" width="80" align="right" />
+            <el-table-column label="tokens" width="110" align="right">
+              <template #default="{ row }"><span class="num">{{ fmtNum(row.tokens) }}</span></template>
+            </el-table-column>
+            <el-table-column label="成本" min-width="150" align="right">
+              <template #default="{ row }">
+                <span class="num green">{{ fmtQuota(row.cost) }}</span>
+                <span class="dim"> · ¥{{ pointsToYuan(row.cost) }}</span>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+      </el-col>
+    </el-row>
 
     <el-row :gutter="16">
       <el-col :xs="24" :md="12">

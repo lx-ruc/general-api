@@ -249,6 +249,26 @@ func (h *Handler) ListOrgUsers(c *gin.Context) {
 	httpx.OK(c, users)
 }
 
+// OrgStats GET /api/platform/orgs/:id/stats：该公司用量统计（含每个模型的用量明细）
+func (h *Handler) OrgStats(c *gin.Context) {
+	id, ok := httpx.PathID(c)
+	if !ok {
+		return
+	}
+	var cnt int64
+	_ = h.DB.Model(&model.Org{}).Where("id = ?", id).Count(&cnt).Error
+	if cnt == 0 {
+		httpx.Fail(c, http.StatusNotFound, "公司不存在")
+		return
+	}
+	ov, err := service.StatsOverview(h.DB, service.Scope{OrgID: &id})
+	if err != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "统计查询失败")
+		return
+	}
+	httpx.OK(c, ov)
+}
+
 // ---------------- 渠道管理 ----------------
 
 type abilityReq struct {
