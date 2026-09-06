@@ -30,10 +30,20 @@ onMounted(async () => {
       { label: '今日成本', value: fmtQuota(stats.today.cost), tone: 'green', sub: `¥${pointsToYuan(stats.today.cost)}` },
     ]" />
 
-    <el-card shadow="never">
-      <template #header>近 7 日请求</template>
-      <LineChart :option="trendOptions(stats.series).reqOption" />
-    </el-card>
+    <el-row :gutter="16">
+      <el-col :xs="24" :md="12">
+        <el-card shadow="never">
+          <template #header>近 7 日请求</template>
+          <LineChart :option="trendOptions(stats.series).reqOption" />
+        </el-card>
+      </el-col>
+      <el-col :xs="24" :md="12">
+        <el-card shadow="never">
+          <template #header>近 7 日成本<span class="unit">（token）</span></template>
+          <LineChart :option="trendOptions(stats.series).costOption" />
+        </el-card>
+      </el-col>
+    </el-row>
 
     <el-card shadow="never">
       <template #header>

@@ -4,7 +4,7 @@ import { apiStatsOverview } from '../../api/platform'
 import StatRow from '../../components/StatRow.vue'
 import LineChart from '../../components/LineChart.vue'
 import { fmtNum, fmtQuota, pointsToYuan } from '../../utils/format'
-import { trendOptions } from '../../utils/chart'
+import { trendOptions, barOption } from '../../utils/chart'
 
 const data = ref<any>(null)
 
@@ -41,6 +41,10 @@ onMounted(async () => {
       <el-col :xs="24" :md="12">
         <el-card shadow="never">
           <template #header>公司消耗 Top</template>
+          <LineChart v-if="data.by_org.length"
+            :option="barOption(data.by_org.map((o: any) => o.name), data.by_org.map((o: any) => o.cost))"
+            height="180px" />
+          <div class="chart-gap"></div>
           <el-table :data="data.by_org" size="small">
             <el-table-column prop="name" label="公司" />
             <el-table-column prop="requests" label="请求数" width="90" align="right" />
@@ -56,6 +60,10 @@ onMounted(async () => {
       <el-col :xs="24" :md="12">
         <el-card shadow="never">
           <template #header>模型消耗 Top</template>
+          <LineChart v-if="data.by_model.length"
+            :option="barOption(data.by_model.map((m: any) => m.name || '未路由'), data.by_model.map((m: any) => m.cost))"
+            height="180px" />
+          <div class="chart-gap"></div>
           <el-table :data="data.by_model" size="small">
             <el-table-column prop="name" label="模型">
               <template #default="{ row }">
@@ -78,6 +86,7 @@ onMounted(async () => {
 
 <style scoped>
 .dash { display: flex; flex-direction: column; gap: 16px; }
+.chart-gap { height: 12px; }
 .unit { font-size: 12px; color: var(--tg-muted); font-weight: 400; margin-left: 4px; }
 .green { color: var(--tg-green-ink); }
 .dim { color: var(--tg-muted); font-size: 12px; }

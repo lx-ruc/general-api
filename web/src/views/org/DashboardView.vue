@@ -4,7 +4,7 @@ import { apiOrgStats } from '../../api/org'
 import StatRow from '../../components/StatRow.vue'
 import LineChart from '../../components/LineChart.vue'
 import { fmtNum, fmtQuota, pointsToYuan } from '../../utils/format'
-import { trendOptions } from '../../utils/chart'
+import { trendOptions, barOption } from '../../utils/chart'
 
 const data = ref<any>(null)
 const org = ref<any>(null)
@@ -75,6 +75,10 @@ const opts = computed(() => (data.value ? trendOptions(data.value.series) : null
       <el-col :xs="24" :md="12">
         <el-card shadow="never">
           <template #header>员工消耗 Top</template>
+          <LineChart v-if="data.by_user.length"
+            :option="barOption(data.by_user.map((u: any) => u.name), data.by_user.map((u: any) => u.cost))"
+            height="180px" />
+          <div class="chart-gap"></div>
           <el-table :data="data.by_user" size="small">
             <el-table-column prop="name" label="用户名" />
             <el-table-column prop="requests" label="请求数" width="90" align="right" />
@@ -90,6 +94,10 @@ const opts = computed(() => (data.value ? trendOptions(data.value.series) : null
       <el-col :xs="24" :md="12">
         <el-card shadow="never">
           <template #header>模型消耗 Top</template>
+          <LineChart v-if="data.by_model.length"
+            :option="barOption(data.by_model.map((m: any) => m.name || '未路由'), data.by_model.map((m: any) => m.cost))"
+            height="180px" />
+          <div class="chart-gap"></div>
           <el-table :data="data.by_model" size="small">
             <el-table-column prop="name" label="模型">
               <template #default="{ row }">
@@ -112,6 +120,7 @@ const opts = computed(() => (data.value ? trendOptions(data.value.series) : null
 
 <style scoped>
 .dash { display: flex; flex-direction: column; gap: 16px; }
+.chart-gap { height: 12px; }
 .unit { font-size: 12px; color: var(--tg-muted); font-weight: 400; margin-left: 4px; }
 .green { color: var(--tg-green-ink); }
 .dim { color: var(--tg-muted); font-size: 12px; }
