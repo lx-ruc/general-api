@@ -83,18 +83,19 @@ async function removeOrg(org: Org) {
       </div>
     </template>
 
-    <el-table :data="list">
+    <el-table :data="list" empty-text="还没有公司。新建一家公司后，其管理员即可登录管理员工与额度。">
       <el-table-column label="公司" min-width="160">
         <template #default="{ row }">
           <el-link type="primary" @click="router.push(`/platform/orgs/${row.id}`)">{{ row.name }}</el-link>
         </template>
       </el-table-column>
       <el-table-column prop="remark" label="备注" min-width="120" show-overflow-tooltip />
-      <el-table-column prop="member_count" label="成员" width="70" />
-      <el-table-column label="额度（已用/上限）" min-width="200">
+      <el-table-column prop="member_count" label="成员" width="70" align="center" />
+      <el-table-column label="已用 / 上限（点）" min-width="200">
         <template #default="{ row }">
-          {{ fmtPoints(row.quota_used) }} / {{ fmtPoints(row.quota_limit) }} 点
-          <el-tag size="small" type="info">¥{{ pointsToYuan(row.quota_limit - row.quota_used) }} 可用</el-tag>
+          <span class="num">{{ fmtPoints(row.quota_used) }}</span>
+          <span class="dim"> / {{ fmtPoints(row.quota_limit) }}</span>
+          <span class="green num">　¥{{ pointsToYuan(row.quota_limit - row.quota_used) }} 可用</span>
         </template>
       </el-table-column>
       <el-table-column label="状态" width="80">
@@ -155,4 +156,6 @@ async function removeOrg(org: Org) {
 <style scoped>
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .tip { margin-left: 8px; font-size: 12px; color: #909399; }
+.dim { color: var(--tg-muted); font-size: 12px; }
+.green { color: var(--tg-green-ink); }
 </style>

@@ -1,0 +1,114 @@
+/* ============================================================
+   token 中转站 · 「计量台」主题
+   语义：账本绿 + 仪器数字 + 细横线账本表格
+   ============================================================ */
+
+:root {
+  /* 基础色板 */
+  --tg-paper: #f2f4f3;        /* 页面底：冷调纸白 */
+  --tg-surface: #ffffff;      /* 面板 */
+  --tg-ink: #182420;          /* 墨（绿黑） */
+  --tg-graphite: #5f6e68;     /* 次级文字 */
+  --tg-muted: #8a9993;        /* 弱文字/轴标签 */
+  --tg-line: #dce4e0;         /* 细线 */
+  --tg-line-strong: #c4d0ca;  /* 强线（表头下） */
+  --tg-green: #0b8455;        /* 账本绿（数据系列已验证） */
+  --tg-green-deep: #087449;   /* hover 深绿 */
+  --tg-green-ink: #085c3c;    /* 绿色文字（对比更高） */
+  --tg-green-wash: #e9f4ef;   /* 浅绿底 */
+  --tg-amber: #b45309;
+  --tg-red: #b3261e;
+  --tg-sidebar: #0e211b;      /* 侧栏墨绿黑 */
+  --tg-sidebar-ink: #9db4ab;  /* 侧栏次级文字 */
+
+  /* Element Plus 主色对齐 */
+  --el-color-primary: #0b8455;
+  --el-color-primary-dark-2: #087449;
+  --el-color-primary-light-3: #4aa582;
+  --el-color-primary-light-5: #83c2a8;
+  --el-color-primary-light-7: #bcdccd;
+  --el-color-primary-light-8: #d6ebdf;
+  --el-color-primary-light-9: #e9f4ef;
+  --el-color-error: #b3261e;
+  --el-color-warning: #b45309;
+  --el-border-radius-base: 6px;
+  --el-font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Segoe UI', sans-serif;
+}
+
+html, body, #app {
+  height: 100%;
+  margin: 0;
+  background: var(--tg-paper);
+  color: var(--tg-ink);
+  font-family: var(--el-font-family);
+}
+
+/* ---------- 仪器数字：所有会变的计量值 ---------- */
+.num {
+  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+code, pre, .mono {
+  font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* ---------- 卡片：细线面板，去阴影 ---------- */
+.el-card {
+  border: 1px solid var(--tg-line);
+  border-radius: 8px;
+  box-shadow: none !important;
+}
+.el-card__header {
+  border-bottom: 1px solid var(--tg-line);
+  font-weight: 600;
+  font-size: 14px;
+  padding: 13px 18px;
+}
+.el-card__body { padding: 16px 18px; }
+
+/* ---------- 表格：账本风 ---------- */
+.el-table {
+  --el-table-border-color: var(--tg-line);
+  --el-table-header-text-color: var(--tg-graphite);
+  --el-table-header-bg-color: var(--tg-surface);
+  --el-table-row-hover-bg-color: var(--tg-green-wash);
+  font-size: 13px;
+}
+.el-table th.el-table__cell {
+  font-weight: 500;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  background: var(--tg-surface) !important;
+}
+.el-table .el-table__cell { padding: 9px 0; }
+/* 数字列右对齐由模板 :align 控制；密钥/ID 用 .num */
+
+/* ---------- 对话框 / 消息 ---------- */
+.el-dialog { border-radius: 10px; }
+.el-dialog__title { font-weight: 600; }
+.el-message-box { border-radius: 10px; }
+
+/* ---------- 按钮 ---------- */
+.el-button--primary {
+  --el-button-hover-bg-color: var(--tg-green-deep);
+  --el-button-active-bg-color: var(--tg-green-deep);
+}
+
+/* ---------- 分页 ---------- */
+.el-pagination { --el-pagination-button-bg-color: transparent; }
+
+/* ---------- 滚动条 ---------- */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #c4d0ca; border-radius: 5px; border: 2px solid var(--tg-paper); }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- 焦点可见性 ---------- */
+.el-button:focus-visible,
+.el-menu-item:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--tg-green);
+  outline-offset: 2px;
+}

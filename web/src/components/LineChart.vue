@@ -11,5 +11,5 @@ defineProps<{ option: any }>()
 </script>
 
 <template>
-  <VChart :option="option" autoresize style="height: 300px" />
+  <VChart :option="option" autoresize style="height: 260px" />
 </template>

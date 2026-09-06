@@ -62,20 +62,20 @@ function reset() {
       </el-form-item>
     </el-form>
 
-    <el-table :data="list" size="small">
+    <el-table :data="list" size="small" empty-text="本公司还没有调用记录。">
       <el-table-column prop="id" label="#" width="70" />
       <el-table-column prop="username" label="用户" width="100" />
       <el-table-column prop="model_name" label="模型" width="130" />
       <el-table-column label="流式" width="60">
         <template #default="{ row }">{{ row.is_stream ? '是' : '否' }}</template>
       </el-table-column>
-      <el-table-column label="tokens(入/出)" width="120">
-        <template #default="{ row }">{{ row.prompt_tokens }} / {{ row.completion_tokens }}</template>
+      <el-table-column label="tokens（入 / 出）" width="130" align="right">
+        <template #default="{ row }"><span class="num">{{ row.prompt_tokens }} / {{ row.completion_tokens }}</span></template>
       </el-table-column>
-      <el-table-column label="成本" width="110">
+      <el-table-column label="成本" width="110" align="right">
         <template #default="{ row }">
-          <span v-if="row.no_usage" style="color: #e6a23c">未计量</span>
-          <template v-else>{{ fmtPoints(row.cost) }} 点</template>
+          <span v-if="row.no_usage" class="warn">未计量</span>
+          <span v-else class="num green">{{ fmtPoints(row.cost) }} 点</span>
         </template>
       </el-table-column>
       <el-table-column label="状态" width="80">
@@ -93,3 +93,8 @@ function reset() {
       @current-change="(p: number) => { filters.page = p; load() }" />
   </el-card>
 </template>
+
+<style scoped>
+.warn { color: var(--tg-amber); font-size: 12px; }
+.green { color: var(--tg-green-ink); }
+</style>

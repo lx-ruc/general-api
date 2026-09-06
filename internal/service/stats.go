@@ -44,14 +44,16 @@ type Scope struct {
 	UserID *int64
 }
 
+// cond 返回带 l. 前缀的过滤条件（所有查询统一以 l 别名引用 usage_logs，
+// 避免与 users/orgs join 后 org_id/user_id 列名歧义）
 func (s Scope) cond() (string, []any) {
 	cond, args := "1=1", []any{}
 	if s.OrgID != nil {
-		cond += " AND org_id = ?"
+		cond += " AND l.org_id = ?"
 		args = append(args, *s.OrgID)
 	}
 	if s.UserID != nil {
-		cond += " AND user_id = ?"
+		cond += " AND l.user_id = ?"
 		args = append(args, *s.UserID)
 	}
 	return cond, args
@@ -85,11 +87,11 @@ func StatsOverview(db *gorm.DB, scope Scope) (*Overview, error) {
 	seriesArgs = append(seriesArgs, since)
 	var rows []DayPoint
 	err := db.Raw(fmt.Sprintf(`
-		SELECT strftime('%%Y-%%m-%%d', created_at, 'unixepoch', 'localtime') AS date,
+		SELECT strftime('%%Y-%%m-%%d', l.created_at, 'unixepoch', 'localtime') AS date,
 		       COUNT(*) AS requests,
-		       COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens,
-		       COALESCE(SUM(cost), 0) AS cost
-		FROM usage_logs WHERE %s
+		       COALESCE(SUM(l.prompt_tokens + l.completion_tokens), 0) AS tokens,
+		       COALESCE(SUM(l.cost), 0) AS cost
+		FROM usage_logs l WHERE %s
 		GROUP BY date ORDER BY date`, seriesCond), seriesArgs...).Scan(&rows).Error
 	if err != nil {
 		return nil, err
@@ -147,10 +149,10 @@ func StatsOverview(db *gorm.DB, scope Scope) (*Overview, error) {
 func scanTotals(db *gorm.DB, t *Totals, cond string, args []any) error {
 	return db.Raw(fmt.Sprintf(`
 		SELECT COUNT(*) AS requests,
-		       COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS tokens,
-		       COALESCE(SUM(cost), 0) AS cost,
-		       COALESCE(SUM(CASE WHEN status >= 400 OR error != '' THEN 1 ELSE 0 END), 0) AS errors
-		FROM usage_logs WHERE %s`, cond), args...).Scan(t).Error
+		       COALESCE(SUM(l.prompt_tokens + l.completion_tokens), 0) AS tokens,
+		       COALESCE(SUM(l.cost), 0) AS cost,
+		       COALESCE(SUM(CASE WHEN l.status >= 400 OR l.error != '' THEN 1 ELSE 0 END), 0) AS errors
+		FROM usage_logs l WHERE %s`, cond), args...).Scan(t).Error
 }
 
 func queryGroups(db *gorm.DB, query string, args []any) ([]GroupPoint, error) {

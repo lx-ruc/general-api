@@ -47,12 +47,24 @@ const menus = computed<MenuItem[]>(() => {
 
 const activeMenu = computed(() => route.path)
 
+const pageTitles: Record<string, string> = {
+  '/platform/orgs/': '公司详情',
+}
+const pageTitle = computed(() => {
+  const m = menus.value.find((x) => route.path === x.index)
+  if (m) return m.title
+  for (const [prefix, title] of Object.entries(pageTitles)) {
+    if (route.path.startsWith(prefix)) return title
+  }
+  return ''
+})
+
 function handleLogout() {
   auth.logout()
   router.push('/login')
 }
 
-// 修改密码对话框
+// 修改密码
 const pwdVisible = ref(false)
 const pwdForm = ref({ old_password: '', new_password: '', confirm: '' })
 async function submitPassword() {
@@ -72,43 +84,57 @@ async function submitPassword() {
 
 <template>
   <el-container class="layout">
-    <el-aside width="220px" class="aside">
-      <div class="logo">
-        <el-icon :size="22"><Lightning /></el-icon>
-        <span>token 中转站</span>
+    <aside class="side">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <div class="brand-text">
+          <span class="brand-name">token 中转站</span>
+          <span class="brand-sub">计量 · 转发 · 计费</span>
+        </div>
       </div>
-      <el-menu :default-active="activeMenu" router background-color="#001529" text-color="#a6adb4"
-        active-text-color="#ffffff" class="menu">
-        <el-menu-item v-for="m in menus" :key="m.index" :index="m.index">
-          <el-icon><component :is="m.icon" /></el-icon>
+
+      <nav class="nav">
+        <router-link v-for="m in menus" :key="m.index" :to="m.index" class="nav-item"
+          :class="{ active: activeMenu === m.index }">
+          <el-icon :size="16"><component :is="m.icon" /></el-icon>
           <span>{{ m.title }}</span>
-        </el-menu-item>
-      </el-menu>
-    </el-aside>
-    <el-container>
-      <el-header class="header">
-        <div class="header-left">
-          <span v-if="auth.user?.org_name" class="org-name">{{ auth.user.org_name }}</span>
+        </router-link>
+      </nav>
+
+      <div class="side-foot">
+        <div class="meter" aria-hidden="true">
+          <span class="meter-dot"></span>
+          <span class="num meter-label">gateway online</span>
         </div>
-        <div class="header-right">
-          <el-dropdown>
-            <span class="user-info">
-              <el-icon><UserFilled /></el-icon>
-              {{ auth.user?.display_name || auth.user?.username }}
-              <el-tag size="small" type="info">{{ roleNames[auth.user?.role || ''] || auth.user?.role }}</el-tag>
+      </div>
+    </aside>
+
+    <el-container class="body">
+      <header class="top">
+        <h1 class="page-title">{{ pageTitle }}</h1>
+        <el-dropdown>
+          <button class="user-chip" type="button">
+            <span class="user-avatar" aria-hidden="true">{{
+              (auth.user?.display_name || auth.user?.username || '?').slice(0, 1)
+            }}</span>
+            <span class="user-meta">
+              <span class="user-name">{{ auth.user?.display_name || auth.user?.username }}</span>
+              <span class="user-role">{{ auth.user?.org_name || roleNames[auth.user?.role || ''] }}</span>
             </span>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item @click="pwdVisible = true">修改密码</el-dropdown-item>
-                <el-dropdown-item divided @click="handleLogout">退出登录</el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-        </div>
-      </el-header>
-      <el-main class="main">
+            <el-icon :size="12" color="#8a9993"><ArrowDown /></el-icon>
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item @click="pwdVisible = true">修改密码</el-dropdown-item>
+              <el-dropdown-item divided @click="handleLogout">退出登录</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+      </header>
+
+      <main class="main">
         <router-view />
-      </el-main>
+      </main>
     </el-container>
   </el-container>
 
@@ -133,18 +159,93 @@ async function submitPassword() {
 
 <style scoped>
 .layout { height: 100vh; }
-.aside { background: #001529; display: flex; flex-direction: column; }
-.logo {
-  height: 56px; display: flex; align-items: center; justify-content: center;
-  gap: 8px; color: #fff; font-size: 16px; font-weight: 600;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+
+/* ---------- 侧栏：墨绿黑计量柜 ---------- */
+.side {
+  width: 224px;
+  background: var(--tg-sidebar);
+  display: flex;
+  flex-direction: column;
+  color: var(--tg-sidebar-ink);
 }
-.menu { border-right: none; flex: 1; }
-.header {
-  background: #fff; display: flex; align-items: center; justify-content: space-between;
-  border-bottom: 1px solid #e4e7ed; height: 56px;
+.brand {
+  display: flex; align-items: center; gap: 10px;
+  padding: 20px 18px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
 }
-.org-name { font-weight: 600; color: #303133; }
-.user-info { display: flex; align-items: center; gap: 6px; cursor: pointer; outline: none; }
-.main { background: #f5f7fa; overflow-y: auto; }
+.brand-mark {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--tg-green);
+  box-shadow: 0 0 0 4px rgba(11, 132, 85, 0.18);
+  flex: none;
+}
+.brand-text { display: flex; flex-direction: column; line-height: 1.25; }
+.brand-name { color: #eef4f1; font-size: 14.5px; font-weight: 600; letter-spacing: 0.01em; }
+.brand-sub { font-size: 11px; color: #6f877e; margin-top: 2px; }
+
+.nav { flex: 1; padding: 10px 10px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; border-radius: 6px;
+  color: var(--tg-sidebar-ink); font-size: 13.5px;
+  text-decoration: none; position: relative;
+  transition: background 0.15s, color 0.15s;
+}
+.nav-item:hover { background: rgba(255, 255, 255, 0.05); color: #eef4f1; }
+.nav-item.active {
+  background: rgba(11, 132, 85, 0.16);
+  color: #ffffff; font-weight: 500;
+}
+.nav-item.active::before {
+  content: ''; position: absolute; left: -10px; top: 8px; bottom: 8px;
+  width: 3px; border-radius: 0 2px 2px 0; background: var(--tg-green);
+}
+.nav-item .el-icon { flex: none; }
+
+.side-foot { padding: 14px 18px; border-top: 1px solid rgba(255, 255, 255, 0.07); }
+.meter { display: flex; align-items: center; gap: 7px; }
+.meter-dot {
+  width: 6px; height: 6px; border-radius: 50%; background: #2fbd7f;
+  animation: pulse 2.4s ease-in-out infinite;
+}
+.meter-label { font-size: 10.5px; color: #6f877e; letter-spacing: 0.06em; }
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .meter-dot { animation: none; }
+}
+
+/* ---------- 顶栏 ---------- */
+.body { flex-direction: column; min-width: 0; }
+.top {
+  height: 60px; background: var(--tg-surface);
+  border-bottom: 1px solid var(--tg-line);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 24px;
+}
+.page-title { font-size: 16px; font-weight: 600; margin: 0; color: var(--tg-ink); }
+
+.user-chip {
+  display: flex; align-items: center; gap: 9px;
+  background: transparent; border: 1px solid transparent; border-radius: 999px;
+  padding: 4px 8px 4px 4px; cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.user-chip:hover { border-color: var(--tg-line); background: var(--tg-paper); }
+.user-avatar {
+  width: 30px; height: 30px; border-radius: 50%;
+  background: var(--tg-green-wash); color: var(--tg-green-ink);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 600;
+}
+.user-meta { display: flex; flex-direction: column; align-items: flex-start; line-height: 1.2; }
+.user-name { font-size: 13px; color: var(--tg-ink); }
+.user-role { font-size: 11px; color: var(--tg-muted); margin-top: 1px; }
+
+.main {
+  flex: 1; overflow-y: auto; padding: 20px 24px 32px;
+  background: var(--tg-paper);
+}
 </style>

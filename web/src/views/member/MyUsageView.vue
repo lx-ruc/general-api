@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { apiMyUsage, apiMyStats } from '../../api/member'
-import StatCard from '../../components/StatCard.vue'
+import StatRow from '../../components/StatRow.vue'
 import LineChart from '../../components/LineChart.vue'
 import { fmtNum, fmtPoints, fmtTime, pointsToYuan } from '../../utils/format'
+import { trendOptions } from '../../utils/chart'
 
 const stats = ref<any>(null)
 const list = ref<any[]>([])
@@ -19,39 +20,25 @@ onMounted(async () => {
   stats.value = await apiMyStats()
   load()
 })
-
-const chartOption = (d: any) => {
-  if (!d) return {}
-  return {
-    tooltip: { trigger: 'axis' },
-    grid: { left: 50, right: 20, top: 30, bottom: 30 },
-    xAxis: { type: 'category', data: d.series.map((p: any) => p.date.slice(5)) },
-    yAxis: { type: 'value', name: '请求数' },
-    series: [{ name: '请求数', type: 'line', smooth: true, areaStyle: {}, data: d.series.map((p: any) => p.requests) }],
-  }
-}
 </script>
 
 <template>
-  <div v-if="stats">
-    <el-row :gutter="16">
-      <el-col :span="8"><StatCard title="今日请求" :value="fmtNum(stats.today.requests)" icon="TrendCharts"
-        :sub="`累计 ${fmtNum(stats.total.requests)}`" /></el-col>
-      <el-col :span="8"><StatCard title="今日 tokens" :value="fmtNum(stats.today.tokens)" icon="Coin"
-        :sub="`累计 ${fmtNum(stats.total.tokens)}`" /></el-col>
-      <el-col :span="8"><StatCard title="今日成本" :value="fmtPoints(stats.today.cost) + ' 点'" icon="Money"
-        :sub="`¥${pointsToYuan(stats.today.cost)}`" /></el-col>
-    </el-row>
+  <div v-if="stats" class="dash">
+    <StatRow :items="[
+      { label: '今日请求', value: fmtNum(stats.today.requests), sub: `累计 ${fmtNum(stats.total.requests)}` },
+      { label: '今日 tokens', value: fmtNum(stats.today.tokens), sub: `累计 ${fmtNum(stats.total.tokens)}` },
+      { label: '今日成本', value: fmtPoints(stats.today.cost), unit: '点', tone: 'green', sub: `¥${pointsToYuan(stats.today.cost)}` },
+    ]" />
 
-    <el-card shadow="never" style="margin: 16px 0">
-      <template #header>近 7 日请求趋势</template>
-      <LineChart :option="chartOption(stats)" />
+    <el-card shadow="never">
+      <template #header>近 7 日请求</template>
+      <LineChart :option="trendOptions(stats.series).reqOption" />
     </el-card>
 
     <el-card shadow="never">
       <template #header>
         <div class="card-header">
-          <span>我的调用记录</span>
+          <span>调用记录</span>
           <el-input v-model="filters.model" placeholder="按模型过滤" clearable style="width: 180px"
             @keyup.enter="filters.page = 1; load()" />
         </div>
@@ -62,13 +49,13 @@ const chartOption = (d: any) => {
         <el-table-column label="流式" width="60">
           <template #default="{ row }">{{ row.is_stream ? '是' : '否' }}</template>
         </el-table-column>
-        <el-table-column label="tokens(入/出)" width="120">
-          <template #default="{ row }">{{ row.prompt_tokens }} / {{ row.completion_tokens }}</template>
+        <el-table-column label="tokens（入 / 出）" width="130" align="right">
+          <template #default="{ row }"><span class="num">{{ row.prompt_tokens }} / {{ row.completion_tokens }}</span></template>
         </el-table-column>
-        <el-table-column label="成本" width="110">
+        <el-table-column label="成本" width="110" align="right">
           <template #default="{ row }">
-            <span v-if="row.no_usage" style="color: #e6a23c">未计量</span>
-            <template v-else>{{ fmtPoints(row.cost) }} 点</template>
+            <span v-if="row.no_usage" class="warn">未计量</span>
+            <span v-else class="num green">{{ fmtPoints(row.cost) }} 点</span>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="80">
@@ -89,5 +76,8 @@ const chartOption = (d: any) => {
 </template>
 
 <style scoped>
+.dash { display: flex; flex-direction: column; gap: 16px; }
 .card-header { display: flex; justify-content: space-between; align-items: center; }
+.green { color: var(--tg-green-ink); }
+.warn { color: var(--tg-amber); font-size: 12px; }
 </style>
