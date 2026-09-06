@@ -42,6 +42,7 @@ type Database struct {
 type Security struct {
 	JWTSecret              string   `yaml:"jwt_secret"`
 	JWTTTL                 Duration `yaml:"jwt_ttl"`
+	MetricsToken           string   `yaml:"metrics_token"`
 	AESKey                 string   `yaml:"aes_key"`
 	BootstrapAdminUsername string   `yaml:"bootstrap_admin_username"`
 	BootstrapAdminPassword string   `yaml:"bootstrap_admin_password"`
@@ -136,6 +137,7 @@ func applyEnv(cfg *Config) {
 	setStr("TG_DATABASE_PATH", &cfg.Database.Path)
 	setStr("TG_DATABASE_DSN", &cfg.Database.DSN)
 	setStr("TG_JWT_SECRET", &cfg.Security.JWTSecret)
+	setStr("TG_METRICS_TOKEN", &cfg.Security.MetricsToken)
 	setStr("TG_AES_KEY", &cfg.Security.AESKey)
 	setStr("TG_BOOTSTRAP_ADMIN_USERNAME", &cfg.Security.BootstrapAdminUsername)
 	setStr("TG_BOOTSTRAP_ADMIN_PASSWORD", &cfg.Security.BootstrapAdminPassword)

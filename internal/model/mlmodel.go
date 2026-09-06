@@ -6,8 +6,10 @@ type Model struct {
 	Name        string `json:"name"`
 	DisplayName string `json:"display_name"`
 	Vendor      string `json:"vendor"`
-	InputPrice  int64  `json:"input_price"`  // 点 / 1M prompt tokens
-	OutputPrice int64  `json:"output_price"` // 点 / 1M completion tokens
+	InputPrice  int64  `json:"input_price"`  // 售卖价 / 1M prompt tokens（客户扣减）
+	OutputPrice int64  `json:"output_price"` // 售卖价 / 1M completion tokens
+	CostInputPrice  int64 `json:"cost_input_price"`  // 厂商成本价（毛利核算）
+	CostOutputPrice int64 `json:"cost_output_price"`
 	Status      int    `json:"status"`
 	Remark      string `json:"remark"`
 	CreatedAt   int64  `gorm:"autoCreateTime" json:"created_at"`

@@ -17,11 +17,15 @@ const routes: RouteRecordRaw[] = [
       { path: 'platform/channels', component: () => import('../views/platform/ChannelListView.vue'), meta: { roles: ['platform_admin'] } },
       { path: 'platform/models', component: () => import('../views/platform/ModelListView.vue'), meta: { roles: ['platform_admin'] } },
       { path: 'platform/usage', component: () => import('../views/platform/UsageView.vue'), meta: { roles: ['platform_admin'] } },
+      { path: 'platform/recharges', component: () => import('../views/platform/RechargeView.vue'), meta: { roles: ['platform_admin'] } },
+      { path: 'platform/audit', component: () => import('../views/platform/AuditView.vue'), meta: { roles: ['platform_admin'] } },
       // 公司管理员
       { path: 'org/dashboard', component: () => import('../views/org/DashboardView.vue'), meta: { roles: ['org_admin'] } },
       { path: 'org/members', component: () => import('../views/org/MemberListView.vue'), meta: { roles: ['org_admin'] } },
       { path: 'org/requests', component: () => import('../views/org/RequestListView.vue'), meta: { roles: ['org_admin'] } },
       { path: 'org/usage', component: () => import('../views/org/UsageView.vue'), meta: { roles: ['org_admin'] } },
+      { path: 'org/recharges', component: () => import('../views/org/RechargeView.vue'), meta: { roles: ['org_admin'] } },
+      { path: 'org/billing', component: () => import('../views/org/BillingView.vue'), meta: { roles: ['org_admin'] } },
       { path: 'org/keys', component: () => import('../views/org/KeyListView.vue'), meta: { roles: ['org_admin'] } },
       // 员工
       { path: 'member/models', component: () => import('../views/member/MyModelsView.vue'), meta: { roles: ['member'] } },

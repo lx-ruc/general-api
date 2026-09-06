@@ -26,6 +26,8 @@ const menus = computed<MenuItem[]>(() => {
         { index: '/platform/channels', title: '渠道管理', icon: 'Connection' },
         { index: '/platform/models', title: '模型定价', icon: 'PriceTag' },
         { index: '/platform/usage', title: '调用日志', icon: 'Document' },
+        { index: '/platform/recharges', title: '充值审批', icon: 'Wallet' },
+        { index: '/platform/audit', title: '审计日志', icon: 'List' },
       ]
     case 'org_admin':
       return [
@@ -34,6 +36,8 @@ const menus = computed<MenuItem[]>(() => {
         { index: '/org/requests', title: '额度申请', icon: 'Bell' },
         { index: '/org/keys', title: '密钥一览', icon: 'Key' },
         { index: '/org/usage', title: '调用日志', icon: 'Document' },
+        { index: '/org/recharges', title: '充值', icon: 'Wallet' },
+        { index: '/org/billing', title: '对账单', icon: 'Tickets' },
       ]
     default:
       return [

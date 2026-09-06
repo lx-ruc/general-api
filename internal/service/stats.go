@@ -10,10 +10,11 @@ import (
 )
 
 type Totals struct {
-	Requests int64 `json:"requests"`
-	Tokens   int64 `json:"tokens"`
-	Cost     int64 `json:"cost"`
-	Errors   int64 `json:"errors"`
+	Requests   int64 `json:"requests"`
+	Tokens     int64 `json:"tokens"`
+	Cost       int64 `json:"cost"`        // 客户消耗（平台营收）
+	VendorCost int64 `json:"vendor_cost"` // 厂商成本；毛利 = Cost - VendorCost
+	Errors     int64 `json:"errors"`
 }
 
 type DayPoint struct {
@@ -24,11 +25,13 @@ type DayPoint struct {
 }
 
 type GroupPoint struct {
-	ID       int64  `json:"id"`
-	Name     string `json:"name"`
-	Requests int64  `json:"requests"`
-	Tokens   int64  `json:"tokens"`
-	Cost     int64  `json:"cost"`
+	ID         int64  `json:"id"`
+	Name       string `json:"name"`
+	Requests   int64  `json:"requests"`
+	Tokens     int64  `json:"tokens"`
+	Cost       int64  `json:"cost"`        // 营收
+	VendorCost int64  `json:"vendor_cost"` // 厂商成本
+	Profit     int64  `json:"profit"`      // 毛利 = Cost - VendorCost
 }
 
 type Overview struct {
@@ -121,7 +124,7 @@ func StatsOverview(db *gorm.DB, scope Scope) (*Overview, error) {
 		ov.ByOrg, err = queryGroups(db, fmt.Sprintf(`
 			SELECT t.id AS id, t.name AS name, COUNT(*) AS requests,
 			       COALESCE(SUM(l.prompt_tokens + l.completion_tokens), 0) AS tokens,
-			       COALESCE(SUM(l.cost), 0) AS cost
+			       COALESCE(SUM(l.cost), 0) AS cost, COALESCE(SUM(l.vendor_cost), 0) AS vendor_cost
 			FROM usage_logs l JOIN orgs t ON t.id = l.org_id
 			WHERE %s GROUP BY t.id, t.name ORDER BY cost DESC, requests DESC LIMIT 10`, cond), args)
 		if err != nil {
@@ -133,7 +136,7 @@ func StatsOverview(db *gorm.DB, scope Scope) (*Overview, error) {
 		ov.ByUser, err = queryGroups(db, fmt.Sprintf(`
 			SELECT t.id AS id, t.username AS name, COUNT(*) AS requests,
 			       COALESCE(SUM(l.prompt_tokens + l.completion_tokens), 0) AS tokens,
-			       COALESCE(SUM(l.cost), 0) AS cost
+			       COALESCE(SUM(l.cost), 0) AS cost, COALESCE(SUM(l.vendor_cost), 0) AS vendor_cost
 			FROM usage_logs l JOIN users t ON t.id = l.user_id
 			WHERE %s GROUP BY t.id, t.username ORDER BY cost DESC, requests DESC LIMIT 10`, cond2), args2)
 		if err != nil {
@@ -143,7 +146,7 @@ func StatsOverview(db *gorm.DB, scope Scope) (*Overview, error) {
 	ov.ByModel, err = queryGroups(db, fmt.Sprintf(`
 		SELECT 0 AS id, l.model_name AS name, COUNT(*) AS requests,
 		       COALESCE(SUM(l.prompt_tokens + l.completion_tokens), 0) AS tokens,
-		       COALESCE(SUM(l.cost), 0) AS cost
+		       COALESCE(SUM(l.cost), 0) AS cost, COALESCE(SUM(l.vendor_cost), 0) AS vendor_cost
 		FROM usage_logs l
 		WHERE %s GROUP BY l.model_name ORDER BY cost DESC, requests DESC LIMIT 10`, cond), args)
 	if err != nil {
@@ -157,6 +160,7 @@ func scanTotals(db *gorm.DB, t *Totals, cond string, args []any) error {
 		SELECT COUNT(*) AS requests,
 		       COALESCE(SUM(l.prompt_tokens + l.completion_tokens), 0) AS tokens,
 		       COALESCE(SUM(l.cost), 0) AS cost,
+		       COALESCE(SUM(l.vendor_cost), 0) AS vendor_cost,
 		       COALESCE(SUM(CASE WHEN l.status >= 400 OR l.error != '' THEN 1 ELSE 0 END), 0) AS errors
 		FROM usage_logs l WHERE %s`, cond), args...).Scan(t).Error
 }
@@ -164,5 +168,8 @@ func scanTotals(db *gorm.DB, t *Totals, cond string, args []any) error {
 func queryGroups(db *gorm.DB, query string, args []any) ([]GroupPoint, error) {
 	var out []GroupPoint
 	err := db.Raw(query, args...).Scan(&out).Error
+	for i := range out {
+		out[i].Profit = out[i].Cost - out[i].VendorCost
+	}
 	return out, err
 }

@@ -16,10 +16,37 @@ onMounted(async () => {
 })
 
 const opts = computed(() => (data.value ? trendOptions(data.value.series) : null))
+
+// 接入引导：额度 / 员工 / 调用 三步
+const setupSteps = computed(() => {
+  if (!org.value || !data.value) return []
+  const hasQuota = org.value.quota_limit > 0
+  const hasActive = (data.value.by_user || []).length > 0
+  const steps = [
+    { n: '1', label: '获得额度', hint: hasQuota ? '已开通' : '对公转账充值或联系平台分配', done: hasQuota, link: '/org/recharges' },
+    { n: '2', label: '创建员工并授权模型', hint: '员工管理 → 新建员工 → 模型授权', done: hasActive, link: '/org/members' },
+    { n: '3', label: '开始调用', hint: '员工在「我的密钥」创建 key 后即可调用', done: hasActive && data.value.total.requests > 0, link: '/org/usage' },
+  ]
+  return steps.some((s) => !s.done) ? steps : []
+})
 </script>
 
 <template>
   <div v-if="data && org" class="dash">
+    <!-- 接入引导：三步全部完成后隐藏 -->
+    <el-card v-if="setupSteps.length > 0" shadow="never" class="setup">
+      <template #header>接入向导</template>
+      <div class="setup-row">
+        <div v-for="s in setupSteps" :key="s.label" class="setup-step" :class="{ done: s.done }">
+          <span class="setup-check">{{ s.done ? '✓' : s.n }}</span>
+          <div>
+            <div class="setup-label">{{ s.label }}</div>
+            <div class="setup-hint">{{ s.hint }}</div>
+          </div>
+        </div>
+      </div>
+    </el-card>
+
     <el-card shadow="never" class="pool">
       <div class="pool-row">
         <div class="pool-item">
@@ -120,6 +147,17 @@ const opts = computed(() => (data.value ? trendOptions(data.value.series) : null
 
 <style scoped>
 .dash { display: flex; flex-direction: column; gap: 16px; }
+.setup-row { display: flex; gap: 32px; flex-wrap: wrap; }
+.setup-step { display: flex; gap: 10px; align-items: flex-start; }
+.setup-check {
+  width: 22px; height: 22px; border-radius: 50%; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 12px; margin-top: 1px;
+  background: var(--tg-green-wash-strong); color: var(--tg-green-ink); font-weight: 600;
+}
+.setup-step.done .setup-check { background: var(--tg-green); color: #fff; }
+.setup-label { font-size: 13.5px; font-weight: 600; color: var(--tg-ink); }
+.setup-hint { font-size: 12px; color: var(--tg-muted); margin-top: 2px; }
 .chart-gap { height: 12px; }
 .unit { font-size: 12px; color: var(--tg-muted); font-weight: 400; margin-left: 4px; }
 .green { color: var(--tg-green-ink); }

@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS models (
   vendor       TEXT    NOT NULL DEFAULT '',
   input_price  INTEGER NOT NULL DEFAULT 0,
   output_price INTEGER NOT NULL DEFAULT 0,
+  cost_input_price  INTEGER NOT NULL DEFAULT 0,   -- 厂商成本价（毛利核算）
+  cost_output_price INTEGER NOT NULL DEFAULT 0,
   status       INTEGER NOT NULL DEFAULT 1,
   remark       TEXT    NOT NULL DEFAULT '',
   created_at   INTEGER NOT NULL,
@@ -106,9 +108,12 @@ CREATE TABLE IF NOT EXISTS usage_logs (
   is_stream         INTEGER NOT NULL DEFAULT 0,
   prompt_tokens     INTEGER NOT NULL DEFAULT 0,
   completion_tokens INTEGER NOT NULL DEFAULT 0,
-  input_price       INTEGER NOT NULL DEFAULT 0,
+  input_price       INTEGER NOT NULL DEFAULT 0,  -- 结算时快照（售卖价）
   output_price      INTEGER NOT NULL DEFAULT 0,
-  cost              INTEGER NOT NULL DEFAULT 0,
+  cost_input_price  INTEGER NOT NULL DEFAULT 0,  -- 成本价快照
+  cost_output_price INTEGER NOT NULL DEFAULT 0,
+  vendor_cost       INTEGER NOT NULL DEFAULT 0,  -- 厂商成本（毛利 = cost - vendor_cost）
+  cost              INTEGER NOT NULL DEFAULT 0,  -- 客户扣减（= 平台营收）
   no_usage          INTEGER NOT NULL DEFAULT 0,
   status            INTEGER NOT NULL DEFAULT 0,
   error             TEXT    NOT NULL DEFAULT '',
@@ -154,6 +159,32 @@ CREATE TABLE IF NOT EXISTS verification_codes (
   sent_at   INTEGER NOT NULL,
   attempts  INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS recharge_requests (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id     INTEGER NOT NULL,
+  amount     INTEGER NOT NULL,
+  voucher    TEXT    NOT NULL DEFAULT '',
+  status     TEXT    NOT NULL DEFAULT 'pending',
+  handled_by INTEGER,
+  handled_at INTEGER,
+  reply      TEXT    NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_recharge_org ON recharge_requests(org_id, status);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor_id   INTEGER,
+  actor      TEXT    NOT NULL DEFAULT '',
+  method     TEXT    NOT NULL DEFAULT '',
+  path       TEXT    NOT NULL DEFAULT '',
+  status     INTEGER NOT NULL DEFAULT 0,
+  detail     TEXT    NOT NULL DEFAULT '',
+  ip         TEXT    NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);
 
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,

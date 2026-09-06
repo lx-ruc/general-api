@@ -59,3 +59,10 @@ export const apiUpdateOrgKeyStatus = (id: number, status: number) =>
 export const apiOrgRequests = (params?: any) => http.get<any, any>('/api/org/requests', { params })
 export const apiHandleRequest = (id: number, action: 'approve' | 'reject', reply: string) =>
   http.put<any, any>(`/api/org/requests/${id}`, { action, reply })
+
+// ---- 充值 / 账单 ----
+export const apiOrgRecharges = () => http.get<any, any>('/api/org/recharges')
+export const apiCreateRecharge = (amount: number, voucher: string) =>
+  http.post<any, any>('/api/org/recharges', { amount, voucher })
+export const apiOrgBankInfo = () => http.get<any, any>('/api/org/bank-info')
+export const apiOrgBilling = (month: string) => http.get<any, any>('/api/org/billing', { params: { month } })

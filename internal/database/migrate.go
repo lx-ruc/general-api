@@ -32,9 +32,19 @@ func Migrate(db *gorm.DB) error {
 		}
 	}
 	// 已有库的幂等加列（CREATE TABLE IF NOT EXISTS 不会更新旧表结构）
-	if !columnExists(db, "users", "email") {
-		if err := db.Exec("ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''").Error; err != nil {
-			return fmt.Errorf("alter users.email: %w", err)
+	alters := [][3]string{
+		{"users", "email", "TEXT NOT NULL DEFAULT ''"},
+		{"models", "cost_input_price", "INTEGER NOT NULL DEFAULT 0"},
+		{"models", "cost_output_price", "INTEGER NOT NULL DEFAULT 0"},
+		{"usage_logs", "cost_input_price", "INTEGER NOT NULL DEFAULT 0"},
+		{"usage_logs", "cost_output_price", "INTEGER NOT NULL DEFAULT 0"},
+		{"usage_logs", "vendor_cost", "INTEGER NOT NULL DEFAULT 0"},
+	}
+	for _, a := range alters {
+		if !columnExists(db, a[0], a[1]) {
+			if err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", a[0], a[1], a[2])).Error; err != nil {
+				return fmt.Errorf("alter %s.%s: %w", a[0], a[1], err)
+			}
 		}
 	}
 	return nil

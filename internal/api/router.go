@@ -2,6 +2,7 @@ package api
 
 import (
 	"io/fs"
+	"strings"
 	"net/http"
 	"os"
 
@@ -43,9 +44,21 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
-	// Prometheus 指标（生产环境建议只在内网暴露或加访问控制）
+	// Prometheus 指标；security.metrics_token 非空时需 ?token= 或 Bearer 校验
 	m := metrics.New()
-	r.GET("/metrics", gin.WrapH(m.Handler()))
+	r.GET("/metrics", func(c *gin.Context) {
+		if cfg.Security.MetricsToken != "" {
+			tok := c.Query("token")
+			if tok == "" {
+				tok = strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
+			}
+			if tok != cfg.Security.MetricsToken {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"message": "invalid metrics token"}})
+				return
+			}
+		}
+		m.Handler()(c.Writer, c.Request)
+	})
 
 	// ---- 数据面 /v1（API key 鉴权 + per-key 限流）----
 	keyLimiter := middleware.NewRateLimiter(cfg.Gateway.PerKeyRPM, 10)
@@ -73,7 +86,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 	), authH.SendCode)
 	apiGrp.POST("/auth/register", authH.Register)
 
-	authed := apiGrp.Group("", middleware.JWTAuth(cfg.Security.JWTSecret))
+	authed := apiGrp.Group("", middleware.JWTAuth(cfg.Security.JWTSecret), middleware.Audit(db))
 	{
 		authed.GET("/me", authH.Me)
 		authed.PUT("/me/password", authH.ChangePassword)
@@ -108,6 +121,11 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 
 		plat.GET("/stats/overview", ph.StatsOverview)
 		plat.GET("/usage", ph.ListUsage)
+		plat.GET("/recharges", ph.ListRecharges)
+		plat.PUT("/recharges/:id", ph.HandleRecharge)
+		plat.GET("/audit", ph.ListAudit)
+		plat.GET("/bank-info", ph.GetBankInfo)
+		plat.PUT("/bank-info", ph.UpdateBankInfo)
 	}
 
 	// 公司管理员（org 隔离：handler 内强制 WHERE org_id）
@@ -131,6 +149,10 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 
 		og.GET("/requests", oh.ListRequests)
 		og.PUT("/requests/:id", oh.HandleRequest)
+		og.GET("/recharges", oh.ListRecharges)
+		og.POST("/recharges", oh.CreateRecharge)
+		og.GET("/bank-info", oh.GetBankInfo)
+		og.GET("/billing", oh.Billing)
 	}
 
 	// 员工

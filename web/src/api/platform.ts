@@ -90,3 +90,11 @@ export const apiDeleteModel = (id: number) => http.delete<any, any>(`/api/platfo
 // ---- 统计 / 日志 ----
 export const apiStatsOverview = () => http.get<any, any>('/api/platform/stats/overview')
 export const apiListUsage = (params?: any) => http.get<any, any>('/api/platform/usage', { params })
+
+// ---- 充值 / 审计 / 收款信息 ----
+export const apiListRecharges = (params?: any) => http.get<any, any>('/api/platform/recharges', { params })
+export const apiHandleRecharge = (id: number, action: 'approve' | 'reject', reply: string) =>
+  http.put<any, any>(`/api/platform/recharges/${id}`, { action, reply })
+export const apiListAudit = (params?: any) => http.get<any, any>('/api/platform/audit', { params })
+export const apiGetBankInfo = () => http.get<any, any>('/api/platform/bank-info')
+export const apiUpdateBankInfo = (bank_info: string) => http.put<any, any>('/api/platform/bank-info', { bank_info })

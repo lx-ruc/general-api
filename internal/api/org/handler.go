@@ -11,6 +11,7 @@ import (
 	"token-gateway/internal/httpx"
 	"token-gateway/internal/auth"
 	"token-gateway/internal/middleware"
+	"token-gateway/internal/database"
 	"token-gateway/internal/model"
 	"token-gateway/internal/service"
 )
@@ -568,4 +569,123 @@ func opID(id int64) *int64 {
 		return nil
 	}
 	return &id
+}
+
+// ---------------- 充值与账单 ----------------
+
+// GetBankInfo GET /api/org/bank-info：平台收款信息
+func (h *Handler) GetBankInfo(c *gin.Context) {
+	var v string
+	_ = h.DB.Raw("SELECT value FROM settings WHERE key = 'bank_info'").Scan(&v).Error
+	httpx.OK(c, gin.H{"bank_info": v})
+}
+
+// ListRecharges GET /api/org/recharges：本公司充值记录
+func (h *Handler) ListRecharges(c *gin.Context) {
+	oid, ok := orgID(c)
+	if !ok {
+		return
+	}
+	var rows []model.RechargeRequest
+	_ = h.DB.Where("org_id = ?", oid).Order("id DESC").Limit(100).Find(&rows).Error
+	if rows == nil {
+		rows = []model.RechargeRequest{}
+	}
+	httpx.OK(c, rows)
+}
+
+// CreateRecharge POST /api/org/recharges：发起充值申请（对公转账后提交凭证）
+func (h *Handler) CreateRecharge(c *gin.Context) {
+	oid, ok := orgID(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Amount  int64  `json:"amount" binding:"required,gt=0"`
+		Voucher string `json:"voucher" binding:"required"`
+	}
+	if !httpx.BindJSON(c, &req) {
+		return
+	}
+	r := model.RechargeRequest{OrgID: oid, Amount: req.Amount, Voucher: req.Voucher, Status: "pending"}
+	if err := h.DB.Create(&r).Error; err != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "提交失败")
+		return
+	}
+	httpx.OK(c, gin.H{"id": r.ID, "message": "充值申请已提交，平台确认到账后额度自动增加并邮件通知你"})
+}
+
+// Billing GET /api/org/billing?month=2026-09：月度对账单
+func (h *Handler) Billing(c *gin.Context) {
+	oid, ok := orgID(c)
+	if !ok {
+		return
+	}
+	month := c.DefaultQuery("month", time.Now().Format("2006-01"))
+	mStart, err := time.ParseInLocation("2006-01", month, time.Local)
+	if err != nil {
+		httpx.Fail(c, http.StatusBadRequest, "month 格式应为 YYYY-MM")
+		return
+	}
+	mEnd := mStart.AddDate(0, 1, 0)
+	s, e := mStart.Unix(), mEnd.Unix()
+
+	// 汇总
+	var sum struct {
+		Requests int64 `json:"requests"`
+		Tokens   int64 `json:"tokens"`
+		Cost     int64 `json:"cost"`
+	}
+	_ = h.DB.Raw(`SELECT COUNT(*) AS requests,
+		COALESCE(SUM(prompt_tokens + completion_tokens),0) AS tokens,
+		COALESCE(SUM(cost),0) AS cost
+		FROM usage_logs WHERE org_id = ? AND created_at >= ? AND created_at < ?`, oid, s, e).Scan(&sum).Error
+
+	// 按模型明细
+	type modelRow struct {
+		Name     string `json:"name"`
+		Requests int64  `json:"requests"`
+		Tokens   int64  `json:"tokens"`
+		Cost     int64  `json:"cost"`
+	}
+	var byModel []modelRow
+	_ = h.DB.Raw(`SELECT model_name AS name, COUNT(*) AS requests,
+		COALESCE(SUM(prompt_tokens + completion_tokens),0) AS tokens,
+		COALESCE(SUM(cost),0) AS cost
+		FROM usage_logs WHERE org_id = ? AND created_at >= ? AND created_at < ?
+		GROUP BY model_name ORDER BY cost DESC`, oid, s, e).Scan(&byModel).Error
+	if byModel == nil {
+		byModel = []modelRow{}
+	}
+
+	// 本月充值（approved）
+	var recharged int64
+	_ = h.DB.Raw(`SELECT COALESCE(SUM(amount),0) FROM recharge_requests
+		WHERE org_id = ? AND status = 'approved' AND created_at >= ? AND created_at < ?`, oid, s, e).Scan(&recharged).Error
+	var recharges []model.RechargeRequest
+	_ = h.DB.Where("org_id = ? AND created_at >= ? AND created_at < ?", oid, s, e).
+		Order("id DESC").Find(&recharges).Error
+	if recharges == nil {
+		recharges = []model.RechargeRequest{}
+	}
+
+	// 按日序列（曲线）
+	type dayRow struct {
+		Date     string `json:"date"`
+		Requests int64  `json:"requests"`
+		Cost     int64  `json:"cost"`
+	}
+	var daily []dayRow
+	dateExpr := "strftime('%Y-%m-%d', created_at, 'unixepoch', 'localtime')"
+	if database.Dialect == "postgres" {
+		dateExpr = "to_char(to_timestamp(created_at), 'YYYY-MM-DD')"
+	}
+	_ = h.DB.Raw(fmt.Sprintf(`SELECT %s AS date, COUNT(*) AS requests, COALESCE(SUM(cost),0) AS cost
+		FROM usage_logs WHERE org_id = ? AND created_at >= ? AND created_at < ?
+		GROUP BY date ORDER BY date`, dateExpr), oid, s, e).Scan(&daily).Error
+
+	httpx.OK(c, gin.H{
+		"month": month, "summary": sum, "by_model": byModel,
+		"recharged": recharged, "recharges": recharges, "daily": daily,
+	})
 }

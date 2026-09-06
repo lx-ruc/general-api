@@ -357,7 +357,7 @@ func (h *Handler) noteChannelFailure(cand Candidate) {
 	}
 }
 
-// applyUsage 把 usage 折算为成本快照；上游未回 usage 则标记 no_usage、不计费
+// applyUsage 把 usage 折算为成本快照（售卖价扣客户 + 成本价记厂商成本）；上游未回 usage 则标记 no_usage、不计费
 func applyUsage(rec *model.UsageLog, u *Usage, m model.Model) {
 	if u == nil {
 		rec.NoUsage = 1
@@ -367,7 +367,10 @@ func applyUsage(rec *model.UsageLog, u *Usage, m model.Model) {
 	rec.CompletionTokens = u.CompletionTokens
 	rec.InputPrice = m.InputPrice
 	rec.OutputPrice = m.OutputPrice
+	rec.CostInputPrice = m.CostInputPrice
+	rec.CostOutputPrice = m.CostOutputPrice
 	rec.Cost = CalcCost(u.PromptTokens, u.CompletionTokens, m.InputPrice, m.OutputPrice)
+	rec.VendorCost = CalcCost(u.PromptTokens, u.CompletionTokens, m.CostInputPrice, m.CostOutputPrice)
 }
 
 func rawString(raw json.RawMessage) string {

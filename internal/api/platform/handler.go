@@ -634,6 +634,8 @@ type modelReq struct {
 	Vendor      string `json:"vendor"`
 	InputPrice  int64  `json:"input_price"`
 	OutputPrice int64  `json:"output_price"`
+	CostInputPrice  int64 `json:"cost_input_price"`
+	CostOutputPrice int64 `json:"cost_output_price"`
 	Status      *int   `json:"status"`
 	Remark      string `json:"remark"`
 }
@@ -671,6 +673,7 @@ func (h *Handler) CreateModel(c *gin.Context) {
 	m := model.Model{
 		Name: req.Name, DisplayName: req.DisplayName, Vendor: req.Vendor,
 		InputPrice: req.InputPrice, OutputPrice: req.OutputPrice,
+		CostInputPrice: req.CostInputPrice, CostOutputPrice: req.CostOutputPrice,
 		Status: status, Remark: req.Remark,
 	}
 	if err := h.DB.Create(&m).Error; err != nil {
@@ -691,6 +694,8 @@ func (h *Handler) UpdateModel(c *gin.Context) {
 		Vendor      string `json:"vendor"`
 		InputPrice  *int64 `json:"input_price" binding:"required,min=0"`
 		OutputPrice *int64 `json:"output_price" binding:"required,min=0"`
+		CostInputPrice  *int64 `json:"cost_input_price"`
+		CostOutputPrice *int64 `json:"cost_output_price"`
 		Status      *int   `json:"status"`
 		Remark      string `json:"remark"`
 	}
@@ -701,6 +706,12 @@ func (h *Handler) UpdateModel(c *gin.Context) {
 		"display_name": req.DisplayName, "vendor": req.Vendor,
 		"input_price": *req.InputPrice, "output_price": *req.OutputPrice,
 		"remark": req.Remark, "updated_at": time.Now().Unix(),
+	}
+	if req.CostInputPrice != nil {
+		updates["cost_input_price"] = *req.CostInputPrice
+	}
+	if req.CostOutputPrice != nil {
+		updates["cost_output_price"] = *req.CostOutputPrice
 	}
 	if req.Status != nil {
 		updates["status"] = *req.Status
@@ -827,4 +838,127 @@ func b2i(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// ---------------- 充值管理 ----------------
+
+// GetBankInfo GET /api/platform/bank-info：收款信息（公司端展示用）
+func (h *Handler) GetBankInfo(c *gin.Context) {
+	var v string
+	_ = h.DB.Raw("SELECT value FROM settings WHERE key = 'bank_info'").Scan(&v).Error
+	httpx.OK(c, gin.H{"bank_info": v})
+}
+
+// UpdateBankInfo PUT /api/platform/bank-info
+func (h *Handler) UpdateBankInfo(c *gin.Context) {
+	var req struct {
+		BankInfo string `json:"bank_info"`
+	}
+	if !httpx.BindJSON(c, &req) {
+		return
+	}
+	if err := h.DB.Exec(`
+		INSERT INTO settings (key, value) VALUES ('bank_info', ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, req.BankInfo).Error; err != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "保存失败")
+		return
+	}
+	httpx.OK(c, gin.H{"message": "收款信息已更新"})
+}
+
+// ListRecharges GET /api/platform/recharges：充值申请列表
+func (h *Handler) ListRecharges(c *gin.Context) {
+	page, size, offset := httpx.PageParams(c)
+	cond, args := "r.org_id > 0", []any{}
+	if st := c.Query("status"); st != "" {
+		cond += " AND r.status = ?"
+		args = append(args, st)
+	}
+	var total int64
+	_ = h.DB.Raw(fmt.Sprintf("SELECT COUNT(*) FROM recharge_requests r WHERE %s", cond), args...).Scan(&total).Error
+	type row struct {
+		model.RechargeRequest
+		OrgName string `json:"org_name"`
+	}
+	var rows []row
+	_ = h.DB.Raw(fmt.Sprintf(`
+		SELECT r.*, o.name AS org_name FROM recharge_requests r
+		JOIN orgs o ON o.id = r.org_id
+		WHERE %s ORDER BY r.id DESC LIMIT ? OFFSET ?`, cond),
+		append(args, size, offset)...).Scan(&rows).Error
+	if rows == nil {
+		rows = []row{}
+	}
+	httpx.PageResult(c, rows, total, page, size)
+}
+
+// HandleRecharge PUT /api/platform/recharges/:id：审批（批准=自动加额度+邮件通知）
+func (h *Handler) HandleRecharge(c *gin.Context) {
+	id, ok := httpx.PathID(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Action string `json:"action" binding:"required,oneof=approve reject"`
+		Reply  string `json:"reply"`
+	}
+	if !httpx.BindJSON(c, &req) {
+		return
+	}
+	var r model.RechargeRequest
+	if err := h.DB.Where("id = ? AND status = 'pending'", id).First(&r).Error; err != nil {
+		httpx.Fail(c, http.StatusNotFound, "充值申请不存在或已处理")
+		return
+	}
+	now := time.Now().Unix()
+	operator := middleware.GetUID(c)
+	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		newStatus := "approved"
+		if req.Action == "reject" {
+			newStatus = "rejected"
+		}
+		if err := tx.Exec(`UPDATE recharge_requests SET status = ?, handled_by = ?, handled_at = ?, reply = ? WHERE id = ?`,
+			newStatus, operator, now, req.Reply, id).Error; err != nil {
+			return err
+		}
+		if req.Action == "approve" {
+			return tx.Exec("UPDATE orgs SET quota_limit = quota_limit + ?, updated_at = ? WHERE id = ?",
+				r.Amount, now, r.OrgID).Error
+		}
+		return nil
+	})
+	if err != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "审批失败")
+		return
+	}
+	if req.Action == "approve" {
+		_ = h.DB.Create(&model.QuotaGrant{
+			SubjectType: "org", SubjectID: r.OrgID, Amount: r.Amount,
+			Remark:      fmt.Sprintf("充值申请 #%d 到账", id),
+			OperatorID:  opID(operator), CreatedAt: now,
+		}).Error
+		notifyNote := notifyOrgQuota(h.DB, r.OrgID, r.Amount, "充值到账")
+		httpx.OK(c, gin.H{"message": "已批准并到账" + notifyNote})
+		return
+	}
+	httpx.OK(c, gin.H{"message": "已驳回"})
+}
+
+// ListAudit GET /api/platform/audit：操作审计日志
+func (h *Handler) ListAudit(c *gin.Context) {
+	page, size, offset := httpx.PageParams(c)
+	cond, args := "1=1", []any{}
+	if v := c.Query("path"); v != "" {
+		cond += " AND path LIKE ?"
+		args = append(args, "%"+v+"%")
+	}
+	var total int64
+	_ = h.DB.Raw(fmt.Sprintf("SELECT COUNT(*) FROM audit_logs WHERE %s", cond), args...).Scan(&total).Error
+	var rows []model.AuditLog
+	_ = h.DB.Raw(fmt.Sprintf("SELECT * FROM audit_logs WHERE %s ORDER BY id DESC LIMIT ? OFFSET ?", cond),
+		append(args, size, offset)...).Scan(&rows).Error
+	if rows == nil {
+		rows = []model.AuditLog{}
+	}
+	httpx.PageResult(c, rows, total, page, size)
 }

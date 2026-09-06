@@ -22,19 +22,21 @@ const editVisible = ref(false)
 const isEdit = ref(false)
 const form = reactive({
   id: 0, name: '', display_name: '', vendor: '',
-  input_price: 0, output_price: 0, status: 1, remark: '',
+  input_price: 0, output_price: 0, cost_input_price: 0, cost_output_price: 0, status: 1, remark: '',
 })
 
 function openCreate() {
   isEdit.value = false
-  Object.assign(form, { id: 0, name: '', display_name: '', vendor: '', input_price: 0, output_price: 0, status: 1, remark: '' })
+  Object.assign(form, { id: 0, name: '', display_name: '', vendor: '', input_price: 0, output_price: 0, cost_input_price: 0, cost_output_price: 0, status: 1, remark: '' })
   editVisible.value = true
 }
 function openEdit(m: MModel) {
   isEdit.value = true
   Object.assign(form, {
     id: m.id, name: m.name, display_name: m.display_name, vendor: m.vendor,
-    input_price: m.input_price, output_price: m.output_price, status: m.status, remark: m.remark,
+    input_price: m.input_price, output_price: m.output_price,
+    cost_input_price: m.cost_input_price, cost_output_price: m.cost_output_price,
+    status: m.status, remark: m.remark,
   })
   editVisible.value = true
 }
@@ -48,6 +50,7 @@ async function submit() {
     await apiUpdateModel(form.id, {
       display_name: form.display_name, vendor: form.vendor,
       input_price: form.input_price, output_price: form.output_price,
+      cost_input_price: form.cost_input_price, cost_output_price: form.cost_output_price,
       status: form.status, remark: form.remark,
     })
     ElMessage.success('已更新')
@@ -98,6 +101,11 @@ async function remove(m: MModel) {
           <span v-if="row.output_price === 0" class="zero">（未定价）</span>
         </template>
       </el-table-column>
+      <el-table-column label="毛利（入/出）" width="150" align="right">
+        <template #default="{ row }">
+          <span class="num">{{ fmtPrice(row.input_price - row.cost_input_price, PPY) }} / {{ fmtPrice(row.output_price - row.cost_output_price, PPY) }}</span>
+        </template>
+      </el-table-column>
       <el-table-column label="状态" width="80">
         <template #default="{ row }">
           <el-tag :type="row.status === 1 ? 'success' : 'info'" effect="plain" size="small">
@@ -130,6 +138,14 @@ async function remove(m: MModel) {
       <el-form-item label="输出单价（元/百万token）">
         <el-input-number v-model="form.output_price" :min="0" :step="500000" />
         <span class="tip">= {{ fmtPrice(form.output_price, PPY) }} 每百万输出 token</span>
+      </el-form-item>
+      <el-form-item label="厂商成本价（入）">
+        <el-input-number v-model="form.cost_input_price" :min="0" :step="500000" />
+        <span class="tip">毛利 = {{ fmtPrice(form.input_price - form.cost_input_price, PPY) }} /1M 入</span>
+      </el-form-item>
+      <el-form-item label="厂商成本价（出）">
+        <el-input-number v-model="form.cost_output_price" :min="0" :step="500000" />
+        <span class="tip">毛利 = {{ fmtPrice(form.output_price - form.cost_output_price, PPY) }} /1M 出</span>
       </el-form-item>
       <el-form-item label="状态">
         <el-switch v-model="form.status" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="停用" />

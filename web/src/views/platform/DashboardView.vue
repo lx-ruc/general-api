@@ -22,6 +22,14 @@ onMounted(async () => {
       { label: '今日失败', value: fmtNum(data.today.errors), tone: data.today.errors > 0 ? 'danger' : 'default', sub: `累计 ${fmtNum(data.total.errors)}` },
     ]" />
 
+    <StatRow v-if="data.total.vendor_cost > 0 || data.today.vendor_cost > 0" :items="[
+      { label: '今日营收', value: fmtQuota(data.today.cost), tone: 'green', sub: `累计 ¥${pointsToYuan(data.total.cost)}` },
+      { label: '今日厂商成本', value: fmtQuota(data.today.vendor_cost), sub: `累计 ¥${pointsToYuan(data.total.vendor_cost)}` },
+      { label: '今日毛利', value: fmtQuota(data.today.cost - data.today.vendor_cost), tone: 'green',
+        sub: `累计毛利 ¥${pointsToYuan(data.total.cost - data.total.vendor_cost)}` },
+      { label: '累计毛利率', value: (data.total.cost > 0 ? ((data.total.cost - data.total.vendor_cost) / data.total.cost * 100).toFixed(1) : '0') + '%', tone: 'green' },
+    ]" />
+
     <el-row :gutter="16" class="charts">
       <el-col :xs="24" :md="12">
         <el-card shadow="never">
@@ -48,10 +56,15 @@ onMounted(async () => {
           <el-table :data="data.by_org" size="small">
             <el-table-column prop="name" label="公司" />
             <el-table-column prop="requests" label="请求数" width="90" align="right" />
-            <el-table-column label="成本" width="170" align="right">
+            <el-table-column label="营收" width="170" align="right">
               <template #default="{ row }">
                 <span class="num green">{{ fmtQuota(row.cost) }}</span>
-                <span class="dim"> token · ¥{{ pointsToYuan(row.cost) }}</span>
+                <span class="dim"> · ¥{{ pointsToYuan(row.cost) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="毛利" width="140" align="right">
+              <template #default="{ row }">
+                <span class="num green">¥{{ pointsToYuan(row.profit) }}</span>
               </template>
             </el-table-column>
           </el-table>
