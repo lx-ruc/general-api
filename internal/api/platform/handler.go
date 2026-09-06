@@ -232,7 +232,29 @@ func (h *Handler) AddOrgQuota(c *gin.Context) {
 		httpx.Fail(c, http.StatusInternalServerError, "追加额度失败")
 		return
 	}
-	httpx.OK(c, gin.H{"message": fmt.Sprintf("已追加 %d token", req.Amount)})
+	// 邮件通知公司管理员具体的授权信息（异步；未配置 SMTP 走日志）
+	notifyNote := notifyOrgQuota(h.DB, id, req.Amount, req.Remark)
+	httpx.OK(c, gin.H{"message": fmt.Sprintf("已追加 %d token%s", req.Amount, notifyNote)})
+}
+
+// notifyOrgQuota 组装授权详情并通知；返回附在响应里的通知状态说明
+func notifyOrgQuota(db *gorm.DB, orgID, amount int64, remark string) string {
+	var org model.Org
+	if err := db.Where("id = ?", orgID).First(&org).Error; err != nil {
+		return ""
+	}
+	subject := "「token 中转站」你的公司额度已更新"
+	body := service.QuotaGrantEmailBody(org.Name, org.Name+" 管理员",
+		amount, org.QuotaLimit, org.QuotaUsed, remark)
+	sent := service.NotifyOrgAdmins(db, orgID, subject, body)
+	switch {
+	case sent > 0:
+		return fmt.Sprintf("，已邮件通知 %d 位公司管理员", sent)
+	case service.MailerConfigured():
+		return "（该公司管理员未留邮箱，未发送通知）"
+	default:
+		return "（SMTP 未配置，通知内容已写入服务日志）"
+	}
 }
 
 // ListOrgUsers GET /api/platform/orgs/:id/users

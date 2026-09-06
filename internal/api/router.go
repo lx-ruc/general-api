@@ -52,6 +52,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 	}
 
 	// ---- 管理台 /api ----
+	service.SetMailer(&cfg.Smtp)
 	verif := service.NewVerification(&cfg.Smtp)
 	authH := &AuthHandler{DB: db, Secret: cfg.Security.JWTSecret, TTL: cfg.Security.JWTTTL.Duration, Verif: verif}
 	loginLimiter := middleware.NewRateLimiter(5, 5)
