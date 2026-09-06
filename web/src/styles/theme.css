@@ -1,34 +1,41 @@
 /* ============================================================
-   token 中转站 · 「计量台」主题
-   语义：账本绿 + 仪器数字 + 细横线账本表格
+   token 中转站 · 「计量台」主题（亮色版）
+   语义：亮祖母绿 + 仪器数字 + 细横线账本表格
+   色彩可达性（已计算）：
+   - 亮绿填充 #12A462 × 墨字 #0F2B20 = 4.70:1 ✓
+   - 文字绿 #0B8455 × 白 = 4.72:1 ✓（链接/数字用）
+   - 图表系列 #12A462 × 白 = 3.22:1 ✓（dataviz 六项全 PASS）
    ============================================================ */
 
 :root {
   /* 基础色板 */
-  --tg-paper: #f2f4f3;        /* 页面底：冷调纸白 */
+  --tg-paper: #f5f8f6;        /* 页面底：亮薄荷白 */
   --tg-surface: #ffffff;      /* 面板 */
-  --tg-ink: #182420;          /* 墨（绿黑） */
-  --tg-graphite: #5f6e68;     /* 次级文字 */
-  --tg-muted: #8a9993;        /* 弱文字/轴标签 */
-  --tg-line: #dce4e0;         /* 细线 */
-  --tg-line-strong: #c4d0ca;  /* 强线（表头下） */
-  --tg-green: #0b8455;        /* 账本绿（数据系列已验证） */
-  --tg-green-deep: #087449;   /* hover 深绿 */
-  --tg-green-ink: #085c3c;    /* 绿色文字（对比更高） */
-  --tg-green-wash: #e9f4ef;   /* 浅绿底 */
+  --tg-ink: #1b2b24;          /* 墨（绿黑文字） */
+  --tg-btn-ink: #0f2b20;      /* 亮绿填充上的按钮文字 */
+  --tg-graphite: #5c6b65;     /* 次级文字 */
+  --tg-muted: #8da098;        /* 弱文字/轴标签 */
+  --tg-line: #dce7e1;         /* 细线 */
+  --tg-line-strong: #c8d6cf;  /* 强线（输入框/表头下） */
+  --tg-green: #12a462;        /* 亮祖母绿：填充/图表/强调 */
+  --tg-green-hi: #1fb374;     /* hover 更亮 */
+  --tg-green-deep: #0e9457;   /* active/按下 */
+  --tg-green-ink: #0b8455;    /* 白底上的绿色文字（4.72:1） */
+  --tg-green-wash: #e8f6ee;   /* 浅薄荷底 */
+  --tg-green-wash-strong: #d7f0e2;
   --tg-amber: #b45309;
   --tg-red: #b3261e;
-  --tg-sidebar: #0e211b;      /* 侧栏墨绿黑 */
-  --tg-sidebar-ink: #9db4ab;  /* 侧栏次级文字 */
+  --tg-sidebar: #ffffff;      /* 侧栏：亮 */
+  --tg-sidebar-ink: #3d4f47;  /* 侧栏菜单文字 */
 
-  /* Element Plus 主色对齐 */
-  --el-color-primary: #0b8455;
-  --el-color-primary-dark-2: #087449;
-  --el-color-primary-light-3: #4aa582;
-  --el-color-primary-light-5: #83c2a8;
-  --el-color-primary-light-7: #bcdccd;
-  --el-color-primary-light-8: #d6ebdf;
-  --el-color-primary-light-9: #e9f4ef;
+  /* Element Plus 主色对齐（亮绿 + 墨字按钮） */
+  --el-color-primary: #12a462;
+  --el-color-primary-dark-2: #0e9457;
+  --el-color-primary-light-3: #46b884;
+  --el-color-primary-light-5: #83d0aa;
+  --el-color-primary-light-7: #b8e5cb;
+  --el-color-primary-light-8: #d3efdf;
+  --el-color-primary-light-9: #e8f6ee;
   --el-color-error: #b3261e;
   --el-color-warning: #b45309;
   --el-border-radius-base: 6px;
@@ -53,6 +60,22 @@ html, body, #app {
 
 code, pre, .mono {
   font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* ---------- 亮绿按钮：墨字（4.70:1），hover 更亮 ---------- */
+.el-button--primary {
+  --el-button-text-color: var(--tg-btn-ink);
+  --el-button-hover-text-color: var(--tg-btn-ink);
+  --el-button-active-text-color: var(--tg-btn-ink);
+  --el-button-hover-bg-color: var(--tg-green-hi);
+  --el-button-hover-border-color: var(--tg-green-hi);
+  --el-button-active-bg-color: var(--tg-green-deep);
+  --el-button-active-border-color: var(--tg-green-deep);
+  font-weight: 600;
+}
+.el-button--primary.is-plain {
+  --el-button-text-color: var(--tg-green-ink);
+  --el-button-hover-text-color: var(--tg-btn-ink);
 }
 
 /* ---------- 卡片：细线面板，去阴影 ---------- */
@@ -84,25 +107,18 @@ code, pre, .mono {
   background: var(--tg-surface) !important;
 }
 .el-table .el-table__cell { padding: 9px 0; }
-/* 数字列右对齐由模板 :align 控制；密钥/ID 用 .num */
 
 /* ---------- 对话框 / 消息 ---------- */
 .el-dialog { border-radius: 10px; }
 .el-dialog__title { font-weight: 600; }
 .el-message-box { border-radius: 10px; }
 
-/* ---------- 按钮 ---------- */
-.el-button--primary {
-  --el-button-hover-bg-color: var(--tg-green-deep);
-  --el-button-active-bg-color: var(--tg-green-deep);
-}
-
 /* ---------- 分页 ---------- */
 .el-pagination { --el-pagination-button-bg-color: transparent; }
 
 /* ---------- 滚动条 ---------- */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: #c4d0ca; border-radius: 5px; border: 2px solid var(--tg-paper); }
+::-webkit-scrollbar-thumb { background: #c8d6cf; border-radius: 5px; border: 2px solid var(--tg-paper); }
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* ---------- 焦点可见性 ---------- */

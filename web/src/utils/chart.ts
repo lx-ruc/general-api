@@ -1,9 +1,9 @@
 // 趋势图 option 工厂：全部单轴单系列（标题即系列名，无需图例）
-// 数据系列色 #0B8455 已通过 dataviz 六项校验（白表面）
-const SERIES = '#0B8455'
-const MUTED = '#8a9993'
-const GRID = '#e4ebe7'
-const AXIS = '#c4d0ca'
+// 数据系列色 #12A462 已通过 dataviz 六项校验（白表面，3.22:1）
+const SERIES = '#12A462'
+const MUTED = '#8da098'
+const GRID = '#e4ece7'
+const AXIS = '#c8d6cf'
 
 export interface DayPoint {
   date: string
@@ -44,11 +44,11 @@ function lineSeries(name: string, data: number[], unit = '') {
     name,
     type: 'line',
     data,
-    lineStyle: { width: 2, color: SERIES },
+    lineStyle: { width: 2.5, color: SERIES },
     itemStyle: { color: SERIES },
     showSymbol: false,
     symbol: 'circle',
-    symbolSize: 7,
+    symbolSize: 8,
     emphasis: { focus: 'series' },
     tooltip: { valueFormatter: (v: number) => `${v.toLocaleString('en-US')}${unit}` },
   }

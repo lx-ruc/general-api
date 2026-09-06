@@ -175,10 +175,11 @@ async function submitPassword() {
 <style scoped>
 .layout { height: 100vh; }
 
-/* ---------- 侧栏：墨绿黑计量柜 ---------- */
+/* ---------- 侧栏：亮色计量台 ---------- */
 .side {
   width: 224px;
   background: var(--tg-sidebar);
+  border-right: 1px solid var(--tg-line);
   display: flex;
   flex-direction: column;
   color: var(--tg-sidebar-ink);
@@ -186,17 +187,17 @@ async function submitPassword() {
 .brand {
   display: flex; align-items: center; gap: 10px;
   padding: 20px 18px 18px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  border-bottom: 1px solid var(--tg-line);
 }
 .brand-mark {
   width: 10px; height: 10px; border-radius: 50%;
   background: var(--tg-green);
-  box-shadow: 0 0 0 4px rgba(11, 132, 85, 0.18);
+  box-shadow: 0 0 0 4px rgba(18, 164, 98, 0.16);
   flex: none;
 }
 .brand-text { display: flex; flex-direction: column; line-height: 1.25; }
-.brand-name { color: #eef4f1; font-size: 14.5px; font-weight: 600; letter-spacing: 0.01em; }
-.brand-sub { font-size: 11px; color: #6f877e; margin-top: 2px; }
+.brand-name { color: var(--tg-ink); font-size: 14.5px; font-weight: 600; letter-spacing: 0.01em; }
+.brand-sub { font-size: 11px; color: var(--tg-muted); margin-top: 2px; }
 
 .nav { flex: 1; padding: 10px 10px; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
 .nav-item {
@@ -206,10 +207,10 @@ async function submitPassword() {
   text-decoration: none; position: relative;
   transition: background 0.15s, color 0.15s;
 }
-.nav-item:hover { background: rgba(255, 255, 255, 0.05); color: #eef4f1; }
+.nav-item:hover { background: var(--tg-green-wash); color: var(--tg-ink); }
 .nav-item.active {
-  background: rgba(11, 132, 85, 0.16);
-  color: #ffffff; font-weight: 500;
+  background: var(--tg-green-wash-strong);
+  color: #08623e; font-weight: 600;
 }
 .nav-item.active::before {
   content: ''; position: absolute; left: -10px; top: 8px; bottom: 8px;
@@ -224,13 +225,13 @@ async function submitPassword() {
   font-size: 11px; line-height: 18px; text-align: center;
 }
 
-.side-foot { padding: 14px 18px; border-top: 1px solid rgba(255, 255, 255, 0.07); }
+.side-foot { padding: 14px 18px; border-top: 1px solid var(--tg-line); }
 .meter { display: flex; align-items: center; gap: 7px; }
 .meter-dot {
-  width: 6px; height: 6px; border-radius: 50%; background: #2fbd7f;
+  width: 6px; height: 6px; border-radius: 50%; background: var(--tg-green);
   animation: pulse 2.4s ease-in-out infinite;
 }
-.meter-label { font-size: 10.5px; color: #6f877e; letter-spacing: 0.06em; }
+.meter-label { font-size: 10.5px; color: var(--tg-muted); letter-spacing: 0.06em; }
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
