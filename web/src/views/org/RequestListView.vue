@@ -2,7 +2,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiOrgRequests, apiHandleRequest, type QuotaRequestRow } from '../../api/org'
-import { fmtTime, fmtPoints, pointsToYuan } from '../../utils/format'
+import { fmtTime, fmtQuota, pointsToYuan } from '../../utils/format'
 
 const list = ref<QuotaRequestRow[]>([])
 const total = ref(0)
@@ -63,7 +63,7 @@ const statusName = (s: string) => ({ pending: '待审批', approved: '已批准'
       <el-table-column prop="id" label="#" width="60" />
       <el-table-column prop="username" label="申请人" width="110" />
       <el-table-column label="申请额度" width="170">
-        <template #default="{ row }">{{ fmtPoints(row.amount) }} 点（¥{{ pointsToYuan(row.amount) }}）</template>
+        <template #default="{ row }">{{ fmtQuota(row.amount) }} token（¥{{ pointsToYuan(row.amount) }}）</template>
       </el-table-column>
       <el-table-column prop="reason" label="理由" min-width="150" show-overflow-tooltip />
       <el-table-column label="状态" width="90">
@@ -91,7 +91,7 @@ const statusName = (s: string) => ({ pending: '待审批', approved: '已批准'
 
   <el-dialog v-model="replyVisible" :title="action === 'approve' ? '批准额度申请' : '驳回申请'" width="420px">
     <p v-if="current">
-      申请人：{{ current.username }} · 申请 {{ fmtPoints(current.amount) }} 点（¥{{ pointsToYuan(current.amount) }}）<br />
+      申请人：{{ current.username }} · 申请 {{ fmtQuota(current.amount) }} token（¥{{ pointsToYuan(current.amount) }}）<br />
       <span style="color: #909399">{{ current.reason }}</span>
     </p>
     <el-input v-model="reply" type="textarea" :rows="2" placeholder="审批回复（可选）" style="margin-top: 8px" />

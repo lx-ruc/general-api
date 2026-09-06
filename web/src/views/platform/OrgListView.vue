@@ -5,7 +5,7 @@ import { useRouter } from 'vue-router'
 import {
   apiListOrgs, apiCreateOrg, apiUpdateOrg, apiDeleteOrg, apiAddOrgQuota, type Org,
 } from '../../api/platform'
-import { fmtTime, fmtPoints, pointsToYuan } from '../../utils/format'
+import { fmtTime, fmtQuota, pointsToYuan } from '../../utils/format'
 
 const router = useRouter()
 const list = ref<Org[]>([])
@@ -91,10 +91,10 @@ async function removeOrg(org: Org) {
       </el-table-column>
       <el-table-column prop="remark" label="备注" min-width="120" show-overflow-tooltip />
       <el-table-column prop="member_count" label="成员" width="70" align="center" />
-      <el-table-column label="已用 / 上限（点）" min-width="200">
+      <el-table-column label="已用 / 上限（token）" min-width="200">
         <template #default="{ row }">
-          <span class="num">{{ fmtPoints(row.quota_used) }}</span>
-          <span class="dim"> / {{ fmtPoints(row.quota_limit) }}</span>
+          <span class="num">{{ fmtQuota(row.quota_used) }}</span>
+          <span class="dim"> / {{ fmtQuota(row.quota_limit) }}</span>
           <span class="green num">　¥{{ pointsToYuan(row.quota_limit - row.quota_used) }} 可用</span>
         </template>
       </el-table-column>
@@ -123,7 +123,7 @@ async function removeOrg(org: Org) {
     <el-form label-width="110px">
       <el-form-item label="公司名" required><el-input v-model="createForm.name" /></el-form-item>
       <el-form-item label="备注"><el-input v-model="createForm.remark" /></el-form-item>
-      <el-form-item label="初始额度（点）">
+      <el-form-item label="初始额度（token）">
         <el-input-number v-model="createForm.quota_amount" :min="0" :step="10000000" />
         <span class="tip">= ¥{{ pointsToYuan(createForm.quota_amount) }}</span>
       </el-form-item>
@@ -140,7 +140,7 @@ async function removeOrg(org: Org) {
 
   <el-dialog v-model="quotaVisible" :title="`追加额度：${quotaForm.org?.name || ''}`" width="440px">
     <el-form label-width="100px">
-      <el-form-item label="追加点数">
+      <el-form-item label="追加token 数">
         <el-input-number v-model="quotaForm.amount" :step="10000000" />
         <span class="tip">= ¥{{ pointsToYuan(quotaForm.amount) }}（负数为回收）</span>
       </el-form-item>

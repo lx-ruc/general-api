@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { apiGetOrg } from '../../api/platform'
-import { fmtTime, fmtPoints, pointsToYuan, roleNames } from '../../utils/format'
+import { fmtTime, fmtQuota, pointsToYuan, roleNames } from '../../utils/format'
 
 const route = useRoute()
 const router = useRouter()
@@ -49,7 +49,7 @@ const usedPct = computed(() =>
         <div class="pool-item">
           <div class="pool-label">剩余额度</div>
           <div class="pool-value num green">
-            {{ fmtPoints(org.quota_limit - org.quota_used) }} <span class="pool-unit">点</span>
+            {{ fmtQuota(org.quota_limit - org.quota_used) }}
           </div>
         </div>
         <div class="pool-item">
@@ -58,11 +58,11 @@ const usedPct = computed(() =>
         </div>
         <div class="pool-item">
           <div class="pool-label">额度上限</div>
-          <div class="pool-value num">{{ fmtPoints(org.quota_limit) }}</div>
+          <div class="pool-value num">{{ fmtQuota(org.quota_limit) }}</div>
         </div>
         <div class="pool-item">
           <div class="pool-label">已消耗</div>
-          <div class="pool-value num">{{ fmtPoints(org.quota_used) }}</div>
+          <div class="pool-value num">{{ fmtQuota(org.quota_used) }}</div>
         </div>
         <div class="pool-meter-wrap">
           <div class="pool-meter" aria-hidden="true">
@@ -85,7 +85,7 @@ const usedPct = computed(() =>
             <el-table-column label="变更" width="130" align="right">
               <template #default="{ row }">
                 <span class="num" :class="row.amount >= 0 ? 'green' : 'red'">
-                  {{ row.amount >= 0 ? '+' : '' }}{{ fmtPoints(row.amount) }}
+                  {{ row.amount >= 0 ? '+' : '' }}{{ fmtQuota(row.amount) }}
                 </span>
               </template>
             </el-table-column>
@@ -104,10 +104,10 @@ const usedPct = computed(() =>
             </el-table-column>
             <el-table-column label="已用 / 上限" width="150" align="right">
               <template #default="{ row }">
-                <span class="num">{{ fmtPoints(row.quota_used) }}</span>
+                <span class="num">{{ fmtQuota(row.quota_used) }}</span>
                 <span class="dim"> / </span>
                 <span v-if="row.quota_limit == null" class="dim">不限</span>
-                <span v-else class="num">{{ fmtPoints(row.quota_limit) }}</span>
+                <span v-else class="num">{{ fmtQuota(row.quota_limit) }}</span>
               </template>
             </el-table-column>
             <el-table-column label="状态" width="70" align="center">

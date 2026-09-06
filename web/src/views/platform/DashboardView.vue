@@ -3,7 +3,7 @@ import { onMounted, ref } from 'vue'
 import { apiStatsOverview } from '../../api/platform'
 import StatRow from '../../components/StatRow.vue'
 import LineChart from '../../components/LineChart.vue'
-import { fmtNum, fmtPoints, pointsToYuan } from '../../utils/format'
+import { fmtNum, fmtQuota, pointsToYuan } from '../../utils/format'
 import { trendOptions } from '../../utils/chart'
 
 const data = ref<any>(null)
@@ -18,7 +18,7 @@ onMounted(async () => {
     <StatRow :items="[
       { label: '今日请求', value: fmtNum(data.today.requests), sub: `累计 ${fmtNum(data.total.requests)}` },
       { label: '今日 tokens', value: fmtNum(data.today.tokens), sub: `累计 ${fmtNum(data.total.tokens)}` },
-      { label: '今日成本', value: fmtPoints(data.today.cost), unit: '点', tone: 'green', sub: `¥${pointsToYuan(data.today.cost)} · 累计 ¥${pointsToYuan(data.total.cost)}` },
+      { label: '今日成本', value: fmtQuota(data.today.cost), tone: 'green', sub: `¥${pointsToYuan(data.today.cost)} · 累计 ¥${pointsToYuan(data.total.cost)}` },
       { label: '今日失败', value: fmtNum(data.today.errors), tone: data.today.errors > 0 ? 'danger' : 'default', sub: `累计 ${fmtNum(data.total.errors)}` },
     ]" />
 
@@ -31,7 +31,7 @@ onMounted(async () => {
       </el-col>
       <el-col :xs="24" :md="12">
         <el-card shadow="never">
-          <template #header>近 7 日成本<span class="unit">（点，1 元 = 100 万点）</span></template>
+          <template #header>近 7 日成本<span class="unit">（token）</span></template>
           <LineChart :option="trendOptions(data.series).costOption" />
         </el-card>
       </el-col>
@@ -46,8 +46,8 @@ onMounted(async () => {
             <el-table-column prop="requests" label="请求数" width="90" align="right" />
             <el-table-column label="成本" width="170" align="right">
               <template #default="{ row }">
-                <span class="num green">{{ fmtPoints(row.cost) }}</span>
-                <span class="dim"> 点 · ¥{{ pointsToYuan(row.cost) }}</span>
+                <span class="num green">{{ fmtQuota(row.cost) }}</span>
+                <span class="dim"> token · ¥{{ pointsToYuan(row.cost) }}</span>
               </template>
             </el-table-column>
           </el-table>
@@ -65,8 +65,8 @@ onMounted(async () => {
             <el-table-column prop="requests" label="请求数" width="90" align="right" />
             <el-table-column label="成本" width="170" align="right">
               <template #default="{ row }">
-                <span class="num green">{{ fmtPoints(row.cost) }}</span>
-                <span class="dim"> 点 · ¥{{ pointsToYuan(row.cost) }}</span>
+                <span class="num green">{{ fmtQuota(row.cost) }}</span>
+                <span class="dim"> token · ¥{{ pointsToYuan(row.cost) }}</span>
               </template>
             </el-table-column>
           </el-table>

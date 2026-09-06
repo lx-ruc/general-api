@@ -6,7 +6,7 @@ import {
   apiResetMemberPassword, apiAddMemberQuota, apiGetMemberModels, apiSetMemberModels,
   type Member,
 } from '../../api/org'
-import { fmtTime, fmtPoints, fmtPrice, pointsToYuan } from '../../utils/format'
+import { fmtTime, fmtQuota, fmtPrice, pointsToYuan } from '../../utils/format'
 
 const list = ref<Member[]>([])
 const total = ref(0)
@@ -124,12 +124,12 @@ function remove(m: Member) {
       empty-text="还没有员工。新建员工并授权模型后，员工即可创建密钥调用 API。">
       <el-table-column prop="username" label="用户名" width="120" />
       <el-table-column prop="display_name" label="姓名" width="100" />
-      <el-table-column label="已用 / 上限（点）" min-width="180">
+      <el-table-column label="已用 / 上限（token）" min-width="180">
         <template #default="{ row }">
-          <span class="num">{{ fmtPoints(row.quota_used) }}</span>
+          <span class="num">{{ fmtQuota(row.quota_used) }}</span>
           <span class="dim"> / </span>
           <span v-if="row.quota_limit == null" class="unlimited">不限</span>
-          <span v-else class="num">{{ fmtPoints(row.quota_limit) }}</span>
+          <span v-else class="num">{{ fmtQuota(row.quota_limit) }}</span>
         </template>
       </el-table-column>
       <el-table-column label="剩余" width="110" align="right">
@@ -189,7 +189,7 @@ function remove(m: Member) {
       <el-form-item label="用户名" required><el-input v-model="createForm.username" /></el-form-item>
       <el-form-item label="初始密码" required><el-input v-model="createForm.password" show-password placeholder="至少 6 位" /></el-form-item>
       <el-form-item label="姓名"><el-input v-model="createForm.display_name" /></el-form-item>
-      <el-form-item label="初始额度（点）">
+      <el-form-item label="初始额度（token）">
         <el-input-number v-model="createForm.quota_amount" :min="0" :step="1000000" />
         <span class="tip">= ¥{{ pointsToYuan(createForm.quota_amount) }}，0 = 不限额</span>
       </el-form-item>
@@ -202,7 +202,7 @@ function remove(m: Member) {
 
   <el-dialog v-model="quotaVisible" :title="`追加额度：${quotaForm.member?.display_name || quotaForm.member?.username || ''}`" width="440px">
     <el-form label-width="100px">
-      <el-form-item label="追加点数">
+      <el-form-item label="追加token 数">
         <el-input-number v-model="quotaForm.amount" :step="1000000" />
         <span class="tip">= ¥{{ pointsToYuan(quotaForm.amount) }}（负数为回收）</span>
       </el-form-item>
@@ -232,7 +232,7 @@ function remove(m: Member) {
     <el-checkbox-group v-model="grantedModels">
       <el-checkbox v-for="m in availableModels" :key="m.name" :value="m.name" class="grant-item">
         <code>{{ m.name }}</code>
-        <span class="grant-price">{{ fmtPrice(m.input_price) }} 入 / {{ fmtPrice(m.output_price) }} 出 · 每 1M</span>
+        <span class="grant-price">{{ fmtPrice(m.input_price) }} 入 / {{ fmtPrice(m.output_price) }} 出 · 百万token</span>
       </el-checkbox>
     </el-checkbox-group>
     <template #footer>

@@ -59,7 +59,7 @@ func (h *Handler) ListOrgs(c *gin.Context) {
 type createOrgReq struct {
 	Name             string `json:"name" binding:"required"`
 	Remark           string `json:"remark"`
-	QuotaAmount      int64  `json:"quota_amount"` // 初始额度（点），可为 0
+	QuotaAmount      int64  `json:"quota_amount"` // 初始额度（token 预算），可为 0
 	AdminUsername    string `json:"admin_username" binding:"required,min=3"`
 	AdminPassword    string `json:"admin_password" binding:"required,min=6"`
 	AdminDisplayName string `json:"admin_display_name"`
@@ -232,7 +232,7 @@ func (h *Handler) AddOrgQuota(c *gin.Context) {
 		httpx.Fail(c, http.StatusInternalServerError, "追加额度失败")
 		return
 	}
-	httpx.OK(c, gin.H{"message": fmt.Sprintf("已追加 %d 点", req.Amount)})
+	httpx.OK(c, gin.H{"message": fmt.Sprintf("已追加 %d token", req.Amount)})
 }
 
 // ListOrgUsers GET /api/platform/orgs/:id/users

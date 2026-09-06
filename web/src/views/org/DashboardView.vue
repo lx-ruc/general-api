@@ -3,7 +3,7 @@ import { onMounted, ref, computed } from 'vue'
 import { apiOrgStats } from '../../api/org'
 import StatRow from '../../components/StatRow.vue'
 import LineChart from '../../components/LineChart.vue'
-import { fmtNum, fmtPoints, pointsToYuan } from '../../utils/format'
+import { fmtNum, fmtQuota, pointsToYuan } from '../../utils/format'
 import { trendOptions } from '../../utils/chart'
 
 const data = ref<any>(null)
@@ -24,7 +24,7 @@ const opts = computed(() => (data.value ? trendOptions(data.value.series) : null
       <div class="pool-row">
         <div class="pool-item">
           <div class="pool-label">公司池余额</div>
-          <div class="pool-value num green">{{ fmtPoints(org.quota_limit - org.quota_used) }} <span class="pool-unit">点</span></div>
+          <div class="pool-value num green">{{ fmtQuota(org.quota_limit - org.quota_used) }}</div>
         </div>
         <div class="pool-item">
           <div class="pool-label">折合金额</div>
@@ -32,11 +32,11 @@ const opts = computed(() => (data.value ? trendOptions(data.value.series) : null
         </div>
         <div class="pool-item">
           <div class="pool-label">额度上限</div>
-          <div class="pool-value num">{{ fmtPoints(org.quota_limit) }}</div>
+          <div class="pool-value num">{{ fmtQuota(org.quota_limit) }}</div>
         </div>
         <div class="pool-item">
           <div class="pool-label">已消耗</div>
-          <div class="pool-value num">{{ fmtPoints(org.quota_used) }}</div>
+          <div class="pool-value num">{{ fmtQuota(org.quota_used) }}</div>
         </div>
         <div class="pool-meter-wrap">
           <div class="pool-meter" aria-hidden="true">
@@ -52,7 +52,7 @@ const opts = computed(() => (data.value ? trendOptions(data.value.series) : null
     <StatRow :items="[
       { label: '今日请求', value: fmtNum(data.today.requests), sub: `累计 ${fmtNum(data.total.requests)}` },
       { label: '今日 tokens', value: fmtNum(data.today.tokens), sub: `累计 ${fmtNum(data.total.tokens)}` },
-      { label: '今日成本', value: fmtPoints(data.today.cost), unit: '点', tone: 'green', sub: `¥${pointsToYuan(data.today.cost)}` },
+      { label: '今日成本', value: fmtQuota(data.today.cost), tone: 'green', sub: `¥${pointsToYuan(data.today.cost)}` },
       { label: '今日失败', value: fmtNum(data.today.errors), tone: data.today.errors > 0 ? 'danger' : 'default' },
     ]" />
 
@@ -65,7 +65,7 @@ const opts = computed(() => (data.value ? trendOptions(data.value.series) : null
       </el-col>
       <el-col :xs="24" :md="12">
         <el-card shadow="never">
-          <template #header>近 7 日成本<span class="unit">（点）</span></template>
+          <template #header>近 7 日成本<span class="unit">（token）</span></template>
           <LineChart v-if="opts" :option="opts.costOption" />
         </el-card>
       </el-col>
@@ -80,8 +80,8 @@ const opts = computed(() => (data.value ? trendOptions(data.value.series) : null
             <el-table-column prop="requests" label="请求数" width="90" align="right" />
             <el-table-column label="成本" width="170" align="right">
               <template #default="{ row }">
-                <span class="num green">{{ fmtPoints(row.cost) }}</span>
-                <span class="dim"> 点 · ¥{{ pointsToYuan(row.cost) }}</span>
+                <span class="num green">{{ fmtQuota(row.cost) }}</span>
+                <span class="dim"> token · ¥{{ pointsToYuan(row.cost) }}</span>
               </template>
             </el-table-column>
           </el-table>
@@ -99,8 +99,8 @@ const opts = computed(() => (data.value ? trendOptions(data.value.series) : null
             <el-table-column prop="requests" label="请求数" width="90" align="right" />
             <el-table-column label="成本" width="170" align="right">
               <template #default="{ row }">
-                <span class="num green">{{ fmtPoints(row.cost) }}</span>
-                <span class="dim"> 点 · ¥{{ pointsToYuan(row.cost) }}</span>
+                <span class="num green">{{ fmtQuota(row.cost) }}</span>
+                <span class="dim"> token · ¥{{ pointsToYuan(row.cost) }}</span>
               </template>
             </el-table-column>
           </el-table>

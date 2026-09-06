@@ -58,7 +58,7 @@ async function submit() {
         </div>
         <h1 class="headline">
           国产大模型 API<br />
-          统一接入，按点计费
+          统一接入，按量计费
         </h1>
         <p class="sub">
           厂商渠道收口为一个 OpenAI 兼容端点；每次调用的 token 都被计量，

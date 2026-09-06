@@ -3,7 +3,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { apiMyUsage, apiMyStats } from '../../api/member'
 import StatRow from '../../components/StatRow.vue'
 import LineChart from '../../components/LineChart.vue'
-import { fmtNum, fmtPoints, fmtTime, pointsToYuan } from '../../utils/format'
+import { fmtNum, fmtQuota, fmtTime, pointsToYuan } from '../../utils/format'
 import { trendOptions } from '../../utils/chart'
 
 const stats = ref<any>(null)
@@ -27,7 +27,7 @@ onMounted(async () => {
     <StatRow :items="[
       { label: '今日请求', value: fmtNum(stats.today.requests), sub: `累计 ${fmtNum(stats.total.requests)}` },
       { label: '今日 tokens', value: fmtNum(stats.today.tokens), sub: `累计 ${fmtNum(stats.total.tokens)}` },
-      { label: '今日成本', value: fmtPoints(stats.today.cost), unit: '点', tone: 'green', sub: `¥${pointsToYuan(stats.today.cost)}` },
+      { label: '今日成本', value: fmtQuota(stats.today.cost), tone: 'green', sub: `¥${pointsToYuan(stats.today.cost)}` },
     ]" />
 
     <el-card shadow="never">
@@ -55,7 +55,7 @@ onMounted(async () => {
         <el-table-column label="成本" width="110" align="right">
           <template #default="{ row }">
             <span v-if="row.no_usage" class="warn">未计量</span>
-            <span v-else class="num green">{{ fmtPoints(row.cost) }} 点</span>
+            <span v-else class="num green">{{ fmtQuota(row.cost) }}</span>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="80">

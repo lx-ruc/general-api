@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { apiMyModels } from '../../api/member'
-import { fmtPrice, fmtPoints, pointsToYuan } from '../../utils/format'
+import { fmtPrice, fmtQuota, pointsToYuan } from '../../utils/format'
 
 const data = ref<any>(null)
 
@@ -23,8 +23,7 @@ const usedPct = computed(() => {
         <div class="pool-item">
           <div class="pool-label">可用额度</div>
           <div class="pool-value num green">
-            {{ fmtPoints(data.quota_limit == null ? 0 : data.quota_limit - data.quota_used) }}
-            <span class="pool-unit">点</span>
+            {{ fmtQuota(data.quota_limit == null ? 0 : data.quota_limit - data.quota_used) }}
           </div>
         </div>
         <div class="pool-item">
@@ -35,7 +34,7 @@ const usedPct = computed(() => {
         </div>
         <div class="pool-item">
           <div class="pool-label">已消耗</div>
-          <div class="pool-value num">{{ fmtPoints(data.quota_used) }} <span class="pool-unit">点</span></div>
+          <div class="pool-value num">{{ fmtQuota(data.quota_used) }}</div>
         </div>
         <div v-if="usedPct != null" class="pool-meter-wrap">
           <div class="pool-meter" aria-hidden="true">
@@ -59,14 +58,14 @@ const usedPct = computed(() => {
         <el-table-column prop="display_name" label="说明" min-width="160" />
         <el-table-column prop="vendor" label="厂商" width="100" />
         <el-table-column label="输入单价" width="130" align="right">
-          <template #default="{ row }"><span class="num">{{ fmtPrice(row.input_price) }}</span> <span class="dim">/1M</span></template>
+          <template #default="{ row }"><span class="num">{{ fmtPrice(row.input_price) }}</span> <span class="dim">/百万token</span></template>
         </el-table-column>
         <el-table-column label="输出单价" width="130" align="right">
-          <template #default="{ row }"><span class="num">{{ fmtPrice(row.output_price) }}</span> <span class="dim">/1M</span></template>
+          <template #default="{ row }"><span class="num">{{ fmtPrice(row.output_price) }}</span> <span class="dim">/百万token</span></template>
         </el-table-column>
       </el-table>
       <p class="billing-note">
-        计费说明：成本 = 输入 tokens × 输入单价 + 输出 tokens × 输出单价；1 元 = 1,000,000 点。
+        计费说明：成本 = 输入 tokens × 输入单价 + 输出 tokens × 输出单价；1 元 = 1,000,000 token。
         调用方式见 <router-link to="/member/docs" class="docs-link">接入文档</router-link>。
       </p>
     </el-card>

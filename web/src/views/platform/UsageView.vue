@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { apiListUsage, apiListModels } from '../../api/platform'
-import { fmtTime, fmtPoints, pointsToYuan } from '../../utils/format'
+import { fmtTime, fmtQuota, pointsToYuan } from '../../utils/format'
 
 const list = ref<any[]>([])
 const total = ref(0)
@@ -85,7 +85,7 @@ function reset() {
       <el-table-column label="成本" width="130" align="right">
         <template #default="{ row }">
           <span v-if="row.no_usage" class="warn">未计量</span>
-          <span v-else class="num green">{{ fmtPoints(row.cost) }} 点</span>
+          <span v-else class="num green">{{ fmtQuota(row.cost) }}</span>
         </template>
       </el-table-column>
       <el-table-column label="状态" width="80">

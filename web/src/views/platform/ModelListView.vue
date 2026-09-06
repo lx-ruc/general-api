@@ -74,7 +74,7 @@ async function remove(m: MModel) {
   <el-card shadow="never">
     <template #header>
       <div class="card-header">
-        <span>模型定价（单价 = 点/1M token，1 元 = 1,000,000 点）</span>
+        <span>模型定价（单价 = 元 / 百万token；额度按 token 预算计（1 元 = 1,000,000 token））</span>
         <el-button type="primary" @click="openCreate">新建模型</el-button>
       </div>
     </template>
@@ -123,13 +123,13 @@ async function remove(m: MModel) {
       <el-form-item v-else label="模型名"><el-input v-model="form.name" disabled /></el-form-item>
       <el-form-item label="显示名"><el-input v-model="form.display_name" /></el-form-item>
       <el-form-item label="厂商"><el-input v-model="form.vendor" /></el-form-item>
-      <el-form-item label="输入单价（点/1M）">
+      <el-form-item label="输入单价（元/百万token）">
         <el-input-number v-model="form.input_price" :min="0" :step="500000" />
-        <span class="tip">= {{ fmtPrice(form.input_price, PPY) }}/1M 输入 token</span>
+        <span class="tip">= {{ fmtPrice(form.input_price, PPY) }} 每百万输入 token</span>
       </el-form-item>
-      <el-form-item label="输出单价（点/1M）">
+      <el-form-item label="输出单价（元/百万token）">
         <el-input-number v-model="form.output_price" :min="0" :step="500000" />
-        <span class="tip">= {{ fmtPrice(form.output_price, PPY) }}/1M 输出 token</span>
+        <span class="tip">= {{ fmtPrice(form.output_price, PPY) }} 每百万输出 token</span>
       </el-form-item>
       <el-form-item label="状态">
         <el-switch v-model="form.status" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="停用" />

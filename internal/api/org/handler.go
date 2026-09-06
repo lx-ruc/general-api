@@ -269,7 +269,7 @@ func (h *Handler) AddMemberQuota(c *gin.Context) {
 		httpx.Fail(c, http.StatusInternalServerError, "追加额度失败")
 		return
 	}
-	httpx.OK(c, gin.H{"message": fmt.Sprintf("已追加 %d 点", req.Amount)})
+	httpx.OK(c, gin.H{"message": fmt.Sprintf("已追加 %d token", req.Amount)})
 }
 
 // ---------------- 模型授权 ----------------
