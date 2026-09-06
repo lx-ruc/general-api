@@ -9,3 +9,4 @@ config.yaml
 web/node_modules/
 web/dist/*
 !web/dist/index.html
+backups/

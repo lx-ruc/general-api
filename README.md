@@ -49,7 +49,26 @@ sudo cp deploy/token-gateway.service /etc/systemd/system/
 sudo systemctl enable --now token-gateway
 ```
 
-生产建议：`TG_JWT_SECRET`/`TG_AES_KEY` 用环境变量注入；前置 Caddy/Nginx 做 HTTPS；`sqlite3 data/token_.db ".backup backup.db"` 定时备份（或 litestream）。
+生产建议：`TG_JWT_SECRET`/`TG_AES_KEY` 用环境变量注入；前置 Caddy/Nginx 做 HTTPS；`sh deploy/backup.sh` 定时备份（cron 建议 `0 4 * * *`，保留最近 7 份）。
+
+## 高可用部署（对外服务）
+
+单机 SQLite 适合内部使用；**对外卖服务请用 PG 模式 + 双网关**（几百并发下单机实测 2000+ RPS，20 倍余量）：
+
+```bash
+cd deploy
+# .env 里放 PG_PASSWORD / TG_JWT_SECRET / TG_ADMIN_PASSWORD
+docker compose up -d          # postgres + gateway×2 + caddy（80/443，轮询+健康检查）
+```
+
+- **切 PG 搬存量数据**：`TG_DATABASE_DRIVER=postgres TG_DATABASE_DSN="..." ./token-gateway -migrate-from-sqlite data/token_.db`
+- **滚动发布**（不停机）：`docker compose up -d --no-deps --build gateway1`，健康检查通过后再发 gateway2
+- **监控**：`GET /metrics` 输出 Prometheus 指标（请求量/延迟直方图/活跃流/上游错误/熔断计数）
+- **渠道熔断**：某渠道连续失败 N 次（`gateway.channel_breaker_threshold`，默认 5，0=关）自动禁用并写备注，修复后手动启用
+- Caddyfile 改成你的域名即自动 HTTPS；SSE 已配 `flush_interval -1` 透传
+- 限流为 per-node 内存令牌桶：双实例下单 key 实际上限约为配置值 × 节点数（几百客户场景可接受；需精确全局限流时引入 Redis）
+
+架构与压测数据详见 `docs/高并发设计.md`。
 
 ## 首次启动
 

@@ -1,0 +1,20 @@
+# 高可用入口：轮询双网关 + 主动健康检查
+# 生产启用 HTTPS：把 :80 换成你的域名（如 api.example.com），Caddy 自动签 Let's Encrypt
+:80 {
+	# 客户真实 IP 透传
+	header {
+		-Server
+	}
+
+	reverse_proxy gateway1:8080 gateway2:8080 {
+		lb_policy round_robin
+		health_uri /healthz
+		health_interval 5s
+		health_timeout 2s
+		# SSE 流式：关闭响应缓冲，透传 flush
+		flush_interval -1
+	}
+
+	# 指标端口可单独限制内网访问（按需解开）
+	# handle /metrics { respond 403 }
+}

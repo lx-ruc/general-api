@@ -7,7 +7,11 @@ server:
   #   - http://localhost:5173
 
 database:
-  path: "data/token_.db"   # ENV: TG_DATABASE_PATH
+  # driver: sqlite（默认，单文件单机）| postgres（多实例高可用，见 deploy/docker-compose.yml）
+  driver: sqlite
+  path: "data/token_.db"   # sqlite 模式；ENV: TG_DATABASE_PATH
+  dsn: ""                  # postgres 模式连接串；ENV: TG_DATABASE_DSN
+  # dsn: "host=localhost user=tg password=xxx dbname=token_gateway port=5432 sslmode=disable"
 
 security:
   jwt_secret: "change-me-to-a-random-string"   # ENV: TG_JWT_SECRET（必填，生产务必修改）

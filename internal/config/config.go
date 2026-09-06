@@ -31,8 +31,12 @@ type Server struct {
 	CORSOrigins []string `yaml:"cors_origins"`
 }
 
+// Database 数据库：driver=sqlite（单文件，默认）或 postgres（多实例高可用）
+// postgres 模式下用 dsn 连接；sqlite 模式用 path
 type Database struct {
-	Path string `yaml:"path"`
+	Driver string `yaml:"driver"` // sqlite | postgres
+	Path   string `yaml:"path"`   // sqlite 文件路径
+	DSN    string `yaml:"dsn"`    // postgres 连接串
 }
 
 type Security struct {
@@ -47,6 +51,7 @@ type Gateway struct {
 	MaxBodyMB                int      `yaml:"max_body_mb"`
 	PerKeyRPM                int      `yaml:"per_key_rpm"`
 	UpstreamFirstByteTimeout Duration `yaml:"upstream_first_byte_timeout"`
+	ChannelBreakerThreshold  int      `yaml:"channel_breaker_threshold"` // 渠道连续失败自动禁用阈值；0=关闭
 }
 
 // SMTP 邮件发送（注册验证码用）；host 为空 = 未配置，
@@ -76,7 +81,7 @@ type Config struct {
 func defaultConfig() *Config {
 	return &Config{
 		Server:   Server{Addr: ":8080"},
-		Database: Database{Path: "data/token_.db"},
+		Database: Database{Driver: "sqlite", Path: "data/token_.db"},
 		Security: Security{
 			JWTTTL:                 Duration{12 * time.Hour},
 			BootstrapAdminUsername: "admin",
@@ -86,6 +91,7 @@ func defaultConfig() *Config {
 			MaxBodyMB:                10,
 			PerKeyRPM:                60,
 			UpstreamFirstByteTimeout: Duration{60 * time.Second},
+			ChannelBreakerThreshold:  5,
 		},
 		Log:         Log{Level: "info"},
 		SeedPresets: true,
@@ -126,7 +132,9 @@ func applyEnv(cfg *Config) {
 		}
 	}
 	setStr("TG_SERVER_ADDR", &cfg.Server.Addr)
+	setStr("TG_DATABASE_DRIVER", &cfg.Database.Driver)
 	setStr("TG_DATABASE_PATH", &cfg.Database.Path)
+	setStr("TG_DATABASE_DSN", &cfg.Database.DSN)
 	setStr("TG_JWT_SECRET", &cfg.Security.JWTSecret)
 	setStr("TG_AES_KEY", &cfg.Security.AESKey)
 	setStr("TG_BOOTSTRAP_ADMIN_USERNAME", &cfg.Security.BootstrapAdminUsername)

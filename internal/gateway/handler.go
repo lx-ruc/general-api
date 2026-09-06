@@ -17,6 +17,7 @@ import (
 
 	"token-gateway/internal/config"
 	"token-gateway/internal/crypto"
+	"token-gateway/internal/metrics"
 	"token-gateway/internal/middleware"
 	"token-gateway/internal/model"
 	"token-gateway/internal/service"
@@ -34,15 +35,20 @@ type Handler struct {
 	Client  *http.Client
 	MaxBody int64
 	Limiter *middleware.RateLimiter
+	Breaker *Breaker
+	Metrics *metrics.Metrics
 }
 
-func NewHandler(db *gorm.DB, cipher *crypto.Cipher, cfg *config.Config, limiter *middleware.RateLimiter) *Handler {
+func NewHandler(db *gorm.DB, cipher *crypto.Cipher, cfg *config.Config,
+	limiter *middleware.RateLimiter, m *metrics.Metrics) *Handler {
 	return &Handler{
 		DB:      db,
 		Cipher:  cipher,
 		Client:  NewHTTPClient(cfg.Gateway.UpstreamFirstByteTimeout.Duration),
 		MaxBody: int64(cfg.Gateway.MaxBodyMB) << 20,
 		Limiter: limiter,
+		Breaker: NewBreaker(cfg.Gateway.ChannelBreakerThreshold),
+		Metrics: m,
 	}
 }
 
@@ -98,7 +104,14 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	}
 	defer func() {
 		rec.LatencyMs = time.Since(start).Milliseconds()
+		if h.Metrics != nil {
+			h.Metrics.Requests.With(strconv.Itoa(rec.Status)).Inc()
+			h.Metrics.Latency.Observe(time.Since(start).Seconds())
+		}
 		if err := service.Settle(h.DB, rec); err != nil {
+			if h.Metrics != nil {
+				h.Metrics.SettleErrors.Inc()
+			}
 			c.Error(err) //nolint: 仅记录，不影响已发出的响应
 		}
 	}()
@@ -225,6 +238,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		resp, derr := h.Client.Do(req)
 		if derr != nil {
 			lastErr = derr.Error()
+			h.noteChannelFailure(cand)
 			continue // 网络失败 → 换下一个渠道（尚未向客户端写出任何字节）
 		}
 
@@ -233,7 +247,13 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 			_ = resp.Body.Close()
 			lastErr = fmt.Sprintf("upstream %s returned %d", cand.ChannelName, resp.StatusCode)
+			h.noteChannelFailure(cand)
 			continue
+		}
+
+		// 确定由该渠道应答：2xx 视为成功（熔断计数清零）
+		if resp.StatusCode < 500 {
+			h.Breaker.RecordSuccess(cand.ChannelID)
 		}
 
 		rec.ChannelID = &cand.ChannelID
@@ -244,12 +264,18 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			if ct == "" {
 				ct = "text/event-stream"
 			}
+			if h.Metrics != nil {
+				h.Metrics.ActiveStreams.Inc()
+			}
 			c.Writer.Header().Set("Content-Type", ct)
 			c.Writer.Header().Set("Cache-Control", "no-cache")
 			c.Writer.Header().Set("X-Accel-Buffering", "no")
 			c.Writer.WriteHeader(resp.StatusCode)
 			usage, perr := pipeSSE(c.Writer, c.Request.Context(), resp.Body)
 			_ = resp.Body.Close()
+			if h.Metrics != nil {
+				h.Metrics.ActiveStreams.Dec()
+			}
 			if perr != nil && usage == nil {
 				rec.Error = truncateStr(perr.Error(), 500)
 			}
@@ -319,6 +345,16 @@ func (h *Handler) ListModels(c *gin.Context) {
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"object": "list", "data": data})
+}
+
+// noteChannelFailure 记录渠道失败并计数熔断；达到阈值异步禁用
+func (h *Handler) noteChannelFailure(cand Candidate) {
+	if h.Metrics != nil {
+		h.Metrics.UpstreamErrors.Inc()
+	}
+	if h.Breaker.RecordFailure(cand.ChannelID) {
+		go h.DisableChannel(cand.ChannelID, cand.ChannelName)
+	}
 }
 
 // applyUsage 把 usage 折算为成本快照；上游未回 usage 则标记 no_usage、不计费

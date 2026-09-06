@@ -147,6 +147,14 @@ CREATE TABLE IF NOT EXISTS quota_requests (
 CREATE INDEX IF NOT EXISTS idx_qreq_org  ON quota_requests(org_id, status);
 CREATE INDEX IF NOT EXISTS idx_qreq_user ON quota_requests(user_id);
 
+CREATE TABLE IF NOT EXISTS verification_codes (
+  email     TEXT PRIMARY KEY,
+  code      TEXT    NOT NULL,
+  expire_at INTEGER NOT NULL,
+  sent_at   INTEGER NOT NULL,
+  attempts  INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL

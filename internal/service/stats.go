@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+
+	"token-gateway/internal/database"
 )
 
 type Totals struct {
@@ -80,19 +82,23 @@ func StatsOverview(db *gorm.DB, scope Scope) (*Overview, error) {
 		return nil, err
 	}
 
-	// 近 7 日序列（含今日），缺失日期补零
+	// 近 7 日序列（含今日），缺失日期补零（日期表达式按方言分支）
 	since := localDay0(-6)
 	seriesCond, seriesArgs := scope.cond()
-	seriesCond += " AND created_at >= ?"
+	seriesCond += " AND l.created_at >= ?"
 	seriesArgs = append(seriesArgs, since)
+	dateExpr := "strftime('%Y-%m-%d', l.created_at, 'unixepoch', 'localtime')"
+	if database.Dialect == "postgres" {
+		dateExpr = "to_char(to_timestamp(l.created_at), 'YYYY-MM-DD')"
+	}
 	var rows []DayPoint
 	err := db.Raw(fmt.Sprintf(`
-		SELECT strftime('%%Y-%%m-%%d', l.created_at, 'unixepoch', 'localtime') AS date,
+		SELECT %s AS date,
 		       COUNT(*) AS requests,
 		       COALESCE(SUM(l.prompt_tokens + l.completion_tokens), 0) AS tokens,
 		       COALESCE(SUM(l.cost), 0) AS cost
 		FROM usage_logs l WHERE %s
-		GROUP BY date ORDER BY date`, seriesCond), seriesArgs...).Scan(&rows).Error
+		GROUP BY date ORDER BY date`, dateExpr, seriesCond), seriesArgs...).Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}

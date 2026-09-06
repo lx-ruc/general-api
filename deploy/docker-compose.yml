@@ -1,0 +1,58 @@
+# 高可用部署：postgres + 双网关 + caddy
+# 用法：cd deploy && docker compose up -d
+# 滚动发布：docker compose up -d --no-deps --build gateway1 &&
+#           docker compose up -d --no-deps --build gateway2（LB 自动摘流）
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: tg
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-change-me-strong}
+      POSTGRES_DB: token_gateway
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tg -d token_gateway"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  gateway1: &gateway
+    build: ..
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: &gateway-env
+      TG_DATABASE_DRIVER: postgres
+      TG_DATABASE_DSN: "host=postgres user=tg password=${PG_PASSWORD:-change-me-strong} dbname=token_gateway port=5432 sslmode=disable"
+      TG_JWT_SECRET: ${TG_JWT_SECRET:-change-me-random-string}
+      TG_BOOTSTRAP_ADMIN_PASSWORD: ${TG_ADMIN_PASSWORD:-change-me-too}
+    expose:
+      - "8080"
+
+  gateway2:
+    <<: *gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+      gateway1:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2-alpine
+    restart: always
+    depends_on:
+      - gateway1
+      - gateway2
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+
+volumes:
+  pgdata:
+  caddydata:

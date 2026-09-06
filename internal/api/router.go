@@ -15,6 +15,7 @@ import (
 	"token-gateway/internal/config"
 	"token-gateway/internal/crypto"
 	"token-gateway/internal/gateway"
+	"token-gateway/internal/metrics"
 	"token-gateway/internal/middleware"
 	"token-gateway/internal/model"
 	"token-gateway/internal/service"
@@ -42,9 +43,13 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
+	// Prometheus 指标（生产环境建议只在内网暴露或加访问控制）
+	m := metrics.New()
+	r.GET("/metrics", gin.WrapH(m.Handler()))
+
 	// ---- 数据面 /v1（API key 鉴权 + per-key 限流）----
 	keyLimiter := middleware.NewRateLimiter(cfg.Gateway.PerKeyRPM, 10)
-	gw := gateway.NewHandler(db, cipher, cfg, keyLimiter)
+	gw := gateway.NewHandler(db, cipher, cfg, keyLimiter, m)
 	v1 := r.Group("/v1", middleware.APIKeyAuth(db))
 	{
 		v1.POST("/chat/completions", gw.ChatCompletions)
@@ -53,7 +58,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 
 	// ---- 管理台 /api ----
 	service.SetMailer(&cfg.Smtp)
-	verif := service.NewVerification(&cfg.Smtp)
+	verif := service.NewVerification(db, &cfg.Smtp)
 	authH := &AuthHandler{DB: db, Secret: cfg.Security.JWTSecret, TTL: cfg.Security.JWTTTL.Duration, Verif: verif}
 	loginLimiter := middleware.NewRateLimiter(5, 5)
 	codeLimiter := middleware.NewRateLimiter(3, 3)

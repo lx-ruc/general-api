@@ -22,6 +22,7 @@ import (
 func main() {
 	configPath := flag.String("config", "config.yaml", "配置文件路径")
 	resetPwd := flag.String("reset-password", "", "重置用户密码（忘记密码的运维兜底），格式: 用户名:新密码，如 admin:NewPass123")
+	migrateFrom := flag.String("migrate-from-sqlite", "", "把指定 SQLite 库的数据迁到当前配置的数据库（用于切换 postgres 时搬迁存量数据）")
 	flag.Parse()
 
 	cfg, err := config.Load(*configPath)
@@ -32,7 +33,7 @@ func main() {
 	setupLogger(cfg.Log.Level)
 	slog.Info("token 中转站启动中", "addr", cfg.Server.Addr, "db", cfg.Database.Path)
 
-	db, err := database.Open(cfg.Database.Path)
+	db, err := database.Open(cfg.Database)
 	if err != nil {
 		slog.Error("打开数据库失败", "err", err)
 		os.Exit(1)
@@ -40,6 +41,15 @@ func main() {
 	if err := database.Migrate(db); err != nil {
 		slog.Error("数据库迁移失败", "err", err)
 		os.Exit(1)
+	}
+
+	// 数据迁移：SQLite → 当前库（通常为 postgres），完成后退出
+	if *migrateFrom != "" {
+		if err := service.MigrateFromSQLite(db, *migrateFrom); err != nil {
+			slog.Error("迁移失败", "err", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	// 运维兜底：重置任意用户密码（平台管理员密码丢失时的唯一恢复路径），完成后退出

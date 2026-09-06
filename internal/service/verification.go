@@ -8,7 +8,6 @@ import (
 	"math/big"
 	"net/smtp"
 	"strings"
-	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -18,35 +17,34 @@ import (
 	"token-gateway/internal/model"
 )
 
-// 邮箱验证码：内存存储（单实例部署足够；5 分钟有效，60 秒重发间隔，验证错 5 次作废）
+// 邮箱验证码：存数据库（多实例共享；5 分钟有效，60 秒重发间隔，验证错 5 次作废）
 const (
 	codeTTL      = 5 * time.Minute
 	resendWindow = 60 * time.Second
 	maxAttempts  = 5
 )
 
-type codeEntry struct {
-	code      string
-	expireAt  time.Time
-	sentAt    time.Time
-	attempts  int
-}
-
 type Verification struct {
-	mu     sync.Mutex
-	codes  map[string]*codeEntry
-	smtp   *config.Smtp
-	nowFn  func() time.Time
+	db   *gorm.DB
+	smtp *config.Smtp
 }
 
-func NewVerification(smtp *config.Smtp) *Verification {
-	return &Verification{codes: map[string]*codeEntry{}, smtp: smtp, nowFn: time.Now}
+func NewVerification(db *gorm.DB, smtp *config.Smtp) *Verification {
+	return &Verification{db: db, smtp: smtp}
 }
 
 // ValidEmail 简易邮箱格式校验
 func ValidEmail(s string) bool {
 	return len(s) <= 254 && strings.Contains(s, "@") && strings.Contains(s, ".") &&
 		!strings.ContainsAny(s, " \t")
+}
+
+type verifyRow struct {
+	Email    string `gorm:"column:email"`
+	Code     string `gorm:"column:code"`
+	ExpireAt int64  `gorm:"column:expire_at"`
+	SentAt   int64  `gorm:"column:sent_at"`
+	Attempts int    `gorm:"column:attempts"`
 }
 
 // SendCode 生成并向邮箱发送验证码；返回 (devCode, retryAfter, err)。
@@ -56,11 +54,12 @@ func (v *Verification) SendCode(email string) (devCode string, retryAfter int, e
 	if !ValidEmail(email) {
 		return "", 0, fmt.Errorf("邮箱格式不正确")
 	}
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	now := v.nowFn()
-	if e, ok := v.codes[email]; ok && now.Sub(e.sentAt) < resendWindow {
-		return "", int((resendWindow - now.Sub(e.sentAt)).Seconds()) + 1, fmt.Errorf("发送太频繁，请 %d 秒后再试", int((resendWindow-now.Sub(e.sentAt)).Seconds())+1)
+	now := time.Now().Unix()
+	var prev verifyRow
+	_ = v.db.Raw("SELECT * FROM verification_codes WHERE email = ?", email).Scan(&prev).Error
+	if prev.Email != "" && now-prev.SentAt < int64(resendWindow.Seconds()) {
+		left := int(int64(resendWindow.Seconds()) - (now - prev.SentAt)) + 1
+		return "", left, fmt.Errorf("发送太频繁，请 %d 秒后再试", left)
 	}
 	// 6 位数字验证码
 	n, err := rand.Int(rand.Reader, big.NewInt(1000000))
@@ -68,17 +67,25 @@ func (v *Verification) SendCode(email string) (devCode string, retryAfter int, e
 		return "", 0, err
 	}
 	code := fmt.Sprintf("%06d", n.Int64())
-	v.codes[email] = &codeEntry{code: code, expireAt: now.Add(codeTTL), sentAt: now}
-	v.gcLocked(now)
+	// 顺带清理过期验证码
+	_ = v.db.Exec("DELETE FROM verification_codes WHERE expire_at < ?", now).Error
+	if err := v.db.Exec(`
+		INSERT INTO verification_codes (email, code, expire_at, sent_at, attempts)
+		VALUES (?, ?, ?, ?, 0)
+		ON CONFLICT(email) DO UPDATE SET code = excluded.code,
+			expire_at = excluded.expire_at, sent_at = excluded.sent_at, attempts = 0`,
+		email, code, now+int64(codeTTL.Seconds()), now).Error; err != nil {
+		return "", 0, fmt.Errorf("验证码存储失败: %v", err)
+	}
 
 	if v.smtp == nil || v.smtp.Host == "" {
-		// 开发模式：不发邮件，验证码进日志 + 返回给前端
+		// 开发模式：不发邮件，验证码进日志 + 返回给调用方
 		slog.Warn("SMTP 未配置，验证码以开发模式返回", "email", email, "code", code)
 		return code, 0, nil
 	}
 	if err := sendMail(v.smtp, email, "token 中转站注册验证码",
 		fmt.Sprintf("你的注册验证码是：%s\n\n5 分钟内有效。若非本人操作请忽略本邮件。\n—— token 中转站", code)); err != nil {
-		delete(v.codes, email)
+		_ = v.db.Exec("DELETE FROM verification_codes WHERE email = ?", email).Error
 		return "", 0, fmt.Errorf("邮件发送失败: %v", err)
 	}
 	return "", 0, nil
@@ -87,34 +94,25 @@ func (v *Verification) SendCode(email string) (devCode string, retryAfter int, e
 // Verify 校验并消费验证码（一次性）
 func (v *Verification) Verify(email, code string) error {
 	email = strings.ToLower(strings.TrimSpace(email))
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	e, ok := v.codes[email]
-	if !ok {
+	var row verifyRow
+	if err := v.db.Raw("SELECT * FROM verification_codes WHERE email = ?", email).Scan(&row).Error; err != nil || row.Email == "" {
 		return fmt.Errorf("请先获取验证码")
 	}
-	if v.nowFn().After(e.expireAt) {
-		delete(v.codes, email)
+	if time.Now().Unix() > row.ExpireAt {
+		_ = v.db.Exec("DELETE FROM verification_codes WHERE email = ?", email).Error
 		return fmt.Errorf("验证码已过期，请重新获取")
 	}
-	e.attempts++
-	if e.code != code {
-		if e.attempts >= maxAttempts {
-			delete(v.codes, email)
+	if row.Code != code {
+		row.Attempts++
+		if row.Attempts >= maxAttempts {
+			_ = v.db.Exec("DELETE FROM verification_codes WHERE email = ?", email).Error
 			return fmt.Errorf("错误次数过多，验证码已作废，请重新获取")
 		}
+		_ = v.db.Exec("UPDATE verification_codes SET attempts = ? WHERE email = ?", row.Attempts, email).Error
 		return fmt.Errorf("验证码不正确")
 	}
-	delete(v.codes, email)
+	_ = v.db.Exec("DELETE FROM verification_codes WHERE email = ?", email).Error
 	return nil
-}
-
-func (v *Verification) gcLocked(now time.Time) {
-	for k, e := range v.codes {
-		if now.After(e.expireAt) {
-			delete(v.codes, k)
-		}
-	}
 }
 
 // RegisterCompany 公司自助注册：验证码校验通过后创建公司（额度 0）+ 首任管理员
