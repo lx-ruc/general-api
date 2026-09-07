@@ -15,25 +15,42 @@ import (
 // - 结算 = 同一事务内双记账（user + org）+ 写日志
 
 var (
-	ErrNotFound  = errors.New("not found")
-	ErrUserQuota = errors.New("employee quota exceeded, please contact your company admin")
-	ErrOrgQuota  = errors.New("company quota exhausted, please contact the platform admin")
+	ErrNotFound    = errors.New("not found")
+	ErrUserQuota   = errors.New("employee quota exceeded, please contact your company admin")
+	ErrOrgQuota    = errors.New("company quota exhausted, please contact the platform admin")
+	ErrUserMonthly = errors.New("employee monthly spending cap reached, resets next month")
+	ErrOrgMonthly  = errors.New("company monthly spending cap reached, resets next month")
 )
 
-// Precheck 额度预检查（纯读，不锁）：两级剩余额度都必须 > 0
+// currentPeriod 当前账期（账期时区 wall-clock，'YYYY-MM'）
+func currentPeriod() string {
+	return PeriodOf(BillingLoc(), time.Now().Unix())
+}
+
+// Precheck 额度预检查（纯读，不锁）：两级总余额与单月上限都必须未达。
+// 月累计按"存储账期 == 当前账期"取值，否则视为 0（惰性跨月清零的读侧）。
 func Precheck(db *gorm.DB, userID int64) error {
+	period := currentPeriod()
 	var row struct {
-		UID       int64
-		UserLimit *int64
-		UserUsed  int64
-		OrgLimit  int64
-		OrgUsed   int64
+		UID           int64
+		UserLimit     *int64
+		UserUsed      int64
+		UserMonthlyQ  int64
+		UserMonthlyC  int64
+		OrgLimit      int64
+		OrgUsed       int64
+		OrgMonthlyQ   int64
+		OrgMonthlyC   int64
 	}
 	err := db.Raw(`
 		SELECT u.id AS uid, u.quota_limit AS user_limit, u.quota_used AS user_used,
-		       o.quota_limit AS org_limit, o.quota_used AS org_used
+		       u.monthly_quota AS user_monthly_q,
+		       CASE WHEN u.monthly_period = ? THEN u.monthly_cost ELSE 0 END AS user_monthly_c,
+		       o.quota_limit AS org_limit, o.quota_used AS org_used,
+		       o.monthly_quota AS org_monthly_q,
+		       CASE WHEN o.monthly_period = ? THEN o.monthly_cost ELSE 0 END AS org_monthly_c
 		FROM users u JOIN orgs o ON o.id = u.org_id
-		WHERE u.id = ?`, userID).Scan(&row).Error
+		WHERE u.id = ?`, period, period, userID).Scan(&row).Error
 	if err != nil {
 		return err
 	}
@@ -43,24 +60,42 @@ func Precheck(db *gorm.DB, userID int64) error {
 	if row.UserLimit != nil && row.UserUsed >= *row.UserLimit {
 		return ErrUserQuota
 	}
+	if row.UserMonthlyQ > 0 && row.UserMonthlyC >= row.UserMonthlyQ {
+		return ErrUserMonthly
+	}
 	if row.OrgUsed >= row.OrgLimit {
 		return ErrOrgQuota
+	}
+	if row.OrgMonthlyQ > 0 && row.OrgMonthlyC >= row.OrgMonthlyQ {
+		return ErrOrgMonthly
 	}
 	return nil
 }
 
 // Settle 事后结算：响应已发给客户端，无法回滚，故无条件记账（超扣幅度封顶在单请求成本内）。
-// cost>0 时同事务双记账；日志无论如何都写（含被拦截的请求，cost=0）。
+// cost>0 时同事务双记账（总额 + 月累计，跨月首笔原子重置）+ 欠费检查：
+// 公司总额度耗尽 → 自动置 status=2 欠费停服（仅从 1 迁移；手动停用 0 不受影响）。
 func Settle(db *gorm.DB, rec *model.UsageLog) error {
 	now := time.Now().Unix()
+	period := currentPeriod()
 	return db.Transaction(func(tx *gorm.DB) error {
 		if rec.Cost > 0 {
-			if err := tx.Exec("UPDATE users SET quota_used = quota_used + ?, updated_at = ? WHERE id = ?",
-				rec.Cost, now, rec.UserID).Error; err != nil {
+			if err := tx.Exec(`UPDATE users SET quota_used = quota_used + ?,
+					monthly_cost = CASE WHEN monthly_period = ? THEN monthly_cost + ? ELSE ? END,
+					monthly_period = ?, updated_at = ?
+				WHERE id = ?`, rec.Cost, period, rec.Cost, rec.Cost, period, now, rec.UserID).Error; err != nil {
 				return err
 			}
-			if err := tx.Exec("UPDATE orgs SET quota_used = quota_used + ?, updated_at = ? WHERE id = ?",
-				rec.Cost, now, rec.OrgID).Error; err != nil {
+			if err := tx.Exec(`UPDATE orgs SET quota_used = quota_used + ?,
+					monthly_cost = CASE WHEN monthly_period = ? THEN monthly_cost + ? ELSE ? END,
+					monthly_period = ?, updated_at = ?
+				WHERE id = ?`, rec.Cost, period, rec.Cost, rec.Cost, period, now, rec.OrgID).Error; err != nil {
+				return err
+			}
+			// 欠费停服：额度耗尽即停（不影响管理台登录，数据面由鉴权层拦截）
+			if err := tx.Exec(`UPDATE orgs SET status = 2, updated_at = ?
+				WHERE id = ? AND status = 1 AND quota_limit > 0 AND quota_used >= quota_limit`,
+				now, rec.OrgID).Error; err != nil {
 				return err
 			}
 		}
@@ -68,7 +103,8 @@ func Settle(db *gorm.DB, rec *model.UsageLog) error {
 	})
 }
 
-// AddOrgQuota 平台给公司追加限额（带审计流水）；amount 可为负用于回收
+// AddOrgQuota 平台给公司追加限额（带审计流水）；amount 可为负用于回收。
+// 追加后如有余量，欠费停服（status=2）自动恢复为启用——手动停用（0）不会被误恢复。
 func AddOrgQuota(db *gorm.DB, orgID, amount, operatorID int64, remark string) error {
 	now := time.Now().Unix()
 	return db.Transaction(func(tx *gorm.DB) error {
@@ -79,6 +115,10 @@ func AddOrgQuota(db *gorm.DB, orgID, amount, operatorID int64, remark string) er
 		}
 		if res.RowsAffected == 0 {
 			return ErrNotFound
+		}
+		if err := tx.Exec(`UPDATE orgs SET status = 1, updated_at = ?
+			WHERE id = ? AND status = 2 AND quota_limit > quota_used`, now, orgID).Error; err != nil {
+			return err
 		}
 		return tx.Create(&model.QuotaGrant{
 			SubjectType: "org", SubjectID: orgID, Amount: amount,

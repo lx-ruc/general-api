@@ -197,7 +197,12 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	if err := service.Precheck(h.DB, ki.UserID); err != nil {
 		if errors.Is(err, service.ErrUserQuota) || errors.Is(err, service.ErrOrgQuota) {
 			rec.Status, rec.Error = http.StatusTooManyRequests, err.Error()
-			openaiError(c, http.StatusTooManyRequests, "insufficient_quota", err.Error())
+			openaiError(c, http.StatusTooManyRequests, "insufficient_balance", err.Error())
+			return
+		}
+		if errors.Is(err, service.ErrUserMonthly) || errors.Is(err, service.ErrOrgMonthly) {
+			rec.Status, rec.Error = http.StatusTooManyRequests, err.Error()
+			openaiError(c, http.StatusTooManyRequests, "monthly_limit_exceeded", err.Error())
 			return
 		}
 		rec.Status, rec.Error = http.StatusInternalServerError, err.Error()

@@ -7,9 +7,14 @@ CREATE TABLE IF NOT EXISTS orgs (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
   name                TEXT    NOT NULL UNIQUE,
   remark              TEXT    NOT NULL DEFAULT '',
+  contact_name        TEXT    NOT NULL DEFAULT '', -- 客户联系人
+  contact_phone       TEXT    NOT NULL DEFAULT '', -- 联系电话
   quota_limit         INTEGER NOT NULL DEFAULT 0,
   quota_used          INTEGER NOT NULL DEFAULT 0,
-  status              INTEGER NOT NULL DEFAULT 1,
+  monthly_quota       INTEGER NOT NULL DEFAULT 0,  -- 单月消费上限（点；0=不限）
+  monthly_cost        INTEGER NOT NULL DEFAULT 0,  -- 当前账期累计（惰性跨月清零）
+  monthly_period      TEXT    NOT NULL DEFAULT '', -- monthly_cost 所属账期 'YYYY-MM'（账期时区）
+  status              INTEGER NOT NULL DEFAULT 1, -- 1启用 0停用 2欠费停服（额度耗尽自动置，充值自动恢复）
   require_cost_center INTEGER NOT NULL DEFAULT 0,  -- 1=新建 key 必须归集成本中心
   alert_levels        TEXT    NOT NULL DEFAULT '[80]', -- 预警阈值（升序百分比 JSON 数组；[] = 关闭）
   alert_level         INTEGER NOT NULL DEFAULT 0,  -- 当前已达档位（0=未达任何档；边沿状态机）
@@ -19,22 +24,25 @@ CREATE TABLE IF NOT EXISTS orgs (
 );
 
 CREATE TABLE IF NOT EXISTS users (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  org_id        INTEGER REFERENCES orgs(id) ON DELETE CASCADE,
-  username      TEXT    NOT NULL UNIQUE,
-  password_hash TEXT    NOT NULL,
-  display_name  TEXT    NOT NULL DEFAULT '',
-  email         TEXT    NOT NULL DEFAULT '',
-  role          TEXT    NOT NULL CHECK (role IN ('platform_admin','org_admin','member')),
-  quota_limit   INTEGER,
-  quota_used    INTEGER NOT NULL DEFAULT 0,
-  alert_levels  TEXT    NOT NULL DEFAULT '[80]', -- 个人预警阈值（[] = 关闭；不限额者不参与）
-  alert_level   INTEGER NOT NULL DEFAULT 0,
-  alert_since   INTEGER NOT NULL DEFAULT 0,
-  status        INTEGER NOT NULL DEFAULT 1,
-  last_login_at INTEGER,
-  created_at    INTEGER NOT NULL,
-  updated_at    INTEGER NOT NULL
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id         INTEGER REFERENCES orgs(id) ON DELETE CASCADE,
+  username       TEXT    NOT NULL UNIQUE,
+  password_hash  TEXT    NOT NULL,
+  display_name   TEXT    NOT NULL DEFAULT '',
+  email          TEXT    NOT NULL DEFAULT '',
+  role           TEXT    NOT NULL CHECK (role IN ('platform_admin','org_admin','member')),
+  quota_limit    INTEGER,
+  quota_used     INTEGER NOT NULL DEFAULT 0,
+  monthly_quota  INTEGER NOT NULL DEFAULT 0,  -- 单月消费上限（点；0=不限）
+  monthly_cost   INTEGER NOT NULL DEFAULT 0,  -- 当前账期累计（惰性跨月清零）
+  monthly_period TEXT    NOT NULL DEFAULT '',
+  alert_levels   TEXT    NOT NULL DEFAULT '[80]', -- 个人预警阈值（[] = 关闭；不限额者不参与）
+  alert_level    INTEGER NOT NULL DEFAULT 0,
+  alert_since    INTEGER NOT NULL DEFAULT 0,
+  status         INTEGER NOT NULL DEFAULT 1,
+  last_login_at  INTEGER,
+  created_at     INTEGER NOT NULL,
+  updated_at     INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_users_org ON users(org_id);
 

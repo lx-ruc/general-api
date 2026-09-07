@@ -15,9 +15,12 @@ type User struct {
 	DisplayName  string `json:"display_name"`
 	Email        string `json:"email"`
 	Role         string `json:"role"`
-	QuotaLimit   *int64 `json:"quota_limit"` // NULL=不限额（仅 member 有意义）
-	QuotaUsed    int64  `json:"quota_used"`
-	AlertLevels  string `json:"alert_levels"` // 个人预警阈值 JSON（[] = 关闭；不限额者不参与）
+	QuotaLimit    *int64 `json:"quota_limit"`  // NULL=不限额（仅 member 有意义）
+	QuotaUsed     int64  `json:"quota_used"`
+	MonthlyQuota  int64  `json:"monthly_quota"` // 单月消费上限（点；0=不限）
+	MonthlyCost   int64  `json:"monthly_cost"`  // 当前账期累计（monthly_period 有效时）
+	MonthlyPeriod string `json:"monthly_period"`
+	AlertLevels   string `json:"alert_levels"` // 个人预警阈值 JSON（[] = 关闭；不限额者不参与）
 	AlertLevel   int    `json:"alert_level"`  // 当前已达档位（边沿状态机）
 	AlertSince   int64  `json:"alert_since"`
 	Status       int    `json:"status"`

@@ -30,6 +30,11 @@ export function fmtPrice(price: number, ppy = 1_000_000): string {
   return `¥${(price / ppy).toFixed(2)}`
 }
 
+// 单价 → 元/千token（需求规格 4.5 口径）
+export function fmtPrice1K(price: number, ppy = 1_000_000): string {
+  return `¥${(price / ppy / 1000).toFixed(4)}`
+}
+
 export function fmtTime(unix: number | null | undefined): string {
   if (!unix) return '-'
   return dayjs.unix(unix).format('YYYY-MM-DD HH:mm:ss')

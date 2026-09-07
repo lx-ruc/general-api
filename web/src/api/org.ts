@@ -8,6 +8,9 @@ export interface Member {
   role: string
   quota_limit: number | null
   quota_used: number
+  monthly_quota: number   // 单月消费上限（点；0=不限）
+  monthly_cost: number    // 当前账期累计（monthly_period 为当前月时有效）
+  monthly_period: string
   status: number
   grant_count?: number
   key_count?: number

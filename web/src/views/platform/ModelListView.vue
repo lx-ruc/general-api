@@ -2,7 +2,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiListModels, apiCreateModel, apiUpdateModel, apiDeleteModel, type MModel } from '../../api/platform'
-import { fmtPrice, fmtPoints } from '../../utils/format'
+import { fmtPrice, fmtPrice1K, fmtPoints } from '../../utils/format'
 
 const PPY = 1_000_000
 const list = ref<MModel[]>([])
@@ -89,15 +89,17 @@ async function remove(m: MModel) {
       </el-table-column>
       <el-table-column prop="display_name" label="显示名" min-width="150" />
       <el-table-column prop="vendor" label="厂商" width="90" />
-      <el-table-column label="输入单价" width="120" align="right">
+      <el-table-column label="输入单价" width="150" align="right">
         <template #default="{ row }">
           <span class="num green">{{ fmtPrice(row.input_price, PPY) }}</span>
+          <span class="dim">/百万 · {{ fmtPrice1K(row.input_price, PPY) }}/千</span>
           <span v-if="row.input_price === 0" class="zero">（未定价）</span>
         </template>
       </el-table-column>
-      <el-table-column label="输出单价" width="120" align="right">
+      <el-table-column label="输出单价" width="150" align="right">
         <template #default="{ row }">
           <span class="num green">{{ fmtPrice(row.output_price, PPY) }}</span>
+          <span class="dim">/百万 · {{ fmtPrice1K(row.output_price, PPY) }}/千</span>
           <span v-if="row.output_price === 0" class="zero">（未定价）</span>
         </template>
       </el-table-column>
@@ -133,11 +135,11 @@ async function remove(m: MModel) {
       <el-form-item label="厂商"><el-input v-model="form.vendor" /></el-form-item>
       <el-form-item label="输入单价（元/百万token）">
         <el-input-number v-model="form.input_price" :min="0" :step="500000" />
-        <span class="tip">= {{ fmtPrice(form.input_price, PPY) }} 每百万输入 token</span>
+        <span class="tip">= {{ fmtPrice(form.input_price, PPY) }}/百万 · {{ fmtPrice1K(form.input_price, PPY) }}/千</span>
       </el-form-item>
       <el-form-item label="输出单价（元/百万token）">
         <el-input-number v-model="form.output_price" :min="0" :step="500000" />
-        <span class="tip">= {{ fmtPrice(form.output_price, PPY) }} 每百万输出 token</span>
+        <span class="tip">= {{ fmtPrice(form.output_price, PPY) }}/百万 · {{ fmtPrice1K(form.output_price, PPY) }}/千</span>
       </el-form-item>
       <el-form-item label="厂商成本价（入）">
         <el-input-number v-model="form.cost_input_price" :min="0" :step="500000" />
@@ -162,6 +164,7 @@ async function remove(m: MModel) {
 <style scoped>
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .tip { margin-left: 8px; font-size: 12px; color: #909399; }
+.dim { color: var(--tg-muted); font-size: 11px; }
 .green { color: var(--tg-green-ink); }
 .zero { color: var(--tg-amber); font-size: 11px; margin-left: 3px; }
 </style>

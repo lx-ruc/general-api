@@ -62,8 +62,13 @@ func APIKeyAuth(db *gorm.DB) gin.HandlerFunc {
 			openaiAbort(c, http.StatusUnauthorized, "invalid_api_key", "API key has expired")
 			return
 		}
-		if row.UserStatus != 1 || row.OrgStatus != 1 {
+		if row.UserStatus != 1 || row.OrgStatus == 0 {
 			openaiAbort(c, http.StatusForbidden, "permission_error", "account or organization is disabled")
+			return
+		}
+		if row.OrgStatus == 2 { // 欠费停服：额度耗尽自动置位，充值后自动恢复
+			openaiAbort(c, http.StatusForbidden, "insufficient_balance",
+				"organization suspended for arrears (quota exhausted), please contact the platform admin to recharge")
 			return
 		}
 		ki := row.KeyInfo

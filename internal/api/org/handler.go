@@ -153,6 +153,7 @@ func (h *Handler) UpdateMember(c *gin.Context) {
 		DisplayName    *string `json:"display_name"`
 		Status         *int    `json:"status"`
 		QuotaUnlimited *bool   `json:"quota_unlimited"`
+		MonthlyQuota   *int64  `json:"monthly_quota"` // 单月消费上限（点）；0=不限，次月自动清零
 	}
 	if !httpx.BindJSON(c, &req) {
 		return
@@ -173,6 +174,13 @@ func (h *Handler) UpdateMember(c *gin.Context) {
 			return
 		}
 		updates["status"] = *req.Status
+	}
+	if req.MonthlyQuota != nil {
+		if *req.MonthlyQuota < 0 {
+			httpx.Fail(c, http.StatusBadRequest, "monthly_quota 不能为负（0=不限）")
+			return
+		}
+		updates["monthly_quota"] = *req.MonthlyQuota
 	}
 	if err := h.DB.Model(&model.User{}).Where("id = ?", id).Updates(updates).Error; err != nil {
 		httpx.Fail(c, http.StatusInternalServerError, "更新失败")

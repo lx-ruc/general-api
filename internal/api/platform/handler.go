@@ -61,7 +61,9 @@ func (h *Handler) ListOrgs(c *gin.Context) {
 type createOrgReq struct {
 	Name             string `json:"name" binding:"required"`
 	Remark           string `json:"remark"`
-	QuotaAmount      int64  `json:"quota_amount"` // 初始额度（token 预算），可为 0
+	ContactName      string `json:"contact_name"`  // 客户联系人
+	ContactPhone     string `json:"contact_phone"` // 联系电话
+	QuotaAmount      int64  `json:"quota_amount"`  // 初始额度（token 预算），可为 0
 	AdminUsername    string `json:"admin_username" binding:"required,min=3"`
 	AdminPassword    string `json:"admin_password" binding:"required,min=6"`
 	AdminDisplayName string `json:"admin_display_name"`
@@ -92,7 +94,8 @@ func (h *Handler) CreateOrg(c *gin.Context) {
 	now := time.Now().Unix()
 	var org model.Org
 	err = h.DB.Transaction(func(tx *gorm.DB) error {
-		org = model.Org{Name: req.Name, Remark: req.Remark, QuotaLimit: 0, Status: 1}
+		org = model.Org{Name: req.Name, Remark: req.Remark,
+			ContactName: req.ContactName, ContactPhone: req.ContactPhone, QuotaLimit: 0, Status: 1}
 		if err := tx.Create(&org).Error; err != nil {
 			return err
 		}
@@ -154,9 +157,12 @@ func (h *Handler) UpdateOrg(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Name   *string `json:"name"`
-		Remark *string `json:"remark"`
-		Status *int    `json:"status"`
+		Name         *string `json:"name"`
+		Remark       *string `json:"remark"`
+		ContactName  *string `json:"contact_name"`
+		ContactPhone *string `json:"contact_phone"`
+		MonthlyQuota *int64  `json:"monthly_quota"` // 单月消费上限（点）；0=不限
+		Status       *int    `json:"status"`
 	}
 	if !httpx.BindJSON(c, &req) {
 		return
@@ -180,6 +186,19 @@ func (h *Handler) UpdateOrg(c *gin.Context) {
 	}
 	if req.Remark != nil {
 		updates["remark"] = *req.Remark
+	}
+	if req.ContactName != nil {
+		updates["contact_name"] = *req.ContactName
+	}
+	if req.ContactPhone != nil {
+		updates["contact_phone"] = *req.ContactPhone
+	}
+	if req.MonthlyQuota != nil {
+		if *req.MonthlyQuota < 0 {
+			httpx.Fail(c, http.StatusBadRequest, "monthly_quota 不能为负（0=不限）")
+			return
+		}
+		updates["monthly_quota"] = *req.MonthlyQuota
 	}
 	if req.Status != nil {
 		if *req.Status != 0 && *req.Status != 1 {

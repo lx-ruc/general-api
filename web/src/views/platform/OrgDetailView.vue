@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import dayjs from 'dayjs'
 import {
-  apiGetOrg, apiOrgDetailStats, apiResetOrgAdminPassword, apiUpdateOrgAlertLevels,
+  apiGetOrg, apiUpdateOrg, apiOrgDetailStats, apiResetOrgAdminPassword, apiUpdateOrgAlertLevels,
   apiOrgStatement, downloadOrgStatementCSVPlatform,
 } from '../../api/platform'
 import LineChart from '../../components/LineChart.vue'
@@ -81,6 +81,24 @@ async function saveThreshold() {
   }
 }
 
+// 单月消费上限（0=不限；当月达限拦截新请求，次月自动清零）
+const monthly = ref(0)
+const monthlyUsed = computed(() =>
+  org.value && org.value.monthly_period === dayjs().format('YYYY-MM') ? (org.value.monthly_cost || 0) : 0,
+)
+onMounted(() => { monthly.value = org.value?.monthly_quota || 0 })
+watch(() => org.value?.monthly_quota, (v) => { monthly.value = v || 0 })
+async function saveMonthly() {
+  monthlySaving.value = true
+  try {
+    await apiUpdateOrg(Number(route.params.id), { monthly_quota: monthly.value || 0 })
+    ElMessage.success('单月上限已更新')
+  } finally {
+    monthlySaving.value = false
+  }
+}
+const monthlySaving = ref(false)
+
 // 三段式对账单（平台视角：明细含厂商成本/毛利）
 const stMonth = ref(dayjs().format('YYYY-MM'))
 const st = ref<any>(null)
@@ -118,11 +136,15 @@ async function exportStatementCSV() {
     </button>
     <h1 class="org-name">
       {{ org.name }}
-      <el-tag :type="org.status === 1 ? 'success' : 'danger'" effect="plain" size="small">
-        {{ org.status === 1 ? '启用' : '停用' }}
-      </el-tag>
+      <el-tag v-if="org.status === 1" type="success" effect="plain" size="small">启用</el-tag>
+      <el-tag v-else-if="org.status === 2" type="danger" effect="dark" size="small">欠费停服</el-tag>
+      <el-tag v-else type="danger" effect="plain" size="small">停用</el-tag>
     </h1>
-    <p v-if="org.remark" class="org-remark">{{ org.remark }}</p>
+    <p v-if="org.remark || org.contact_name || org.contact_phone" class="org-remark">
+      <template v-if="org.remark">{{ org.remark }}<template v-if="org.contact_name"> · </template></template>
+      <template v-if="org.contact_name">联系人：{{ org.contact_name }}</template>
+      <template v-if="org.contact_phone"> {{ org.contact_phone }}</template>
+    </p>
 
     <!-- 额度读数 -->
     <el-card shadow="never" class="pool">
@@ -159,6 +181,15 @@ async function exportStatementCSV() {
             <el-input-number v-model="threshold" :min="0" :max="100" :controls="false" size="small" style="width: 76px" />
             <span class="dim">%</span>
             <el-button size="small" :loading="thresholdSaving" @click="saveThreshold">保存</el-button>
+          </div>
+        </div>
+        <div class="pool-alert">
+          <el-tooltip content="单月消费上限（token 预算）；0 = 不限。当月达限拦截新请求，次月自动清零恢复" placement="top">
+            <span class="pool-label">单月上限<span v-if="monthly > 0" class="dim">（本月已用 ¥{{ pointsToYuan(monthlyUsed) }}）</span></span>
+          </el-tooltip>
+          <div class="pool-alert-input">
+            <el-input-number v-model="monthly" :min="0" :step="10000000" size="small" style="width: 140px" />
+            <el-button size="small" :loading="monthlySaving" @click="saveMonthly">保存</el-button>
           </div>
         </div>
       </div>

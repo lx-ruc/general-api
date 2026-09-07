@@ -1,12 +1,18 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import dayjs from 'dayjs'
 import {
   apiListMembers, apiCreateMember, apiUpdateMember, apiDeleteMember,
   apiResetMemberPassword, apiAddMemberQuota, apiGetMemberModels, apiSetMemberModels,
   type Member,
 } from '../../api/org'
 import { fmtTime, fmtQuota, fmtPrice, pointsToYuan } from '../../utils/format'
+
+// 月累计仅在存储账期为当前月时有效（跨月惰性清零的读侧）
+function currentMonthUsed(m: Member): number {
+  return m.monthly_period === dayjs().format('YYYY-MM') ? m.monthly_cost : 0
+}
 
 const list = ref<Member[]>([])
 const total = ref(0)
@@ -40,19 +46,22 @@ async function submitCreate() {
   load()
 }
 
-// 额度
+// 额度 / 月限
 const quotaVisible = ref(false)
-const quotaForm = reactive({ member: null as Member | null, amount: 1000000, remark: '' })
+const quotaForm = reactive({ member: null as Member | null, amount: 1000000, remark: '', monthly: 0 })
 function openQuota(m: Member) {
   quotaForm.member = m
   quotaForm.amount = 1000000
   quotaForm.remark = ''
+  quotaForm.monthly = m.monthly_quota || 0
   quotaVisible.value = true
 }
 async function submitQuota() {
   if (!quotaForm.member || !quotaForm.amount) return
   await apiAddMemberQuota(quotaForm.member.id, quotaForm.amount, quotaForm.remark)
-  ElMessage.success('额度已追加')
+  // 单月上限走设值更新（0=不限；与追加额度独立，总是提交保持一致）
+  await apiUpdateMember(quotaForm.member.id, { monthly_quota: quotaForm.monthly || 0 })
+  ElMessage.success('额度与月限已更新')
   quotaVisible.value = false
   load()
 }
@@ -132,6 +141,15 @@ function remove(m: Member) {
           <span v-else class="num">{{ fmtQuota(row.quota_limit) }}</span>
         </template>
       </el-table-column>
+      <el-table-column label="单月上限" width="130">
+        <template #default="{ row }">
+          <span v-if="row.monthly_quota > 0">
+            <span class="num">{{ fmtQuota(row.monthly_quota) }}</span>
+            <span class="dim"> · 已用 ¥{{ pointsToYuan(currentMonthUsed(row)) }}</span>
+          </span>
+          <span v-else class="dim">—</span>
+        </template>
+      </el-table-column>
       <el-table-column label="剩余" width="110" align="right">
         <template #default="{ row }">
           <span v-if="row.quota_limit == null" class="green">不限</span>
@@ -200,11 +218,15 @@ function remove(m: Member) {
     </template>
   </el-dialog>
 
-  <el-dialog v-model="quotaVisible" :title="`追加额度：${quotaForm.member?.display_name || quotaForm.member?.username || ''}`" width="440px">
+  <el-dialog v-model="quotaVisible" :title="`额度 / 月限：${quotaForm.member?.display_name || quotaForm.member?.username || ''}`" width="440px">
     <el-form label-width="100px">
       <el-form-item label="追加token 数">
         <el-input-number v-model="quotaForm.amount" :step="1000000" />
         <span class="tip">= ¥{{ pointsToYuan(quotaForm.amount) }}（负数为回收）</span>
+      </el-form-item>
+      <el-form-item label="单月上限（token）">
+        <el-input-number v-model="quotaForm.monthly" :min="0" :step="1000000" />
+        <span class="tip">0 = 不限；当月达限停用，次月自动清零</span>
       </el-form-item>
       <el-form-item label="备注"><el-input v-model="quotaForm.remark" /></el-form-item>
     </el-form>

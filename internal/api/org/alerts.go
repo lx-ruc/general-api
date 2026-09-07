@@ -34,24 +34,35 @@ func (h *Handler) GetAlertLevels(c *gin.Context) {
 		return
 	}
 	var row struct {
-		AlertLevels string
-		AlertLevel  int
-		AlertSince  int64
-		QuotaLimit  int64
-		QuotaUsed   int64
+		AlertLevels   string
+		AlertLevel    int
+		AlertSince    int64
+		QuotaLimit    int64
+		QuotaUsed     int64
+		MonthlyQuota  int64
+		MonthlyCost   int64
+		MonthlyPeriod string
 	}
 	if err := h.DB.Raw(
-		"SELECT alert_levels, alert_level, alert_since, quota_limit, quota_used FROM orgs WHERE id = ?",
+		"SELECT alert_levels, alert_level, alert_since, quota_limit, quota_used, monthly_quota, monthly_cost, monthly_period FROM orgs WHERE id = ?",
 		oid).Scan(&row).Error; err != nil || row.AlertLevels == "" {
 		httpx.Fail(c, http.StatusNotFound, "公司不存在")
 		return
 	}
+	// 月累计仅在存储账期 == 当前账期时有效（跨月惰性清零的读侧）
+	period := service.PeriodOf(service.BillingLoc(), time.Now().Unix())
+	monthlyUsed := int64(0)
+	if row.MonthlyPeriod == period {
+		monthlyUsed = row.MonthlyCost
+	}
 	httpx.OK(c, gin.H{
-		"threshold":   service.LevelsToThreshold(row.AlertLevels),
-		"alert_level": row.AlertLevel,
-		"alert_since": row.AlertSince,
-		"quota_limit": row.QuotaLimit,
-		"quota_used":  row.QuotaUsed,
+		"threshold":     service.LevelsToThreshold(row.AlertLevels),
+		"alert_level":   row.AlertLevel,
+		"alert_since":   row.AlertSince,
+		"quota_limit":   row.QuotaLimit,
+		"quota_used":    row.QuotaUsed,
+		"monthly_quota": row.MonthlyQuota,
+		"monthly_used":  monthlyUsed,
 	})
 }
 

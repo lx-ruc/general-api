@@ -22,7 +22,7 @@ onMounted(load)
 // 新建公司
 const createVisible = ref(false)
 const createForm = reactive({
-  name: '', remark: '', quota_amount: 100000000,
+  name: '', remark: '', contact_name: '', contact_phone: '', quota_amount: 100000000,
   admin_username: '', admin_password: '', admin_display_name: '',
 })
 async function submitCreate() {
@@ -33,7 +33,7 @@ async function submitCreate() {
   await apiCreateOrg(createForm)
   ElMessage.success('公司已创建')
   createVisible.value = false
-  Object.assign(createForm, { name: '', remark: '', quota_amount: 100000000, admin_username: '', admin_password: '', admin_display_name: '' })
+  Object.assign(createForm, { name: '', remark: '', contact_name: '', contact_phone: '', quota_amount: 100000000, admin_username: '', admin_password: '', admin_display_name: '' })
   load()
 }
 
@@ -90,6 +90,14 @@ async function removeOrg(org: Org) {
         </template>
       </el-table-column>
       <el-table-column prop="remark" label="备注" min-width="120" show-overflow-tooltip />
+      <el-table-column label="联系人" min-width="110">
+        <template #default="{ row }">
+          <span v-if="row.contact_name || row.contact_phone">
+            {{ row.contact_name }}<span v-if="row.contact_phone" class="dim"> {{ row.contact_phone }}</span>
+          </span>
+          <span v-else class="dim">—</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="member_count" label="成员" width="70" align="center" />
       <el-table-column label="已用 / 上限（token）" min-width="200">
         <template #default="{ row }">
@@ -98,9 +106,11 @@ async function removeOrg(org: Org) {
           <span class="green num">　¥{{ pointsToYuan(row.quota_limit - row.quota_used) }} 可用</span>
         </template>
       </el-table-column>
-      <el-table-column label="状态" width="80">
+      <el-table-column label="状态" width="100">
         <template #default="{ row }">
-          <el-tag :type="row.status === 1 ? 'success' : 'danger'">{{ row.status === 1 ? '启用' : '停用' }}</el-tag>
+          <el-tag v-if="row.status === 1" type="success">启用</el-tag>
+          <el-tag v-else-if="row.status === 2" type="danger" effect="dark">欠费停服</el-tag>
+          <el-tag v-else type="danger">停用</el-tag>
         </template>
       </el-table-column>
       <el-table-column label="创建时间" width="170">
@@ -123,6 +133,8 @@ async function removeOrg(org: Org) {
     <el-form label-width="110px">
       <el-form-item label="公司名" required><el-input v-model="createForm.name" /></el-form-item>
       <el-form-item label="备注"><el-input v-model="createForm.remark" /></el-form-item>
+      <el-form-item label="联系人"><el-input v-model="createForm.contact_name" placeholder="客户企业联系人" /></el-form-item>
+      <el-form-item label="联系电话"><el-input v-model="createForm.contact_phone" /></el-form-item>
       <el-form-item label="初始额度（token）">
         <el-input-number v-model="createForm.quota_amount" :min="0" :step="10000000" />
         <span class="tip">= ¥{{ pointsToYuan(createForm.quota_amount) }}</span>

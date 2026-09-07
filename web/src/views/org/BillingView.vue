@@ -55,10 +55,12 @@ async function exportStatementCSV() {
 // 额度预警阈值（0/空 = 关闭；升档邮件一次性提醒，拨备回落自动复位）
 const threshold = ref<number>(80)
 const thresholdLoading = ref(false)
+const monthly = ref<{ quota: number; used: number }>({ quota: 0, used: 0 })
 onMounted(async () => {
   try {
     const r = await apiGetAlertLevels()
     threshold.value = r.threshold
+    monthly.value = { quota: r.monthly_quota || 0, used: r.monthly_used || 0 }
   } catch { /* 默认 80 */ }
 })
 async function saveThreshold() {
@@ -119,6 +121,14 @@ function exportCSV() {
 
     <el-card v-if="data" shadow="never">
       <template #header>额度预警</template>
+      <div v-if="monthly.quota > 0" class="monthly-line">
+        <span>单月消费上限：<b class="num">{{ fmtQuota(monthly.quota) }}</b>（¥{{ pointsToYuan(monthly.quota) }}），
+          本月已用 <b class="num">{{ fmtQuota(monthly.used) }}</b>（¥{{ pointsToYuan(monthly.used) }}）<el-progress
+            :percentage="Math.min(100, monthly.quota ? (monthly.used / monthly.quota) * 100 : 0)"
+            :stroke-width="8" :show-text="false" style="width: 180px; display: inline-block; margin-left: 10px; vertical-align: middle" />
+        </span>
+        <span class="dim tip-inline">达限后当月停用，次月自动清零恢复</span>
+      </div>
       <div class="alert-cfg">
         <span>公司额度使用率达到阈值时邮件提醒公司管理员（每档只提醒一次，追加额度后自动复位）</span>
         <div class="alert-input">
@@ -279,6 +289,8 @@ function exportCSV() {
 .warn { color: var(--el-color-warning); font-weight: 600; }
 .dim { color: var(--tg-muted); font-size: 12px; }
 .alert-cfg { display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.monthly-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px dashed var(--tg-line); }
+.tip-inline { font-size: 12px; }
 .alert-input { display: flex; align-items: center; gap: 8px; }
 .tip { font-size: 12px; margin-top: 8px; }
 .chain { margin-bottom: 4px; }
