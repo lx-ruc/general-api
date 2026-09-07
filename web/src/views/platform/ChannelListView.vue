@@ -3,7 +3,8 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   apiListChannels, apiCreateChannel, apiUpdateChannel, apiUpdateChannelStatus,
-  apiDeleteChannel, apiTestChannel, apiListModels, type Channel,
+  apiDeleteChannel, apiTestChannel, apiListModels, apiListChannelKeys,
+  apiUpdateChannelKeyStatus, type Channel, type ChannelKeyRow,
 } from '../../api/platform'
 import { fmtTime } from '../../utils/format'
 
@@ -120,6 +121,36 @@ async function remove(ch: Channel) {
   ElMessage.success('已删除')
   load()
 }
+
+// Key 池管理（401 自动禁用后的恢复入口）
+const keysVisible = ref(false)
+const keysChannel = ref<Channel | null>(null)
+const keyList = ref<ChannelKeyRow[]>([])
+const keysLoading = ref(false)
+const keyToggling = ref(0)
+
+async function openKeys(ch: Channel) {
+  keysChannel.value = ch
+  keysVisible.value = true
+  keysLoading.value = true
+  try {
+    keyList.value = await apiListChannelKeys(ch.id)
+  } finally {
+    keysLoading.value = false
+  }
+}
+
+async function toggleKey(row: ChannelKeyRow) {
+  if (!keysChannel.value) return
+  keyToggling.value = row.id
+  try {
+    await apiUpdateChannelKeyStatus(keysChannel.value.id, row.id, row.status === 1 ? 0 : 1)
+    keyList.value = await apiListChannelKeys(keysChannel.value.id)
+    load()
+  } finally {
+    keyToggling.value = 0
+  }
+}
 </script>
 
 <template>
@@ -143,9 +174,12 @@ async function remove(ch: Channel) {
           </code>
         </template>
       </el-table-column>
-      <el-table-column label="密钥" width="80" align="center">
+      <el-table-column label="密钥" width="110" align="center">
         <template #default="{ row }">
-          <span :class="row.has_key ? 'key-ok' : 'key-miss'">● {{ row.has_key ? '已配' : '缺失' }}</span>
+          <span v-if="row.has_key" class="key-ok">
+            ● {{ row.key_count || 1 }} 把<span v-if="row.key_count > 1">（启 {{ row.key_active_count ?? row.key_count }}）</span>
+          </span>
+          <span v-else class="key-miss">● 缺失</span>
         </template>
       </el-table-column>
       <el-table-column label="优先级/权重" width="100">
@@ -169,10 +203,11 @@ async function remove(ch: Channel) {
           <span v-else class="dim">未测试</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="250" fixed="right">
+      <el-table-column label="操作" width="300" fixed="right">
         <template #default="{ row }">
           <el-button size="small" :loading="testing === row.id" @click="test(row)">测试</el-button>
           <el-button size="small" @click="openEdit(row)">编辑</el-button>
+          <el-button size="small" @click="openKeys(row)">Key 池</el-button>
           <el-button size="small" @click="toggleStatus(row)">{{ row.status === 1 ? '停用' : '启用' }}</el-button>
           <el-button size="small" type="danger" @click="remove(row)">删除</el-button>
         </template>
@@ -191,8 +226,10 @@ async function remove(ch: Channel) {
         <el-input v-model="form.path" placeholder="/v1/chat/completions" />
       </el-form-item>
       <el-form-item label="上游密钥">
-        <el-input v-model="form.upstream_key" show-password
-          :placeholder="isEdit ? '留空表示不修改' : '厂商 API Key（sk-...）'" />
+        <el-input v-model="form.upstream_key" type="textarea" :rows="3"
+          :placeholder="isEdit
+            ? '留空表示不修改。每行一把 Key，可后缀 :权重，如 sk-xxx:3（整体替换现有 Key 池）'
+            : '每行一把 Key，可后缀 :权重，如 sk-xxx:3（多 Key 组成池自动调度）'" />
       </el-form-item>
       <el-row>
         <el-col :span="12">
@@ -226,6 +263,36 @@ async function remove(ch: Channel) {
       <el-button @click="editVisible = false">取消</el-button>
       <el-button type="primary" @click="submit">保存</el-button>
     </template>
+  </el-dialog>
+
+  <el-dialog v-model="keysVisible" :title="`Key 池 — ${keysChannel?.name || ''}`" width="680px">
+    <el-alert v-if="keyList.length === 0 && !keysLoading" type="info" :closable="false"
+      title="该渠道无池内 Key（使用编辑表单多行录入），或使用 legacy 单 Key" />
+    <el-table v-else :data="keyList" v-loading="keysLoading" size="small">
+      <el-table-column prop="id" label="#" width="60" />
+      <el-table-column prop="key_masked" label="Key（打码）" min-width="170">
+        <template #default="{ row }"><code>{{ row.key_masked }}</code></template>
+      </el-table-column>
+      <el-table-column prop="weight" label="权重" width="70" align="center" />
+      <el-table-column label="状态" width="80" align="center">
+        <template #default="{ row }">
+          <el-tag :type="row.status === 1 ? 'success' : 'danger'" effect="plain" size="small">
+            {{ row.status === 1 ? '启用' : '禁用' }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column prop="remark" label="备注" min-width="150" show-overflow-tooltip />
+      <el-table-column label="操作" width="90">
+        <template #default="{ row }">
+          <el-button size="small" :loading="keyToggling === row.id" @click="toggleKey(row)">
+            {{ row.status === 1 ? '禁用' : '启用' }}
+          </el-button>
+        </template>
+      </el-table-column>
+    </el-table>
+    <div class="tip" style="margin-top: 8px">
+      上游 401/403 会自动禁用对应 Key（备注注明原因），此处可手动恢复；429 触发的冷却到期自动恢复。
+    </div>
   </el-dialog>
 </template>
 

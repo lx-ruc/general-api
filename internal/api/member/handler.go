@@ -2,6 +2,7 @@ package member
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -37,25 +38,80 @@ func (h *Handler) ownKey(c *gin.Context, id int64) (*model.APIKey, bool) {
 
 // ListKeys GET /api/member/keys
 func (h *Handler) ListKeys(c *gin.Context) {
-	var keys []model.APIKey
-	_ = h.DB.Where("user_id = ?", uid(c)).Order("id DESC").Find(&keys).Error
-	if keys == nil {
-		keys = []model.APIKey{}
+	type keyRow struct {
+		model.APIKey
+		CostCenterName string `json:"cost_center_name"` // "" = 未归集
 	}
-	httpx.OK(c, keys)
+	var rows []keyRow
+	_ = h.DB.Raw(`
+		SELECT k.*, COALESCE(cc.name,'') AS cost_center_name FROM api_keys k
+		LEFT JOIN cost_centers cc ON cc.id = k.cost_center_id
+		WHERE k.user_id = ? ORDER BY k.id DESC`, uid(c)).Scan(&rows).Error
+	if rows == nil {
+		rows = []keyRow{}
+	}
+	httpx.OK(c, rows)
 }
 
-// CreateKey POST /api/member/keys：明文完整 key 仅此一次返回
+// ListCostCenters GET /api/member/cost-centers：本 org 启用中的中心（建 key 下拉用）
+func (h *Handler) ListCostCenters(c *gin.Context) {
+	_, o, ok := h.myOrg(c)
+	if !ok {
+		return
+	}
+	var centers []model.CostCenter
+	_ = h.DB.Where("org_id = ? AND status = 1", o.ID).Order("id").Find(&centers).Error
+	if centers == nil {
+		centers = []model.CostCenter{}
+	}
+	httpx.OK(c, centers)
+}
+
+// myOrg 当前员工与其 org（org 必须存在且启用）
+func (h *Handler) myOrg(c *gin.Context) (*model.User, *model.Org, bool) {
+	var u model.User
+	if err := h.DB.Where("id = ?", uid(c)).First(&u).Error; err != nil || u.OrgID == nil {
+		httpx.Fail(c, http.StatusForbidden, "账号状态异常")
+		return nil, nil, false
+	}
+	var o model.Org
+	if err := h.DB.Where("id = ? AND status = 1", *u.OrgID).First(&o).Error; err != nil {
+		httpx.Fail(c, http.StatusForbidden, "账号状态异常")
+		return nil, nil, false
+	}
+	return &u, &o, true
+}
+
+// CreateKey POST /api/member/keys：明文完整 key 仅此一次返回；
+// expires_at 可选（unix 秒，须晚于当前时刻，0/缺省=永久）；
+// cost_center_id 可选（org 开启 require_cost_center 后必填），须为本 org 启用中的中心
 func (h *Handler) CreateKey(c *gin.Context) {
 	var req struct {
-		Name string `json:"name"`
+		Name         string `json:"name"`
+		ExpiresAt    *int64 `json:"expires_at"`
+		CostCenterID *int64 `json:"cost_center_id"`
 	}
 	if !httpx.BindJSON(c, &req) {
 		return
 	}
-	var u model.User
-	if err := h.DB.Where("id = ?", uid(c)).First(&u).Error; err != nil || u.OrgID == nil {
-		httpx.Fail(c, http.StatusForbidden, "账号状态异常")
+	if req.ExpiresAt != nil && *req.ExpiresAt <= time.Now().Unix() {
+		httpx.Fail(c, http.StatusBadRequest, "过期时间必须晚于当前时刻")
+		return
+	}
+	u, o, ok := h.myOrg(c)
+	if !ok {
+		return
+	}
+	if req.CostCenterID != nil {
+		var cnt int64
+		_ = h.DB.Raw("SELECT COUNT(*) FROM cost_centers WHERE id = ? AND org_id = ? AND status = 1",
+			*req.CostCenterID, o.ID).Scan(&cnt).Error
+		if cnt != 1 {
+			httpx.Fail(c, http.StatusBadRequest, "成本中心不存在或已归档")
+			return
+		}
+	} else if o.RequireCostCenter == 1 {
+		httpx.Fail(c, http.StatusBadRequest, "本公司已开启强制归集：创建密钥必须选择成本中心")
 		return
 	}
 	plain, prefix, hash, err := auth.GenerateAPIKey()
@@ -64,8 +120,9 @@ func (h *Handler) CreateKey(c *gin.Context) {
 		return
 	}
 	k := model.APIKey{
-		OrgID: *u.OrgID, UserID: u.ID, Name: req.Name,
+		OrgID: o.ID, UserID: u.ID, Name: req.Name,
 		KeyPrefix: prefix, KeyHash: hash, Status: 1,
+		ExpiredAt: req.ExpiresAt, CostCenterID: req.CostCenterID,
 	}
 	if err := h.DB.Create(&k).Error; err != nil {
 		httpx.Fail(c, http.StatusInternalServerError, "保存密钥失败")
@@ -73,9 +130,43 @@ func (h *Handler) CreateKey(c *gin.Context) {
 	}
 	httpx.OK(c, gin.H{
 		"id": k.ID, "name": k.Name, "key": plain,
-		"key_prefix": prefix, "created_at": k.CreatedAt,
-		"message": "请立即保存完整密钥，关闭后将无法再次查看",
+		"key_prefix": prefix, "created_at": k.CreatedAt, "expires_at": k.ExpiredAt,
+		"cost_center_id": k.CostCenterID,
+		"message":        "请立即保存完整密钥，关闭后将无法再次查看",
 	})
+}
+
+// AssignKeyCenter PUT /api/member/keys/:id/cost-center：员工改自己 key 的归集（只影响未来）
+func (h *Handler) AssignKeyCenter(c *gin.Context) {
+	id, ok := httpx.PathID(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		CostCenterID *int64 `json:"cost_center_id"`
+	}
+	if !httpx.BindJSON(c, &req) {
+		return
+	}
+	k, ok := h.ownKey(c, id)
+	if !ok {
+		return
+	}
+	if req.CostCenterID != nil {
+		var cnt int64
+		_ = h.DB.Raw("SELECT COUNT(*) FROM cost_centers WHERE id = ? AND org_id = ? AND status = 1",
+			*req.CostCenterID, k.OrgID).Scan(&cnt).Error
+		if cnt != 1 {
+			httpx.Fail(c, http.StatusBadRequest, "成本中心不存在或已归档")
+			return
+		}
+	}
+	if err := h.DB.Exec("UPDATE api_keys SET cost_center_id = ? WHERE id = ?",
+		req.CostCenterID, id).Error; err != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "更新失败")
+		return
+	}
+	httpx.OK(c, gin.H{"message": "已更新（历史账单不变，未来消耗归新中心）"})
 }
 
 // DeleteKey DELETE /api/member/keys/:id

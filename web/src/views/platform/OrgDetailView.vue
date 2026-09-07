@@ -1,8 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { apiGetOrg, apiOrgDetailStats, apiResetOrgAdminPassword } from '../../api/platform'
+import dayjs from 'dayjs'
+import {
+  apiGetOrg, apiOrgDetailStats, apiResetOrgAdminPassword, apiUpdateOrgAlertLevels,
+  apiOrgStatement, downloadOrgStatementCSVPlatform,
+} from '../../api/platform'
 import LineChart from '../../components/LineChart.vue'
 import { trendOptions, barOption } from '../../utils/chart'
 import { fmtTime, fmtQuota, fmtNum, pointsToYuan, roleNames } from '../../utils/format'
@@ -53,6 +57,58 @@ const usedPct = computed(() =>
   org.value && org.value.quota_limit
     ? (org.value.quota_used / org.value.quota_limit) * 100 : 0,
 )
+
+// 额度预警阈值（alert_levels JSON 取最高档；0 = 关闭）
+const threshold = ref(0)
+const thresholdSaving = ref(false)
+function parseThreshold(levels: string): number {
+  try {
+    const arr = JSON.parse(levels || '[]') as number[]
+    return arr.length ? Math.max(...arr.filter((v) => v > 0), 0) : 0
+  } catch {
+    return 0
+  }
+}
+onMounted(() => { threshold.value = parseThreshold(org.value?.alert_levels) })
+watch(() => org.value?.alert_levels, (v) => { threshold.value = parseThreshold(v) })
+async function saveThreshold() {
+  thresholdSaving.value = true
+  try {
+    await apiUpdateOrgAlertLevels(Number(route.params.id), threshold.value || 0)
+    ElMessage.success('预警阈值已更新')
+  } finally {
+    thresholdSaving.value = false
+  }
+}
+
+// 三段式对账单（平台视角：明细含厂商成本/毛利）
+const stMonth = ref(dayjs().format('YYYY-MM'))
+const st = ref<any>(null)
+const stLoading = ref(false)
+const stMonthOptions = (() => {
+  const out: string[] = []
+  for (let i = 0; i < 12; i++) out.push(dayjs().subtract(i, 'month').format('YYYY-MM'))
+  return out
+})()
+async function loadStatement() {
+  stLoading.value = true
+  try {
+    st.value = await apiOrgStatement(Number(route.params.id), stMonth.value)
+  } catch {
+    st.value = null
+  } finally {
+    stLoading.value = false
+  }
+}
+onMounted(loadStatement)
+async function exportStatementCSV() {
+  try {
+    await downloadOrgStatementCSVPlatform(Number(route.params.id), stMonth.value, org.value?.name || '')
+    ElMessage.success('账单 CSV 已生成')
+  } catch {
+    ElMessage.error('导出失败，请重试')
+  }
+}
 </script>
 
 <template>
@@ -94,6 +150,16 @@ const usedPct = computed(() =>
             <div class="pool-meter-fill" :style="{ width: `${Math.max(0.8, Math.min(100, usedPct))}%` }"></div>
           </div>
           <span class="pool-meter-label num">已用 {{ usedPct.toFixed(2) }}%</span>
+        </div>
+        <div class="pool-alert">
+          <el-tooltip content="公司额度达到阈值时邮件提醒其管理员；0 = 关闭。达 100% 会同时通知你（平台管理员）" placement="top">
+            <span class="pool-label">预警阈值</span>
+          </el-tooltip>
+          <div class="pool-alert-input">
+            <el-input-number v-model="threshold" :min="0" :max="100" :controls="false" size="small" style="width: 76px" />
+            <span class="dim">%</span>
+            <el-button size="small" :loading="thresholdSaving" @click="saveThreshold">保存</el-button>
+          </div>
         </div>
       </div>
     </el-card>
@@ -223,6 +289,106 @@ const usedPct = computed(() =>
       </el-col>
     </el-row>
 
+    <!-- 三段式对账单（平台视角） -->
+    <el-card v-if="st" shadow="never">
+      <template #header>
+        <div class="card-head">
+          <span>月度对账单<span class="unit">（勾稽 / 冲减 / 明细，平台视角含厂商成本与毛利）</span></span>
+          <div>
+            <el-select v-model="stMonth" size="small" style="width: 120px; margin-right: 8px" @change="loadStatement">
+              <el-option v-for="m in stMonthOptions" :key="m" :label="m" :value="m" />
+            </el-select>
+            <el-button type="primary" size="small" @click="exportStatementCSV">导出 CSV</el-button>
+          </div>
+        </div>
+      </template>
+
+      <el-descriptions :column="3" border size="small">
+        <el-descriptions-item label="期初限额">
+          <span class="num">{{ st.opening_limit == null ? '—' : fmtQuota(st.opening_limit) }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="期初已用">
+          <span class="num">{{ st.opening_used == null ? '—' : fmtQuota(st.opening_used) }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="链式校验">
+          <el-tag v-if="st.chain_ok === true" type="success" size="small">✓ 期末−期初 == 消耗</el-tag>
+          <el-tag v-else-if="st.chain_ok === false" type="danger" size="small">✗ 数据不一致</el-tag>
+          <el-tag v-else type="info" size="small">— 无期初快照</el-tag>
+        </el-descriptions-item>
+        <el-descriptions-item label="期内授权">
+          <span class="num green">+{{ fmtQuota(st.total_granted) }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="期内冲减">
+          <span class="num red">{{ fmtQuota(st.total_revoked) }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="期内消耗（营收）">
+          <span class="num">¥{{ pointsToYuan(st.consumption) }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="期末限额">
+          <span class="num">{{ fmtQuota(st.closing_limit) }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="期末已用">
+          <span class="num">
+            {{ fmtQuota(st.closing_used) }}
+            <el-tag v-if="st.closing_is_live" type="warning" size="small" effect="plain">实时</el-tag>
+          </span>
+        </el-descriptions-item>
+        <el-descriptions-item label="不计量笔数">
+          <span :class="{ 'st-warn': st.no_usage_count > 0 }">{{ st.no_usage_count }}</span>
+        </el-descriptions-item>
+      </el-descriptions>
+
+      <el-table v-if="st.revokes && st.revokes.length" :data="st.revokes" size="small" class="st-revokes">
+        <el-table-column label="冲减时间" width="160">
+          <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
+        </el-table-column>
+        <el-table-column label="冲减金额" width="180" align="right">
+          <template #default="{ row }">
+            <span class="num red">{{ row.amount.toLocaleString('zh-CN') }} 点</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="remark" label="事由" min-width="160" show-overflow-tooltip />
+      </el-table>
+
+      <h4 class="st-title">消耗明细<span class="unit">（模型 × 成本中心 × 日，未归集置底）</span></h4>
+      <el-table :data="st.rows" size="small" empty-text="该月无消耗">
+        <el-table-column prop="day" label="日期" width="100" />
+        <el-table-column prop="model_name" label="模型" min-width="130" />
+        <el-table-column label="成本中心" min-width="100">
+          <template #default="{ row }">
+            <span v-if="row.cost_center_id">{{ row.cost_center_name || `#${row.cost_center_id}` }}</span>
+            <span v-else class="dim">未归集</span>
+          </template>
+        </el-table-column>
+        <el-table-column prop="requests" label="请求" width="70" align="right" />
+        <el-table-column label="缓存命中" width="80" align="right">
+          <template #default="{ row }">
+            <span :class="{ green: row.cache_hits > 0 }">{{ row.cache_hits }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="营收（点）" width="130" align="right">
+          <template #default="{ row }">
+            <span class="num green">{{ row.cost.toLocaleString('zh-CN') }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="厂商成本（点）" width="120" align="right">
+          <template #default="{ row }">
+            <span class="num">{{ (row.vendor_cost ?? 0).toLocaleString('zh-CN') }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="毛利（点）" width="110" align="right">
+          <template #default="{ row }">
+            <span class="num" :class="row.margin >= 0 ? 'green' : 'red'">
+              {{ (row.margin ?? 0).toLocaleString('zh-CN') }}
+            </span>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div v-if="st.total_rows > st.rows.length" class="dim st-more">
+        明细共 {{ st.total_rows }} 行，仅展示前 {{ st.rows.length }} 行；完整数据请导出 CSV。
+      </div>
+    </el-card>
+
     <!-- 重置管理员密码 -->
     <el-dialog v-model="resetVisible" title="重置公司管理员密码" width="420px">
       <p class="reset-hint">
@@ -277,4 +443,11 @@ const usedPct = computed(() =>
 .pool-meter { flex: 1; height: 8px; background: var(--tg-green-wash); border-radius: 4px; overflow: hidden; }
 .pool-meter-fill { height: 100%; background: var(--tg-green); border-radius: 4px; }
 .pool-meter-label { font-size: 11.5px; color: var(--tg-muted); white-space: nowrap; }
+.pool-alert { display: flex; flex-direction: column; gap: 6px; }
+.pool-alert-input { display: flex; align-items: center; gap: 6px; }
+
+.st-revokes { margin-top: 14px; }
+.st-title { margin: 18px 0 8px; font-size: 13.5px; }
+.st-warn { color: var(--el-color-warning); font-weight: 600; }
+.st-more { font-size: 12px; margin-top: 8px; }
 </style>

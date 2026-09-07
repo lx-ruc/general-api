@@ -8,6 +8,7 @@ type UsageLog struct {
 	UserID           int64  `json:"user_id"`
 	APIKeyID         int64  `json:"api_key_id"`
 	ChannelID        *int64 `json:"channel_id"`
+	CostCenterID     *int64 `json:"cost_center_id"` // 结算时快照；key 改派不动历史
 	ModelName        string `json:"model_name"`
 	IsStream         int    `json:"is_stream"`
 	PromptTokens     int64  `json:"prompt_tokens"`
@@ -19,6 +20,7 @@ type UsageLog struct {
 	VendorCost       int64  `json:"vendor_cost"` // 厂商成本；毛利 = Cost - VendorCost
 	Cost             int64  `json:"cost"`        // 客户扣减（= 平台营收）
 	NoUsage          int    `json:"no_usage"`     // 1=上游未回 usage，本次未计费
+	CacheHit         int    `json:"cache_hit"`    // 1=精确缓存命中（未打上游，cost=0）
 	Status           int    `json:"status"`
 	Error            string `json:"error"`
 	LatencyMs        int64  `json:"latency_ms"`

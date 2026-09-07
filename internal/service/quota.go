@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"token-gateway/internal/model"
 )
@@ -100,6 +101,50 @@ func AddUserQuota(db *gorm.DB, orgID, userID, amount, operatorID int64, remark s
 		}
 		return tx.Create(&model.QuotaGrant{
 			SubjectType: "user", SubjectID: userID, Amount: amount,
+			Remark: remark, OperatorID: opID(operatorID), CreatedAt: now,
+		}).Error
+	})
+}
+
+// SetUserQuotaUnlimited 员工限额"设值"路径（转不限 / 转限额）：同事务读旧值→更新→差值入流水，
+// 使 Σgrants == COALESCE(quota_limit, 0) 恒成立（不限额以 0 为基）。
+// 仅状态实际切换时动作：转不限记 amount=−旧值；转限额以当前消耗为起点记 amount=起点；同态重复调用为无操作。
+func SetUserQuotaUnlimited(db *gorm.DB, orgID, userID int64, unlimited bool, operatorID int64) error {
+	now := time.Now().Unix()
+	return db.Transaction(func(tx *gorm.DB) error {
+		q := tx.Model(&model.User{}).Where("id = ? AND org_id = ?", userID, orgID)
+		if tx.Dialector.Name() == "postgres" {
+			q = q.Clauses(clause.Locking{Strength: "UPDATE"}) // PG 行锁；SQLite 由 _txlock=immediate 串行化护住窗口
+		}
+		var m model.User
+		if err := q.First(&m).Error; err != nil {
+			return ErrNotFound
+		}
+		var newLimit *int64
+		var delta int64
+		remark := "设值调整"
+		switch {
+		case unlimited && m.QuotaLimit != nil: // 限额 → 不限：归还全部上限
+			newLimit = nil
+			delta = -*m.QuotaLimit
+			remark += "：转不限额"
+		case !unlimited && m.QuotaLimit == nil: // 不限 → 限额：以当前消耗为起点
+			v := m.QuotaUsed
+			newLimit = &v
+			delta = v
+			remark += "：转限额"
+		default: // 同态，无操作
+			return nil
+		}
+		if err := tx.Model(&model.User{}).Where("id = ?", userID).
+			Updates(map[string]any{"quota_limit": newLimit, "updated_at": now}).Error; err != nil {
+			return err
+		}
+		if delta == 0 {
+			return nil // 状态变了但差值为 0（如不限→限额且消耗为 0），无流水必要
+		}
+		return tx.Create(&model.QuotaGrant{
+			SubjectType: "user", SubjectID: userID, Amount: delta,
 			Remark: remark, OperatorID: opID(operatorID), CreatedAt: now,
 		}).Error
 	})

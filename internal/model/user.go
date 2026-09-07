@@ -17,6 +17,9 @@ type User struct {
 	Role         string `json:"role"`
 	QuotaLimit   *int64 `json:"quota_limit"` // NULL=不限额（仅 member 有意义）
 	QuotaUsed    int64  `json:"quota_used"`
+	AlertLevels  string `json:"alert_levels"` // 个人预警阈值 JSON（[] = 关闭；不限额者不参与）
+	AlertLevel   int    `json:"alert_level"`  // 当前已达档位（边沿状态机）
+	AlertSince   int64  `json:"alert_since"`
 	Status       int    `json:"status"`
 	LastLoginAt  *int64 `json:"last_login_at"`
 	CreatedAt    int64  `gorm:"autoCreateTime" json:"created_at"`

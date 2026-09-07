@@ -2,9 +2,10 @@ package api
 
 import (
 	"io/fs"
-	"strings"
+	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
@@ -14,6 +15,7 @@ import (
 	"token-gateway/internal/api/org"
 	"token-gateway/internal/api/platform"
 	"token-gateway/internal/config"
+	"token-gateway/internal/coord"
 	"token-gateway/internal/crypto"
 	"token-gateway/internal/gateway"
 	"token-gateway/internal/metrics"
@@ -60,9 +62,12 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		m.Handler()(c.Writer, c.Request)
 	})
 
+	// ---- 协调器（Key 冷却/渠道闸门/缓存）：配了 Redis 用全局实现，否则进程内存 ----
+	coordinator := newCoordinator(cfg, m)
+
 	// ---- 数据面 /v1（API key 鉴权 + per-key 限流）----
 	keyLimiter := middleware.NewRateLimiter(cfg.Gateway.PerKeyRPM, 10)
-	gw := gateway.NewHandler(db, cipher, cfg, keyLimiter, m)
+	gw := gateway.NewHandler(db, cipher, cfg, keyLimiter, m, coordinator)
 	v1 := r.Group("/v1", middleware.APIKeyAuth(db))
 	{
 		v1.POST("/chat/completions", gw.ChatCompletions)
@@ -71,6 +76,10 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 
 	// ---- 管理台 /api ----
 	service.SetMailer(&cfg.Smtp)
+	service.SetSiteURL(cfg.Server.SiteURL)
+	service.SetBillingTimezone(cfg.Billing.Timezone)
+	// 月末余额快照（次月 1 日 00:05 账期时区；启动自愈补跑；settings CAS 多实例唯一）
+	go service.RunBalanceSnapshotter(db, cfg.Billing.Timezone)
 	verif := service.NewVerification(db, &cfg.Smtp)
 	authH := &AuthHandler{DB: db, Secret: cfg.Security.JWTSecret, TTL: cfg.Security.JWTTTL.Duration, Verif: verif}
 	loginLimiter := middleware.NewRateLimiter(5, 5)
@@ -102,9 +111,16 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		plat.PUT("/orgs/:id", ph.UpdateOrg)
 		plat.DELETE("/orgs/:id", ph.DeleteOrg)
 		plat.POST("/orgs/:id/quota", ph.AddOrgQuota)
+		plat.PUT("/orgs/:id/alert-levels", ph.UpdateOrgAlertLevels)
 		plat.POST("/orgs/:id/reset-admin-password", ph.ResetOrgAdminPassword)
 		plat.GET("/orgs/:id/users", ph.ListOrgUsers)
 		plat.GET("/orgs/:id/stats", ph.OrgStats)
+		plat.GET("/orgs/:id/statement", ph.OrgStatement)
+		plat.GET("/orgs/:id/statement/csv", ph.OrgStatementCSV)
+		plat.POST("/billing/snapshots", ph.RunSnapshot)
+		plat.GET("/vendor-bills", ph.ListVendorBills)
+		plat.PUT("/vendor-bills", ph.UpsertVendorBill)
+		plat.DELETE("/vendor-bills/:id", ph.DeleteVendorBill)
 
 		plat.GET("/channels", ph.ListChannels)
 		plat.POST("/channels", ph.CreateChannel)
@@ -113,6 +129,8 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		plat.PUT("/channels/:id/status", ph.UpdateChannelStatus)
 		plat.DELETE("/channels/:id", ph.DeleteChannel)
 		plat.POST("/channels/:id/test", ph.TestChannel)
+		plat.GET("/channels/:id/keys", ph.ListChannelKeys)
+		plat.PUT("/channels/:id/keys/:kid/status", ph.UpdateChannelKeyStatus)
 
 		plat.GET("/models", ph.ListModels)
 		plat.POST("/models", ph.CreateModel)
@@ -121,6 +139,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 
 		plat.GET("/stats/overview", ph.StatsOverview)
 		plat.GET("/usage", ph.ListUsage)
+		plat.GET("/reports/cost-centers", ph.CostCenterCrossReport)
 		plat.GET("/recharges", ph.ListRecharges)
 		plat.PUT("/recharges/:id", ph.HandleRecharge)
 		plat.GET("/audit", ph.ListAudit)
@@ -146,6 +165,13 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		og.GET("/usage", oh.ListUsage)
 		og.GET("/keys", oh.ListKeys)
 		og.PUT("/keys/:id/status", oh.UpdateKeyStatus)
+		og.PUT("/keys/:id/cost-center", oh.ReassignKeyCenter)
+
+		og.GET("/cost-centers", oh.ListCostCenters)
+		og.POST("/cost-centers", oh.CreateCostCenter)
+		og.PUT("/cost-centers/config", oh.UpdateCostCenterConfig)
+		og.PUT("/cost-centers/:id", oh.UpdateCostCenter)
+		og.GET("/reports/cost-centers", oh.CostCenterReport)
 
 		og.GET("/requests", oh.ListRequests)
 		og.PUT("/requests/:id", oh.HandleRequest)
@@ -153,6 +179,10 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		og.POST("/recharges", oh.CreateRecharge)
 		og.GET("/bank-info", oh.GetBankInfo)
 		og.GET("/billing", oh.Billing)
+		og.GET("/billing/statement", oh.BillingStatement)
+		og.GET("/billing/statement/csv", oh.BillingStatementCSV)
+		og.GET("/alert-levels", oh.GetAlertLevels)
+		og.PUT("/alert-levels", oh.UpdateAlertLevels)
 	}
 
 	// 员工
@@ -162,6 +192,8 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		mg.GET("/keys", mh.ListKeys)
 		mg.POST("/keys", mh.CreateKey)
 		mg.DELETE("/keys/:id", mh.DeleteKey)
+		mg.PUT("/keys/:id/cost-center", mh.AssignKeyCenter)
+		mg.GET("/cost-centers", mh.ListCostCenters)
 		mg.GET("/models", mh.ListModels)
 		mg.GET("/stats/overview", mh.StatsOverview)
 		mg.GET("/usage", mh.ListUsage)
@@ -172,4 +204,27 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 	// 前端静态（embed，SPA fallback）
 	webui.Register(r, webDist)
 	return r
+}
+
+// newCoordinator 按配置构建协调器：Redis（多实例全局）优先，失败或未配置回退内存实现
+func newCoordinator(cfg *config.Config, m *metrics.Metrics) coord.Coordinator {
+	if cfg.Redis.Addr != "" {
+		rc, err := coord.NewRedis(coord.RedisConfig{
+			Addr:     cfg.Redis.Addr,
+			Password: cfg.Redis.Password,
+			DB:       cfg.Redis.DB,
+			OnError:  m.CoordRedisErrors.Inc,
+		})
+		if err != nil {
+			slog.Error("Redis 协调器连接失败，回退内存模式（多实例下闸门/冷却为 per-node）",
+				"addr", cfg.Redis.Addr, "err", err)
+		} else {
+			slog.Info("Redis 协调器已启用（闸门/冷却/缓存全局共享）", "addr", cfg.Redis.Addr)
+			return rc
+		}
+	}
+	if cfg.Database.Driver == "postgres" {
+		slog.Warn("postgres 部署未配置 redis：闸门/冷却/缓存为 per-node，多实例下实际并发≈max×节点数")
+	}
+	return coord.NewMem(cfg.Gateway.CacheMaxItems)
 }

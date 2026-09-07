@@ -138,13 +138,13 @@ async function removeOrg(org: Org) {
     </template>
   </el-dialog>
 
-  <el-dialog v-model="quotaVisible" :title="`追加额度：${quotaForm.org?.name || ''}`" width="440px">
+  <el-dialog v-model="quotaVisible" :title="`追加 / 冲减额度：${quotaForm.org?.name || ''}`" width="440px">
     <el-form label-width="100px">
-      <el-form-item label="追加token 数">
+      <el-form-item label="token 数">
         <el-input-number v-model="quotaForm.amount" :step="10000000" />
-        <span class="tip">= ¥{{ pointsToYuan(quotaForm.amount) }}（负数为回收）</span>
+        <span class="tip">= ¥{{ pointsToYuan(quotaForm.amount) }}（负数为冲减回收，入对账单冲减段）</span>
       </el-form-item>
-      <el-form-item label="备注"><el-input v-model="quotaForm.remark" /></el-form-item>
+      <el-form-item label="事由备注"><el-input v-model="quotaForm.remark" /></el-form-item>
     </el-form>
     <template #footer>
       <el-button @click="quotaVisible = false">取消</el-button>

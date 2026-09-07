@@ -1,4 +1,4 @@
-# 高可用部署：postgres + 双网关 + caddy
+# 高可用部署：postgres + redis + 双网关 + caddy
 # 用法：cd deploy && docker compose up -d
 # 滚动发布：docker compose up -d --no-deps --build gateway1 &&
 #           docker compose up -d --no-deps --build gateway2（LB 自动摘流）
@@ -18,15 +18,30 @@ services:
       timeout: 3s
       retries: 10
 
+  # 协调器 Redis：Key 冷却 / 渠道闸门 / 精确缓存 全局共享（多实例下实际并发=配置值而非×节点数）。
+  # 纯 transient 数据，不持久化；满了按 LRU 淘汰，Redis 故障时网关 fail-open 不拖死数据面。
+  redis:
+    image: redis:7-alpine
+    restart: always
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru", "--save", ""]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   gateway1: &gateway
     build: ..
     restart: always
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment: &gateway-env
       TG_DATABASE_DRIVER: postgres
       TG_DATABASE_DSN: "host=postgres user=tg password=${PG_PASSWORD:-change-me-strong} dbname=token_gateway port=5432 sslmode=disable"
+      TG_REDIS_ADDR: "redis:6379"
       TG_JWT_SECRET: ${TG_JWT_SECRET:-change-me-random-string}
       TG_BOOTSTRAP_ADMIN_PASSWORD: ${TG_ADMIN_PASSWORD:-change-me-too}
     expose:
@@ -36,6 +51,8 @@ services:
     <<: *gateway
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       gateway1:
         condition: service_healthy

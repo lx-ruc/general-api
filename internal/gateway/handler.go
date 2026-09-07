@@ -2,10 +2,13 @@ package gateway
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
@@ -16,6 +19,7 @@ import (
 	"gorm.io/gorm"
 
 	"token-gateway/internal/config"
+	"token-gateway/internal/coord"
 	"token-gateway/internal/crypto"
 	"token-gateway/internal/metrics"
 	"token-gateway/internal/middleware"
@@ -37,18 +41,34 @@ type Handler struct {
 	Limiter *middleware.RateLimiter
 	Breaker *Breaker
 	Metrics *metrics.Metrics
+	Coord   coord.Coordinator
+
+	MaxConcurrency   int           // 渠道并发闸门（0=不限）
+	QueueWaitTimeout time.Duration // 闸门排队等待上限
+	KeyCooldown      time.Duration // 429 后 Key 冷却时长
+	CacheTTL         time.Duration // 精确缓存 TTL（0=关）
+	CacheIsolateOrg  bool          // 缓存按组织隔离
 }
 
 func NewHandler(db *gorm.DB, cipher *crypto.Cipher, cfg *config.Config,
-	limiter *middleware.RateLimiter, m *metrics.Metrics) *Handler {
+	limiter *middleware.RateLimiter, m *metrics.Metrics, cd coord.Coordinator) *Handler {
+	if cd == nil {
+		cd = coord.Nop{}
+	}
 	return &Handler{
-		DB:      db,
-		Cipher:  cipher,
-		Client:  NewHTTPClient(cfg.Gateway.UpstreamFirstByteTimeout.Duration),
-		MaxBody: int64(cfg.Gateway.MaxBodyMB) << 20,
-		Limiter: limiter,
-		Breaker: NewBreaker(cfg.Gateway.ChannelBreakerThreshold),
-		Metrics: m,
+		DB:               db,
+		Cipher:           cipher,
+		Client:           NewHTTPClient(cfg.Gateway.UpstreamFirstByteTimeout.Duration),
+		MaxBody:          int64(cfg.Gateway.MaxBodyMB) << 20,
+		Limiter:          limiter,
+		Breaker:          NewBreaker(cfg.Gateway.ChannelBreakerThreshold),
+		Metrics:          m,
+		Coord:            cd,
+		MaxConcurrency:   cfg.Gateway.ChannelMaxConcurrency,
+		QueueWaitTimeout: cfg.Gateway.QueueWaitTimeout.Duration,
+		KeyCooldown:      cfg.Gateway.KeyCooldown.Duration,
+		CacheTTL:         cfg.Gateway.CacheTTL.Duration,
+		CacheIsolateOrg:  cfg.Gateway.CacheIsolateOrg,
 	}
 }
 
@@ -96,11 +116,12 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	ki := middleware.GetKeyInfo(c)
 
 	rec := &model.UsageLog{
-		RequestID: middleware.GetRequestID(c),
-		OrgID:     ki.OrgID,
-		UserID:    ki.UserID,
-		APIKeyID:  ki.KeyID,
-		ClientIP:  c.ClientIP(),
+		RequestID:    middleware.GetRequestID(c),
+		OrgID:        ki.OrgID,
+		UserID:       ki.UserID,
+		APIKeyID:     ki.KeyID,
+		CostCenterID: ki.CostCenterID, // 结算时快照：改派只影响未来
+		ClientIP:     c.ClientIP(),
 	}
 	defer func() {
 		rec.LatencyMs = time.Since(start).Milliseconds()
@@ -113,6 +134,9 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				h.Metrics.SettleErrors.Inc()
 			}
 			c.Error(err) //nolint: 仅记录，不影响已发出的响应
+		} else if rec.Cost > 0 {
+			// 水位实际变动才检查预算告警（缓存命中/被拦截请求不动水位）；异步 + 节流，数据面零等待
+			go service.CheckBudgetAlerts(h.DB, h.Metrics, rec.OrgID, rec.UserID)
 		}
 	}()
 
@@ -181,12 +205,47 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		return
 	}
 
-	// 渠道候选
-	cands, err := SelectCandidates(h.DB, h.Cipher, modelName)
-	if err != nil || len(cands) == 0 {
-		rec.Status, rec.Error = http.StatusServiceUnavailable, "no available channel"
-		openaiError(c, http.StatusServiceUnavailable, "service_unavailable",
-			"no available upstream channel for model "+modelName)
+	// 精确缓存查询（授权/预检之后、选渠道之前）：命中直接回，不触发上游调用与扣费
+	cacheKey := ""
+	if h.CacheTTL > 0 && !stream {
+		cacheKey = h.cacheKey(bodyMap, ki.OrgID)
+		if data, ok := h.Coord.CacheGet(cacheKey); ok {
+			if h.Metrics != nil {
+				h.Metrics.CacheHits.Inc()
+			}
+			rec.Status = http.StatusOK
+			rec.CacheHit = 1
+			c.Writer.Header().Set("X-Tg-Cache", "hit")
+			c.Data(http.StatusOK, "application/json", data)
+			var ur struct {
+				Usage *Usage `json:"usage"`
+			}
+			_ = json.Unmarshal(data, &ur)
+			if ur.Usage != nil {
+				rec.PromptTokens = ur.Usage.PromptTokens
+				rec.CompletionTokens = ur.Usage.CompletionTokens
+				rec.InputPrice = m.InputPrice
+				rec.OutputPrice = m.OutputPrice
+			} else {
+				rec.NoUsage = 1
+			}
+			return // Cost 保持 0：缓存命中不扣费
+		}
+	}
+
+	// 渠道候选（渠道 × Key，冷却/禁用已过滤）
+	cands, err := SelectCandidates(h.DB, h.Cipher, modelName, h.Coord)
+	if err != nil {
+		rec.Status, rec.Error = http.StatusInternalServerError, err.Error()
+		openaiError(c, http.StatusInternalServerError, "internal_error", "failed to select channels")
+		return
+	}
+	if len(cands) == 0 {
+		// 语义是"上游限流中"（所有 Key 冷却/禁用），回 429 而非 503
+		rec.Status, rec.Error = http.StatusTooManyRequests, "no available key (all cooling/disabled)"
+		h.writeRetryAfter(c, h.KeyCooldown)
+		openaiError(c, http.StatusTooManyRequests, "upstream_busy",
+			"upstream is rate limited, please retry later")
 		return
 	}
 
@@ -206,12 +265,26 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		}
 	}
 
+	// 单个候选的完整尝试：acquire 闸门 → 转发 → 按响应分类。
+	// 闭包内 defer release，从结构上避免 defer-in-loop 泄漏。
 	var lastErr string
-	for i, cand := range cands {
-		if c.Request.Context().Err() != nil {
-			rec.Status, rec.Error = 499, "client disconnected"
-			return
+	onlyRateLimited := true // 全部失败均因 429/排队超时 → 最终回 429 而非 502
+	tryCandidate := func(cand Candidate) attemptResult {
+		// 渠道并发闸门（有界等待）。超时换渠道：同渠道其他 Key 面对同一个满闸门，重试无意义
+		qStart := time.Now()
+		release, ok := h.Coord.AcquireSlot(c.Request.Context(), cand.SlotScope(), h.MaxConcurrency)
+		if !ok {
+			if h.Metrics != nil {
+				h.Metrics.QueueTimeouts.Inc()
+			}
+			lastErr = fmt.Sprintf("queue wait timeout on channel %s", cand.ChannelName)
+			return attemptNextChannel
 		}
+		if h.Metrics != nil {
+			h.Metrics.QueueWait.Observe(time.Since(qStart).Seconds())
+		}
+		defer release()
+
 		bm := bodyMap
 		if cand.UpstreamModel != "" && cand.UpstreamModel != modelName {
 			bm = cloneMap(bodyMap)
@@ -220,13 +293,13 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		upBody, merr := json.Marshal(bm)
 		if merr != nil {
 			lastErr = merr.Error()
-			continue
+			return attemptNextKey
 		}
 		req, rerr := http.NewRequestWithContext(c.Request.Context(), http.MethodPost,
 			cand.URL(), bytes.NewReader(upBody))
 		if rerr != nil {
 			lastErr = rerr.Error()
-			continue
+			return attemptNextKey
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+cand.UpstreamKey)
@@ -238,26 +311,59 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		resp, derr := h.Client.Do(req)
 		if derr != nil {
 			lastErr = derr.Error()
+			onlyRateLimited = false
 			h.noteChannelFailure(cand)
-			continue // 网络失败 → 换下一个渠道（尚未向客户端写出任何字节）
+			return attemptNextChannel // 网络失败 → 跳过该渠道（尚未向客户端写出任何字节）
 		}
 
-		// 上游 5xx 且还有备选 → 重试下一个渠道
-		if resp.StatusCode >= 500 && i < len(cands)-1 {
+		// drain 读空并关闭，保证连接可复用
+		drain := func() {
 			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 			_ = resp.Body.Close()
-			lastErr = fmt.Sprintf("upstream %s returned %d", cand.ChannelName, resp.StatusCode)
-			h.noteChannelFailure(cand)
-			continue
 		}
 
-		// 确定由该渠道应答：2xx 视为成功（熔断计数清零）
-		if resp.StatusCode < 500 {
+		switch {
+		case resp.StatusCode == http.StatusTooManyRequests:
+			// 429：Key 冷却（Retry-After 优先）→ 同渠道下一把 Key
+			drain()
+			if h.Metrics != nil {
+				h.Metrics.Upstream429.Inc()
+				h.Metrics.KeyCooldown.Inc()
+			}
+			cd := parseRetryAfter(resp.Header.Get("Retry-After"))
+			if cd <= 0 {
+				cd = h.KeyCooldown
+			}
+			h.Coord.SetCooldown(cand.KeyScope(), cd)
+			lastErr = fmt.Sprintf("upstream %s returned 429 (key %d cooling %s)",
+				cand.ChannelName, cand.KeyID, cd)
+			return attemptNextKey
+
+		case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+			// 401/403：Key 失效 → 禁用该 Key → 换渠道（同渠道其他 Key 仍可被后续请求选中）
+			drain()
+			onlyRateLimited = false
+			h.disableKey(cand, resp.StatusCode)
+			lastErr = fmt.Sprintf("upstream %s key %d returned %d", cand.ChannelName, cand.KeyID, resp.StatusCode)
+			return attemptNextChannel
+
+		case resp.StatusCode >= 500:
+			// 5xx：渠道级故障，熔断计数并跳过该渠道全部剩余 Key（同 endpoint 换 Key 无意义）
+			drain()
+			onlyRateLimited = false
+			lastErr = fmt.Sprintf("upstream %s returned %d", cand.ChannelName, resp.StatusCode)
+			h.noteChannelFailure(cand)
+			return attemptNextChannel
+		}
+
+		// 该渠道应答（2xx 成功或 4xx 客户端错透传）。仅 2xx 计熔断成功
+		if resp.StatusCode < 300 {
 			h.Breaker.RecordSuccess(cand.ChannelID)
 		}
 
 		rec.ChannelID = &cand.ChannelID
 		rec.Status = resp.StatusCode
+		c.Writer.Header().Set("X-Tg-Channel-Id", strconv.FormatInt(cand.ChannelID, 10))
 		ct := resp.Header.Get("Content-Type")
 
 		if stream {
@@ -280,18 +386,24 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				rec.Error = truncateStr(perr.Error(), 500)
 			}
 			applyUsage(rec, usage, m)
-			return
+			return attemptDone
 		}
 
 		// 非流式：读完上游再透传（上限 20MB）
 		data, rerr2 := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
 		_ = resp.Body.Close()
 		if rerr2 != nil {
+			onlyRateLimited = false
 			lastErr = rerr2.Error()
-			continue
+			h.noteChannelFailure(cand)
+			return attemptNextChannel // 尚未向客户端写出字节，可换渠道
 		}
 		if ct == "" {
 			ct = "application/json"
+		}
+		// 2xx 且非流式、体积受限 → 写精确缓存
+		if resp.StatusCode < 300 && cacheKey != "" && len(data) <= 1<<20 {
+			h.Coord.CacheSet(cacheKey, data, h.CacheTTL)
 		}
 		c.Data(resp.StatusCode, ct, data)
 		if resp.StatusCode >= 400 {
@@ -306,19 +418,137 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				msg = fmt.Sprintf("upstream returned %d", resp.StatusCode)
 			}
 			rec.Error = truncateStr(msg, 500)
-			return
+			return attemptDone
 		}
 		var ur struct {
 			Usage *Usage `json:"usage"`
 		}
 		_ = json.Unmarshal(data, &ur)
 		applyUsage(rec, ur.Usage, m)
-		return
+		return attemptDone
 	}
 
-	rec.Status, rec.Error = http.StatusBadGateway, "all channels failed: "+lastErr
+	for i := 0; i < len(cands); i++ {
+		if c.Request.Context().Err() != nil {
+			rec.Status, rec.Error = 499, "client disconnected"
+			return
+		}
+		switch tryCandidate(cands[i]) {
+		case attemptDone:
+			return
+		case attemptNextChannel:
+			ch := cands[i].ChannelID
+			for i+1 < len(cands) && cands[i+1].ChannelID == ch {
+				i++ // 跳过该渠道剩余 Key
+			}
+		}
+	}
+
+	// 全部候选耗尽：仅剩限流类失败时回 429（OpenAI SDK 对 429 有专门退避），否则 502
+	rec.Error = "all channels failed: " + lastErr
+	if onlyRateLimited {
+		rec.Status = http.StatusTooManyRequests
+		h.writeRetryAfter(c, h.KeyCooldown)
+		openaiError(c, http.StatusTooManyRequests, "upstream_busy",
+			"upstream is rate limited, please retry later")
+		return
+	}
+	rec.Status = http.StatusBadGateway
 	openaiError(c, http.StatusBadGateway, "upstream_error",
 		"all upstream channels failed: "+truncateStr(lastErr, 200))
+}
+
+// attemptResult 单个候选尝试后的流转动作
+type attemptResult int
+
+const (
+	attemptDone        attemptResult = iota // 已向客户端写出响应
+	attemptNextKey                          // 同渠道下一把 Key
+	attemptNextChannel                      // 跳过该渠道全部剩余 Key
+)
+
+// cacheFields 参与精确缓存 key 的请求字段白名单（固定顺序迭代，绝不 range map）
+var cacheFields = []string{
+	"model", "messages", "temperature", "top_p", "seed",
+	"presence_penalty", "frequency_penalty", "max_tokens", "stop",
+	"response_format", "tools", "tool_choice",
+}
+
+// cacheKey 精确缓存 key：白名单字段按固定顺序拼接原始 JSON 后取 SHA-256（model 为对外名）
+func (h *Handler) cacheKey(bm map[string]json.RawMessage, orgID int64) string {
+	var sb strings.Builder
+	if h.CacheIsolateOrg {
+		fmt.Fprintf(&sb, "org:%d:", orgID)
+	}
+	for _, f := range cacheFields {
+		if raw, ok := bm[f]; ok {
+			sb.WriteString(f)
+			sb.WriteByte(0)
+			sb.Write(raw)
+			sb.WriteByte(0)
+		}
+	}
+	sum := sha256.Sum256([]byte(sb.String()))
+	return hex.EncodeToString(sum[:])
+}
+
+// writeRetryAfter 输出 Retry-After 响应头（至少 1 秒，向上取整）
+func (h *Handler) writeRetryAfter(c *gin.Context, d time.Duration) {
+	secs := int((d + time.Second - 1) / time.Second)
+	if secs < 1 {
+		secs = 1
+	}
+	c.Writer.Header().Set("Retry-After", strconv.Itoa(secs))
+}
+
+// parseRetryAfter 解析上游 Retry-After（秒数或 HTTP 日期）；仅信任 (0, 10min]，越界视为未提供
+func parseRetryAfter(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		return clampRetryAfter(secs)
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		return clampRetryAfter(int(time.Until(t).Seconds()))
+	}
+	return 0
+}
+
+func clampRetryAfter(secs int) time.Duration {
+	if secs <= 0 || secs > 600 {
+		return 0
+	}
+	return time.Duration(secs) * time.Second
+}
+
+// disableKey 401/403 后禁用 Key：池内 Key 异步置 status=0（可在 Key 池管理手动恢复）；
+// legacy 单 Key 用长效冷却代替禁用（到期自动恢复，避免把渠道一刀切死）
+func (h *Handler) disableKey(cand Candidate, status int) {
+	if cand.KeyID == 0 {
+		d := 10 * h.KeyCooldown
+		if d < 10*time.Minute {
+			d = 10 * time.Minute
+		}
+		h.Coord.SetCooldown(cand.KeyScope(), d)
+		slog.Warn("上游 401/403，legacy 单 Key 进入长效冷却",
+			"channel_id", cand.ChannelID, "status", status, "cooldown", d.String())
+		return
+	}
+	if h.Metrics != nil {
+		h.Metrics.KeyDisabled.Inc()
+	}
+	reason := fmt.Sprintf("auto-disabled: upstream %d at %s", status, time.Now().Format("2006-01-02 15:04:05"))
+	go func() {
+		if err := h.DB.Model(&model.ChannelKey{}).
+			Where("id = ? AND status = 1", cand.KeyID).
+			Updates(map[string]any{"status": 0, "remark": reason, "updated_at": time.Now().Unix()}).Error; err != nil {
+			slog.Error("自动禁用渠道 Key 失败", "channel_id", cand.ChannelID, "key_id", cand.KeyID, "err", err)
+			return
+		}
+		slog.Warn("上游 401/403，已自动禁用渠道 Key", "channel_id", cand.ChannelID, "key_id", cand.KeyID)
+	}()
 }
 
 // ListModels GET /v1/models：该 key 授权范围内启用的模型（OpenAI list 格式）

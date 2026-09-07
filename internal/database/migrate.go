@@ -39,6 +39,16 @@ func Migrate(db *gorm.DB) error {
 		{"usage_logs", "cost_input_price", "INTEGER NOT NULL DEFAULT 0"},
 		{"usage_logs", "cost_output_price", "INTEGER NOT NULL DEFAULT 0"},
 		{"usage_logs", "vendor_cost", "INTEGER NOT NULL DEFAULT 0"},
+		{"usage_logs", "cache_hit", "INTEGER NOT NULL DEFAULT 0"},
+		{"orgs", "require_cost_center", "INTEGER NOT NULL DEFAULT 0"},
+		{"api_keys", "cost_center_id", "INTEGER"},
+		{"usage_logs", "cost_center_id", "INTEGER"},
+		{"orgs", "alert_levels", "TEXT NOT NULL DEFAULT '[80]'"},
+		{"orgs", "alert_level", "INTEGER NOT NULL DEFAULT 0"},
+		{"orgs", "alert_since", "INTEGER NOT NULL DEFAULT 0"},
+		{"users", "alert_levels", "TEXT NOT NULL DEFAULT '[80]'"},
+		{"users", "alert_level", "INTEGER NOT NULL DEFAULT 0"},
+		{"users", "alert_since", "INTEGER NOT NULL DEFAULT 0"},
 	}
 	for _, a := range alters {
 		if !columnExists(db, a[0], a[1]) {

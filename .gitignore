@@ -10,3 +10,6 @@ web/node_modules/
 web/dist/*
 !web/dist/index.html
 backups/
+
+# 测试密钥文档（含真实 key，勿提交）
+API-KEYS.md

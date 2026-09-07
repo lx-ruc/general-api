@@ -4,14 +4,18 @@
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS orgs (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  name        TEXT    NOT NULL UNIQUE,
-  remark      TEXT    NOT NULL DEFAULT '',
-  quota_limit INTEGER NOT NULL DEFAULT 0,
-  quota_used  INTEGER NOT NULL DEFAULT 0,
-  status      INTEGER NOT NULL DEFAULT 1,
-  created_at  INTEGER NOT NULL,
-  updated_at  INTEGER NOT NULL
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  name                TEXT    NOT NULL UNIQUE,
+  remark              TEXT    NOT NULL DEFAULT '',
+  quota_limit         INTEGER NOT NULL DEFAULT 0,
+  quota_used          INTEGER NOT NULL DEFAULT 0,
+  status              INTEGER NOT NULL DEFAULT 1,
+  require_cost_center INTEGER NOT NULL DEFAULT 0,  -- 1=新建 key 必须归集成本中心
+  alert_levels        TEXT    NOT NULL DEFAULT '[80]', -- 预警阈值（升序百分比 JSON 数组；[] = 关闭）
+  alert_level         INTEGER NOT NULL DEFAULT 0,  -- 当前已达档位（0=未达任何档；边沿状态机）
+  alert_since         INTEGER NOT NULL DEFAULT 0,  -- 进入当前档位的时间
+  created_at          INTEGER NOT NULL,
+  updated_at          INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -24,6 +28,9 @@ CREATE TABLE IF NOT EXISTS users (
   role          TEXT    NOT NULL CHECK (role IN ('platform_admin','org_admin','member')),
   quota_limit   INTEGER,
   quota_used    INTEGER NOT NULL DEFAULT 0,
+  alert_levels  TEXT    NOT NULL DEFAULT '[80]', -- 个人预警阈值（[] = 关闭；不限额者不参与）
+  alert_level   INTEGER NOT NULL DEFAULT 0,
+  alert_since   INTEGER NOT NULL DEFAULT 0,
   status        INTEGER NOT NULL DEFAULT 1,
   last_login_at INTEGER,
   created_at    INTEGER NOT NULL,
@@ -47,6 +54,18 @@ CREATE TABLE IF NOT EXISTS channels (
   created_at       INTEGER NOT NULL,
   updated_at       INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS channel_keys (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+  key_enc    TEXT    NOT NULL,               -- AES-GCM 密文（未启用加密则明文）
+  weight     INTEGER NOT NULL DEFAULT 1,     -- 池内调度权重
+  status     INTEGER NOT NULL DEFAULT 1,     -- 0=禁用（401 自动禁用 / 管理员手动）
+  remark     TEXT    NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_channel_keys_channel ON channel_keys(channel_id, status);
 
 CREATE TABLE IF NOT EXISTS models (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -82,17 +101,30 @@ CREATE TABLE IF NOT EXISTS user_model_grants (
 );
 CREATE INDEX IF NOT EXISTS idx_grants_user ON user_model_grants(user_id);
 
+-- 成本中心词表（org 内受控；status 0=归档，永不硬删，历史引用保留）
+CREATE TABLE IF NOT EXISTS cost_centers (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id     INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  name       TEXT    NOT NULL,
+  status     INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (org_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_cost_centers_org ON cost_centers(org_id, status);
+
 CREATE TABLE IF NOT EXISTS api_keys (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  org_id       INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-  user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  name         TEXT    NOT NULL DEFAULT '',
-  key_prefix   TEXT    NOT NULL,
-  key_hash     TEXT    NOT NULL UNIQUE,
-  status       INTEGER NOT NULL DEFAULT 1,
-  expired_at   INTEGER,
-  last_used_at INTEGER,
-  created_at   INTEGER NOT NULL
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id         INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name           TEXT    NOT NULL DEFAULT '',
+  key_prefix     TEXT    NOT NULL,
+  key_hash       TEXT    NOT NULL UNIQUE,
+  status         INTEGER NOT NULL DEFAULT 1,
+  expired_at     INTEGER,
+  last_used_at   INTEGER,
+  cost_center_id INTEGER REFERENCES cost_centers(id),  -- 归集中心（结算时快照进 usage_logs）
+  created_at     INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_keys_user   ON api_keys(user_id);
 CREATE INDEX IF NOT EXISTS idx_keys_prefix ON api_keys(key_prefix);
@@ -104,6 +136,7 @@ CREATE TABLE IF NOT EXISTS usage_logs (
   user_id           INTEGER NOT NULL,
   api_key_id        INTEGER NOT NULL,
   channel_id        INTEGER,
+  cost_center_id    INTEGER,                  -- 结算时快照（改派不动历史）
   model_name        TEXT    NOT NULL DEFAULT '',
   is_stream         INTEGER NOT NULL DEFAULT 0,
   prompt_tokens     INTEGER NOT NULL DEFAULT 0,
@@ -115,6 +148,7 @@ CREATE TABLE IF NOT EXISTS usage_logs (
   vendor_cost       INTEGER NOT NULL DEFAULT 0,  -- 厂商成本（毛利 = cost - vendor_cost）
   cost              INTEGER NOT NULL DEFAULT 0,  -- 客户扣减（= 平台营收）
   no_usage          INTEGER NOT NULL DEFAULT 0,
+  cache_hit         INTEGER NOT NULL DEFAULT 0,   -- 1=精确缓存命中（未打上游，cost=0）
   status            INTEGER NOT NULL DEFAULT 0,
   error             TEXT    NOT NULL DEFAULT '',
   latency_ms        INTEGER NOT NULL DEFAULT 0,
@@ -136,6 +170,34 @@ CREATE TABLE IF NOT EXISTS quota_grants (
   created_at   INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_qgrants_subject ON quota_grants(subject_type, subject_id);
+
+-- 月末余额快照：period_balances(P) = P 月末时点的 org limit/used。
+-- 账单勾稽：期初[M] = snapshot[M-1]，期末[M] = snapshot[M]（当月实时值兜底）；
+-- 链式自证 snapshot[M].used − snapshot[M−1].used == Σcost(M)（used 单调，grants 不动 used）
+CREATE TABLE IF NOT EXISTS period_balances (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id      INTEGER NOT NULL,
+  period      TEXT    NOT NULL,               -- 'YYYY-MM'（该月末时点）
+  quota_limit INTEGER NOT NULL DEFAULT 0,
+  quota_used  INTEGER NOT NULL DEFAULT 0,
+  snapshot_at INTEGER NOT NULL,               -- 实际写入时刻（月末 00:05 或补跑时刻）
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL,
+  UNIQUE(org_id, period)
+);
+
+-- 厂商账单手工录入：与 usage_logs Σvendor_cost（按渠道）对差异，>2% 标红
+CREATE TABLE IF NOT EXISTS vendor_bills (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  period        TEXT    NOT NULL,             -- 'YYYY-MM'
+  channel_id    INTEGER NOT NULL,
+  billed_points INTEGER NOT NULL,             -- 厂商账单金额（点数口径）
+  note          TEXT    NOT NULL DEFAULT '',
+  created_by    INTEGER,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  UNIQUE(period, channel_id)
+);
 
 CREATE TABLE IF NOT EXISTS quota_requests (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,

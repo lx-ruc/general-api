@@ -15,17 +15,18 @@ const ctxKeyInfo = "key_info"
 
 // KeyInfo /v1 数据面鉴权结果：一次联表带出 key/user/org 身份与状态
 type KeyInfo struct {
-	KeyID     int64  `json:"key_id"`
-	KeyPrefix string `json:"key_prefix"`
-	UserID    int64  `json:"user_id"`
-	Username  string `json:"username"`
-	UserRole  string `json:"user_role"`
-	OrgID     int64  `json:"org_id"`
-	OrgName   string `json:"org_name"`
-	UserLimit *int64 `json:"user_limit"`
-	UserUsed  int64  `json:"user_used"`
-	OrgLimit  int64  `json:"org_limit"`
-	OrgUsed   int64  `json:"org_used"`
+	KeyID        int64  `json:"key_id"`
+	KeyPrefix    string `json:"key_prefix"`
+	UserID       int64  `json:"user_id"`
+	Username     string `json:"username"`
+	UserRole     string `json:"user_role"`
+	OrgID        int64  `json:"org_id"`
+	OrgName      string `json:"org_name"`
+	CostCenterID *int64 `json:"cost_center_id"` // key 归集中心（结算时快照进 usage_logs）
+	UserLimit    *int64 `json:"user_limit"`
+	UserUsed     int64  `json:"user_used"`
+	OrgLimit     int64  `json:"org_limit"`
+	OrgUsed      int64  `json:"org_used"`
 }
 
 // APIKeyAuth /v1 数据面鉴权：sk- key → SHA-256 → 唯一索引等值查找（单查询联表带出全部状态）
@@ -43,7 +44,7 @@ func APIKeyAuth(db *gorm.DB) gin.HandlerFunc {
 			OrgStatus  int
 		}
 		err := db.Raw(`
-			SELECT k.id AS key_id, k.key_prefix, k.expired_at,
+			SELECT k.id AS key_id, k.key_prefix, k.expired_at, k.cost_center_id,
 			       u.id AS user_id, u.username, u.role AS user_role, u.status AS user_status,
 			       u.quota_limit AS user_limit, u.quota_used AS user_used,
 			       o.id AS org_id, o.name AS org_name, o.status AS org_status,

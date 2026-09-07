@@ -83,7 +83,8 @@ function reset() {
       </el-table-column>
       <el-table-column label="成本" width="110" align="right">
         <template #default="{ row }">
-          <span v-if="row.no_usage" class="warn">未计量</span>
+          <span v-if="row.cache_hit" class="num green">0 <el-tag size="small" type="success" effect="plain">缓存</el-tag></span>
+          <span v-else-if="row.no_usage" class="warn">未计量</span>
           <span v-else class="num green">{{ fmtQuota(row.cost) }}</span>
         </template>
       </el-table-column>

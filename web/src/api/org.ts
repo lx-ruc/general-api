@@ -21,8 +21,33 @@ export interface OrgKey {
   status: number
   user_id: number
   username?: string
+  cost_center_id: number | null
+  cost_center_name?: string
   last_used_at: number | null
   created_at: number
+}
+
+export interface CostCenter {
+  id: number
+  org_id: number
+  name: string
+  status: number
+  month_cost?: number
+  key_count?: number
+  created_at: number
+}
+
+export interface CostReportRow {
+  cost_center_id: number | null
+  center_name: string
+  center_status: number
+  model_name: string
+  day: string
+  requests: number
+  cache_hits: number
+  prompt_tokens: number
+  completion_tokens: number
+  cost: number
 }
 
 export interface QuotaRequestRow {
@@ -56,6 +81,23 @@ export const apiOrgKeys = (params?: any) => http.get<any, any>('/api/org/keys', 
 export const apiUpdateOrgKeyStatus = (id: number, status: number) =>
   http.put<any, any>(`/api/org/keys/${id}/status`, { status })
 
+// ---- 成本中心 ----
+export const apiOrgCostCenters = () => http.get<any, { list: CostCenter[]; require_cost_center: number }>('/api/org/cost-centers')
+export const apiCreateCostCenter = (name: string) => http.post<any, any>('/api/org/cost-centers', { name })
+export const apiUpdateCostCenter = (id: number, data: { name?: string; status?: number }) =>
+  http.put<any, any>(`/api/org/cost-centers/${id}`, data)
+export const apiUpdateCostCenterConfig = (require_cost_center: number) =>
+  http.put<any, any>('/api/org/cost-centers/config', { require_cost_center })
+export const apiReassignKeyCenter = (id: number, cost_center_id: number | null) =>
+  http.put<any, any>(`/api/org/keys/${id}/cost-center`, { cost_center_id })
+export const apiCostCenterReport = (params?: any) =>
+  http.get<any, {
+    list: CostReportRow[]
+    total_cost: number
+    unallocated_cost: number
+    unallocated_pct: number
+  }>('/api/org/reports/cost-centers', { params })
+
 export const apiOrgRequests = (params?: any) => http.get<any, any>('/api/org/requests', { params })
 export const apiHandleRequest = (id: number, action: 'approve' | 'reject', reply: string) =>
   http.put<any, any>(`/api/org/requests/${id}`, { action, reply })
@@ -66,3 +108,41 @@ export const apiCreateRecharge = (amount: number, voucher: string) =>
   http.post<any, any>('/api/org/recharges', { amount, voucher })
 export const apiOrgBankInfo = () => http.get<any, any>('/api/org/bank-info')
 export const apiOrgBilling = (month: string) => http.get<any, any>('/api/org/billing', { params: { month } })
+
+// 额度预警：读取本公司阈值与状态
+export const apiGetAlertLevels = () => http.get<any, any>('/api/org/alert-levels')
+// 额度预警：设置阈值（0 = 关闭）
+export const apiUpdateAlertLevels = (threshold: number) =>
+  http.put<any, any>('/api/org/alert-levels', { threshold })
+
+export interface BillGrantRow { id: number; amount: number; remark: string; created_at: number }
+export interface BillDetailRow {
+  day: string; model_name: string; cost_center_id: number | null; cost_center_name: string
+  requests: number; cache_hits: number; prompt_tokens: number; completion_tokens: number; cost: number
+}
+export interface BillStatement {
+  month: string; timezone: string; start_unix: number; end_unix: number
+  opening_limit: number | null; opening_used: number | null
+  total_granted: number; total_revoked: number; consumption: number
+  closing_limit: number; closing_used: number; closing_is_live: boolean
+  chain_ok: boolean | null; no_usage_count: number; opening_missing: boolean
+  revokes: BillGrantRow[]; grants: BillGrantRow[]
+  rows: BillDetailRow[]; total_rows: number; total_cost_sum: number
+}
+
+// 三段式对账单（勾稽/冲减/明细）
+export const apiOrgBillingStatement = (month: string, limit = 500) =>
+  http.get<any, BillStatement>('/api/org/billing/statement', { params: { month, limit } })
+
+// 对账单 CSV 下载（带 JWT 拉 blob）
+export async function downloadOrgStatementCSV(month: string, orgName: string) {
+  const resp = await http.get('/api/org/billing/statement/csv', {
+    params: { month }, responseType: 'blob' as any,
+  })
+  const blob = resp as unknown as Blob
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = `对账单_${orgName}_${month}.csv`
+  a.click()
+  URL.revokeObjectURL(a.href)
+}

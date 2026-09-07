@@ -29,10 +29,44 @@ func NotifyOrgAdmins(db *gorm.DB, orgID int64, subject, body string) int {
 		slog.Info("邮件通知跳过：公司管理员未留邮箱", "org_id", orgID, "subject", subject)
 		return 0
 	}
-	if !MailerConfigured() {
-		slog.Warn("邮件通知（开发模式，SMTP 未配置）", "org_id", orgID,
-			"subject", subject, "to", emails, "body", body)
+	sendToAll(emails, subject, body)
+	return len(emails)
+}
+
+// NotifyPlatformAdmins 通知全部留了邮箱的平台管理员（如公司额度耗尽的续费线索）。
+func NotifyPlatformAdmins(db *gorm.DB, subject, body string) int {
+	var emails []string
+	_ = db.Raw(`SELECT email FROM users WHERE role = 'platform_admin' AND email != ''`).Scan(&emails).Error
+	if len(emails) == 0 {
+		slog.Info("邮件通知跳过：平台管理员未留邮箱", "subject", subject)
 		return 0
+	}
+	sendToAll(emails, subject, body)
+	return len(emails)
+}
+
+// NotifyUserAndAdmins 员工级告警扇出：本人（有邮箱时）+ 其公司全部管理员。
+func NotifyUserAndAdmins(db *gorm.DB, orgID int64, memberEmail, subject, body string) int {
+	emails := make([]string, 0, 4)
+	if memberEmail != "" {
+		emails = append(emails, memberEmail)
+	}
+	var admins []string
+	_ = db.Raw(`SELECT email FROM users WHERE org_id = ? AND role = 'org_admin' AND email != ''`,
+		orgID).Scan(&admins).Error
+	emails = append(emails, admins...)
+	if len(emails) == 0 {
+		slog.Info("邮件通知跳过：员工与公司管理员均未留邮箱", "org_id", orgID, "subject", subject)
+		return 0
+	}
+	sendToAll(emails, subject, body)
+	return len(emails)
+}
+
+func sendToAll(emails []string, subject, body string) {
+	if !MailerConfigured() {
+		slog.Warn("邮件通知（开发模式，SMTP 未配置）", "subject", subject, "to", emails, "body", body)
+		return
 	}
 	for _, to := range emails {
 		go func(to string) {
@@ -43,7 +77,6 @@ func NotifyOrgAdmins(db *gorm.DB, orgID int64, subject, body string) int {
 			}
 		}(to)
 	}
-	return len(emails)
 }
 
 // QuotaGrantEmailBody 生成额度授权通知邮件正文

@@ -174,16 +174,16 @@ func (h *Handler) UpdateMember(c *gin.Context) {
 		}
 		updates["status"] = *req.Status
 	}
-	if req.QuotaUnlimited != nil {
-		if *req.QuotaUnlimited {
-			updates["quota_limit"] = nil
-		} else if m.QuotaLimit == nil {
-			updates["quota_limit"] = m.QuotaUsed // 从不限转限额：以当前消耗为起点
-		}
-	}
 	if err := h.DB.Model(&model.User{}).Where("id = ?", id).Updates(updates).Error; err != nil {
 		httpx.Fail(c, http.StatusInternalServerError, "更新失败")
 		return
+	}
+	if req.QuotaUnlimited != nil {
+		// 设值路径走额度唯一入口：同事务差值入流水（转不限记 −旧值；转限额以当前消耗为起点）
+		if err := service.SetUserQuotaUnlimited(h.DB, oid, id, *req.QuotaUnlimited, middleware.GetUID(c)); err != nil {
+			httpx.Fail(c, http.StatusInternalServerError, "更新失败")
+			return
+		}
 	}
 	httpx.OK(c, gin.H{"message": "已更新"})
 }
@@ -436,12 +436,14 @@ func (h *Handler) ListKeys(c *gin.Context) {
 	_ = h.DB.Raw("SELECT COUNT(*) FROM api_keys k WHERE k.org_id = ?", oid).Scan(&total).Error
 	type keyRow struct {
 		model.APIKey
-		Username string `json:"username"`
+		Username       string `json:"username"`
+		CostCenterName string `json:"cost_center_name"` // "" = 未归集
 	}
 	var rows []keyRow
 	_ = h.DB.Raw(`
-		SELECT k.*, u.username FROM api_keys k
+		SELECT k.*, u.username, COALESCE(cc.name,'') AS cost_center_name FROM api_keys k
 		LEFT JOIN users u ON u.id = k.user_id
+		LEFT JOIN cost_centers cc ON cc.id = k.cost_center_id
 		WHERE k.org_id = ? ORDER BY k.id DESC LIMIT ? OFFSET ?`, oid, size, offset).Scan(&rows).Error
 	if rows == nil {
 		rows = []keyRow{}
@@ -545,21 +547,22 @@ func (h *Handler) HandleRequest(c *gin.Context) {
 			return err
 		}
 		if req.Action == "approve" {
-			return tx.Exec("UPDATE users SET quota_limit = COALESCE(quota_limit, 0) + ?, updated_at = ? WHERE id = ? AND org_id = ?",
-				qr.Amount, now, qr.UserID, oid).Error
+			if err := tx.Exec("UPDATE users SET quota_limit = COALESCE(quota_limit, 0) + ?, updated_at = ? WHERE id = ? AND org_id = ?",
+				qr.Amount, now, qr.UserID, oid).Error; err != nil {
+				return err
+			}
+			// 流水与加额度同事务，杜绝"额度已动、流水缺失"的审计断裂
+			return tx.Create(&model.QuotaGrant{
+				SubjectType: "user", SubjectID: qr.UserID, Amount: qr.Amount,
+				Remark:      fmt.Sprintf("额度申请 #%d 审批通过", id),
+				OperatorID:  opID(operator), CreatedAt: now,
+			}).Error
 		}
 		return nil
 	})
 	if err != nil {
 		httpx.Fail(c, http.StatusInternalServerError, "审批失败")
 		return
-	}
-	if req.Action == "approve" {
-		_ = h.DB.Create(&model.QuotaGrant{
-			SubjectType: "user", SubjectID: qr.UserID, Amount: qr.Amount,
-			Remark:      fmt.Sprintf("额度申请 #%d 审批通过", id),
-			OperatorID:  opID(operator), CreatedAt: now,
-		}).Error
 	}
 	httpx.OK(c, gin.H{"message": "已处理"})
 }

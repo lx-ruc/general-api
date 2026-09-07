@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -339,7 +341,7 @@ type channelReq struct {
 	Vendor      string        `json:"vendor"`
 	BaseURL     string        `json:"base_url" binding:"required"`
 	Path        string        `json:"path"`
-	UpstreamKey string        `json:"upstream_key"`
+	UpstreamKey string        `json:"upstream_key"` // 多行：每行一把 key，可后缀 :权重；留空=不修改
 	Weight      int           `json:"weight"`
 	Priority    int           `json:"priority"`
 	Status      *int          `json:"status"`
@@ -352,6 +354,79 @@ func (r *channelReq) pathOrDefault() string {
 		return "/v1/chat/completions"
 	}
 	return r.Path
+}
+
+type keyLine struct {
+	Key    string
+	Weight int
+}
+
+// weightSuffix 行尾 :数字 才解析为权重（GLM 等 key 自身含 . 不受影响）
+var weightSuffix = regexp.MustCompile(`:(\d+)$`)
+
+// parseKeyLines 解析多行 upstream_key：split → trim 去空行 → 明文去重（AES-GCM nonce
+// 随机、密文去重无效）→ 每行 key 或 key:权重（权重<=0 按 1）
+func parseKeyLines(s string) []keyLine {
+	seen := map[string]bool{}
+	out := []keyLine{}
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		w := 1
+		if m := weightSuffix.FindStringSubmatch(line); m != nil {
+			if n, err := strconv.Atoi(m[1]); err == nil && n > 0 {
+				w = n
+				line = strings.TrimSpace(line[:len(line)-len(m[0])])
+			}
+		}
+		if line == "" || seen[line] {
+			continue
+		}
+		seen[line] = true
+		out = append(out, keyLine{Key: line, Weight: w})
+	}
+	return out
+}
+
+// buildKeyPool 把多行明文 key 加密为待入库的 Key 池
+func (h *Handler) buildKeyPool(channelID int64, s string) ([]model.ChannelKey, error) {
+	lines := parseKeyLines(s)
+	out := make([]model.ChannelKey, 0, len(lines))
+	now := time.Now().Unix()
+	for _, l := range lines {
+		enc, err := h.Cipher.Encrypt(l.Key)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, model.ChannelKey{
+			ChannelID: channelID, KeyEnc: enc, Weight: l.Weight, Status: 1, CreatedAt: now, UpdatedAt: now,
+		})
+	}
+	return out, nil
+}
+
+// keyCounts 各渠道 Key 池统计（SQLite/PG 均可移植的 CASE 写法）
+func (h *Handler) keyCounts() map[int64]struct{ Total, Active int64 } {
+	var rows []struct {
+		ChannelID int64
+		Total     int64
+		Active    int64
+	}
+	_ = h.DB.Raw(`SELECT channel_id, COUNT(*) AS total,
+		SUM(CASE WHEN status = 1 THEN 1 ELSE 0 END) AS active
+		FROM channel_keys GROUP BY channel_id`).Scan(&rows).Error
+	out := make(map[int64]struct{ Total, Active int64 }, len(rows))
+	for _, r := range rows {
+		out[r.ChannelID] = struct{ Total, Active int64 }{r.Total, r.Active}
+	}
+	return out
+}
+
+// hasKey 渠道是否有可用密钥：池内有启用 Key，或 legacy 单 Key 密文存在
+func hasKey(enc string, active int64) bool {
+	return active > 0 || enc != ""
 }
 
 func abilityModels(models []abilityReq) []model.ChannelAbility {
@@ -381,11 +456,19 @@ func (h *Handler) ListChannels(c *gin.Context) {
 		byChannel[a.ChannelID] = append(byChannel[a.ChannelID], a)
 	}
 	list := make([]gin.H, 0, len(channels))
+	counts := h.keyCounts()
 	for _, ch := range channels {
+		kc := counts[ch.ID]
+		// legacy 单 Key 计入展示数量（池为空且存在密文时）
+		keyCount, keyActive := kc.Total, kc.Active
+		if keyCount == 0 && ch.UpstreamKeyEnc != "" {
+			keyCount, keyActive = 1, 1
+		}
 		list = append(list, gin.H{
 			"id": ch.ID, "name": ch.Name, "vendor": ch.Vendor,
 			"base_url": ch.BaseURL, "path": ch.Path,
-			"has_key": ch.UpstreamKeyEnc != "",
+			"has_key": hasKey(ch.UpstreamKeyEnc, kc.Active),
+			"key_count": keyCount, "key_active_count": keyActive,
 			"weight": ch.Weight, "priority": ch.Priority, "status": ch.Status,
 			"last_test_at": ch.LastTestAt, "last_test_ok": ch.LastTestOk,
 			"remark": ch.Remark, "created_at": ch.CreatedAt,
@@ -411,20 +494,26 @@ func (h *Handler) CreateChannel(c *gin.Context) {
 	if req.Status != nil {
 		status = *req.Status
 	}
-	enc, err := h.Cipher.Encrypt(req.UpstreamKey)
+	pool, err := h.buildKeyPool(0, req.UpstreamKey)
 	if err != nil {
 		httpx.Fail(c, http.StatusInternalServerError, "密钥加密失败")
 		return
 	}
 	ch := model.Channel{
 		Name: req.Name, Vendor: req.Vendor, BaseURL: req.BaseURL,
-		Path: req.pathOrDefault(), UpstreamKeyEnc: enc,
+		Path: req.pathOrDefault(),
 		Weight: maxInt(req.Weight, 1), Priority: req.Priority,
 		Status: status, Remark: req.Remark,
 	}
 	err = h.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&ch).Error; err != nil {
 			return err
+		}
+		for i := range pool {
+			pool[i].ChannelID = ch.ID
+			if err := tx.Create(&pool[i]).Error; err != nil {
+				return err
+			}
 		}
 		for i := range req.Models {
 			ab := abilityModels(req.Models)[i]
@@ -439,7 +528,7 @@ func (h *Handler) CreateChannel(c *gin.Context) {
 		httpx.Fail(c, http.StatusInternalServerError, "创建渠道失败: "+err.Error())
 		return
 	}
-	httpx.OK(c, gin.H{"id": ch.ID, "message": "渠道已创建"})
+	httpx.OK(c, gin.H{"id": ch.ID, "message": "渠道已创建", "key_count": len(pool)})
 }
 
 // GetChannel GET /api/platform/channels/:id
@@ -458,10 +547,16 @@ func (h *Handler) GetChannel(c *gin.Context) {
 	if abilities == nil {
 		abilities = []model.ChannelAbility{}
 	}
+	kc := h.keyCounts()[ch.ID]
+	keyCount, keyActive := kc.Total, kc.Active
+	if keyCount == 0 && ch.UpstreamKeyEnc != "" {
+		keyCount, keyActive = 1, 1
+	}
 	httpx.OK(c, gin.H{
 		"id": ch.ID, "name": ch.Name, "vendor": ch.Vendor,
 		"base_url": ch.BaseURL, "path": ch.Path,
-		"has_key": ch.UpstreamKeyEnc != "",
+		"has_key": hasKey(ch.UpstreamKeyEnc, kc.Active),
+		"key_count": keyCount, "key_active_count": keyActive,
 		"weight": ch.Weight, "priority": ch.Priority, "status": ch.Status,
 		"remark": ch.Remark, "models": abilities,
 	})
@@ -498,17 +593,30 @@ func (h *Handler) UpdateChannel(c *gin.Context) {
 	if req.Status != nil {
 		updates["status"] = *req.Status
 	}
-	if req.UpstreamKey != "" {
-		enc, err := h.Cipher.Encrypt(req.UpstreamKey)
-		if err != nil {
+	// upstream_key 非空 = 整池替换（多行 key）并同时置空 legacy 单 Key；留空 = 不修改
+	replacePool := req.UpstreamKey != ""
+	var pool []model.ChannelKey
+	if replacePool {
+		var perr error
+		if pool, perr = h.buildKeyPool(id, req.UpstreamKey); perr != nil {
 			httpx.Fail(c, http.StatusInternalServerError, "密钥加密失败")
 			return
 		}
-		updates["upstream_key_enc"] = enc
+		updates["upstream_key_enc"] = ""
 	}
 	err := h.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&model.Channel{}).Where("id = ?", id).Updates(updates).Error; err != nil {
 			return err
+		}
+		if replacePool {
+			if err := tx.Where("channel_id = ?", id).Delete(&model.ChannelKey{}).Error; err != nil {
+				return err
+			}
+			for i := range pool {
+				if err := tx.Create(&pool[i]).Error; err != nil {
+					return err
+				}
+			}
 		}
 		// 整体替换 abilities
 		if err := tx.Where("channel_id = ?", id).Delete(&model.ChannelAbility{}).Error; err != nil {
@@ -526,7 +634,11 @@ func (h *Handler) UpdateChannel(c *gin.Context) {
 		httpx.Fail(c, http.StatusInternalServerError, "更新渠道失败: "+err.Error())
 		return
 	}
-	httpx.OK(c, gin.H{"message": "渠道已更新"})
+	msg := "渠道已更新"
+	if replacePool {
+		msg = fmt.Sprintf("渠道已更新（Key 池替换为 %d 把）", len(pool))
+	}
+	httpx.OK(c, gin.H{"message": msg})
 }
 
 // UpdateChannelStatus PUT /api/platform/channels/:id/status
@@ -555,22 +667,104 @@ func (h *Handler) UpdateChannelStatus(c *gin.Context) {
 	httpx.OK(c, gin.H{"message": "已更新"})
 }
 
-// DeleteChannel DELETE /api/platform/channels/:id
+// DeleteChannel DELETE /api/platform/channels/:id（Key 池随渠道删除）
 func (h *Handler) DeleteChannel(c *gin.Context) {
 	id, ok := httpx.PathID(c)
 	if !ok {
 		return
 	}
-	res := h.DB.Where("id = ?", id).Delete(&model.Channel{})
-	if res.Error != nil {
+	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		res := tx.Where("id = ?", id).Delete(&model.Channel{})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		return tx.Where("channel_id = ?", id).Delete(&model.ChannelKey{}).Error
+	})
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			httpx.Fail(c, http.StatusNotFound, "渠道不存在")
+			return
+		}
 		httpx.Fail(c, http.StatusInternalServerError, "删除失败")
 		return
 	}
-	if res.RowsAffected == 0 {
-		httpx.Fail(c, http.StatusNotFound, "渠道不存在")
+	httpx.OK(c, gin.H{"message": "已删除"})
+}
+
+// ---------------- 渠道 Key 池管理 ----------------
+
+// maskKey 打码展示：前 6 + … + 后 4
+func maskKey(k string) string {
+	if k == "" {
+		return ""
+	}
+	if len(k) <= 12 {
+		return k[:3] + "…"
+	}
+	return k[:6] + "…" + k[len(k)-4:]
+}
+
+// ListChannelKeys GET /api/platform/channels/:id/keys：Key 池列表（打码，不回明文/密文）
+func (h *Handler) ListChannelKeys(c *gin.Context) {
+	id, ok := httpx.PathID(c)
+	if !ok {
 		return
 	}
-	httpx.OK(c, gin.H{"message": "已删除"})
+	var keys []model.ChannelKey
+	if err := h.DB.Where("channel_id = ?", id).Order("id").Find(&keys).Error; err != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "查询失败")
+		return
+	}
+	list := make([]gin.H, 0, len(keys))
+	for _, k := range keys {
+		plain, derr := h.Cipher.Decrypt(k.KeyEnc)
+		if derr != nil {
+			plain = ""
+		}
+		list = append(list, gin.H{
+			"id": k.ID, "key_masked": maskKey(plain), "weight": k.Weight,
+			"status": k.Status, "remark": k.Remark,
+			"created_at": k.CreatedAt, "updated_at": k.UpdatedAt,
+		})
+	}
+	httpx.OK(c, list)
+}
+
+// UpdateChannelKeyStatus PUT /api/platform/channels/:id/keys/:kid/status
+// 401 自动禁用后的恢复路径；重新启用时清掉自动禁用备注
+func (h *Handler) UpdateChannelKeyStatus(c *gin.Context) {
+	id, ok := httpx.PathID(c)
+	if !ok {
+		return
+	}
+	kid, err := strconv.ParseInt(c.Param("kid"), 10, 64)
+	if err != nil || kid <= 0 {
+		httpx.Fail(c, http.StatusBadRequest, "invalid key id")
+		return
+	}
+	// 整型 status 用指针接收：gin 的 required 会把字面 0 当空值拒绝（同渠道 status）
+	var req struct {
+		Status *int `json:"status" binding:"required"`
+	}
+	if !httpx.BindJSON(c, &req) {
+		return
+	}
+	if *req.Status != 0 && *req.Status != 1 {
+		httpx.Fail(c, http.StatusBadRequest, "status 只能为 0 或 1")
+		return
+	}
+	res := h.DB.Exec(`UPDATE channel_keys SET status = ?,
+		remark = CASE WHEN ? = 1 THEN '' ELSE remark END, updated_at = ?
+		WHERE id = ? AND channel_id = ?`,
+		*req.Status, *req.Status, time.Now().Unix(), kid, id)
+	if res.Error != nil || res.RowsAffected == 0 {
+		httpx.Fail(c, http.StatusNotFound, "Key 不存在")
+		return
+	}
+	httpx.OK(c, gin.H{"message": "已更新"})
 }
 
 // TestChannel POST /api/platform/channels/:id/test：实发一次 max_tokens=1 请求测连通
@@ -589,8 +783,17 @@ func (h *Handler) TestChannel(c *gin.Context) {
 		httpx.Fail(c, http.StatusBadRequest, "渠道未配置模型，无法测试")
 		return
 	}
-	key, err := h.Cipher.Decrypt(ch.UpstreamKeyEnc)
-	if err != nil || key == "" {
+	// Key 选择与数据面一致：池内第一把启用 Key → 回退 legacy 单 Key
+	key, keyDesc := "", ""
+	var poolKey model.ChannelKey
+	if h.DB.Where("channel_id = ? AND status = 1", id).Order("id").First(&poolKey).Error == nil {
+		key, _ = h.Cipher.Decrypt(poolKey.KeyEnc)
+		keyDesc = fmt.Sprintf("池内 Key #%d", poolKey.ID)
+	} else if ch.UpstreamKeyEnc != "" {
+		key, _ = h.Cipher.Decrypt(ch.UpstreamKeyEnc)
+		keyDesc = "legacy 单 Key"
+	}
+	if key == "" {
 		httpx.Fail(c, http.StatusBadRequest, "渠道未配置上游密钥")
 		return
 	}
@@ -623,7 +826,7 @@ func (h *Handler) TestChannel(c *gin.Context) {
 	}
 	_ = h.DB.Exec("UPDATE channels SET last_test_at = ?, last_test_ok = ?, updated_at = ? WHERE id = ?",
 		time.Now().Unix(), b2i(okFlag), time.Now().Unix(), id).Error
-	httpx.OK(c, gin.H{"ok": okFlag, "status": statusCode, "latency_ms": latency, "error": errMsg})
+	httpx.OK(c, gin.H{"ok": okFlag, "status": statusCode, "latency_ms": latency, "error": errMsg, "key": keyDesc})
 }
 
 // ---------------- 模型与定价 ----------------
@@ -922,8 +1125,16 @@ func (h *Handler) HandleRecharge(c *gin.Context) {
 			return err
 		}
 		if req.Action == "approve" {
-			return tx.Exec("UPDATE orgs SET quota_limit = quota_limit + ?, updated_at = ? WHERE id = ?",
-				r.Amount, now, r.OrgID).Error
+			if err := tx.Exec("UPDATE orgs SET quota_limit = quota_limit + ?, updated_at = ? WHERE id = ?",
+				r.Amount, now, r.OrgID).Error; err != nil {
+				return err
+			}
+			// 流水与加额度同事务，杜绝"额度已动、流水缺失"的审计断裂
+			return tx.Create(&model.QuotaGrant{
+				SubjectType: "org", SubjectID: r.OrgID, Amount: r.Amount,
+				Remark:      fmt.Sprintf("充值申请 #%d 到账", id),
+				OperatorID:  opID(operator), CreatedAt: now,
+			}).Error
 		}
 		return nil
 	})
@@ -932,11 +1143,6 @@ func (h *Handler) HandleRecharge(c *gin.Context) {
 		return
 	}
 	if req.Action == "approve" {
-		_ = h.DB.Create(&model.QuotaGrant{
-			SubjectType: "org", SubjectID: r.OrgID, Amount: r.Amount,
-			Remark:      fmt.Sprintf("充值申请 #%d 到账", id),
-			OperatorID:  opID(operator), CreatedAt: now,
-		}).Error
 		notifyNote := notifyOrgQuota(h.DB, r.OrgID, r.Amount, "充值到账")
 		httpx.OK(c, gin.H{"message": "已批准并到账" + notifyNote})
 		return

@@ -52,6 +52,8 @@ export interface Channel {
   base_url: string
   path: string
   has_key?: boolean
+  key_count?: number
+  key_active_count?: number
   weight: number
   priority: number
   status: number
@@ -59,6 +61,16 @@ export interface Channel {
   last_test_ok: number
   remark: string
   models?: ChannelAbility[]
+}
+
+export interface ChannelKeyRow {
+  id: number
+  key_masked: string
+  weight: number
+  status: number
+  remark: string
+  created_at: number
+  updated_at: number
 }
 
 export const apiListChannels = () => http.get<any, Channel[]>('/api/platform/channels')
@@ -69,6 +81,10 @@ export const apiUpdateChannelStatus = (id: number, status: number) =>
   http.put<any, any>(`/api/platform/channels/${id}/status`, { status })
 export const apiDeleteChannel = (id: number) => http.delete<any, any>(`/api/platform/channels/${id}`)
 export const apiTestChannel = (id: number) => http.post<any, any>(`/api/platform/channels/${id}/test`)
+export const apiListChannelKeys = (id: number) =>
+  http.get<any, ChannelKeyRow[]>(`/api/platform/channels/${id}/keys`)
+export const apiUpdateChannelKeyStatus = (id: number, kid: number, status: number) =>
+  http.put<any, any>(`/api/platform/channels/${id}/keys/${kid}/status`, { status })
 
 // ---- 模型 ----
 export interface MModel {
@@ -98,3 +114,56 @@ export const apiHandleRecharge = (id: number, action: 'approve' | 'reject', repl
 export const apiListAudit = (params?: any) => http.get<any, any>('/api/platform/audit', { params })
 export const apiGetBankInfo = () => http.get<any, any>('/api/platform/bank-info')
 export const apiUpdateBankInfo = (bank_info: string) => http.put<any, any>('/api/platform/bank-info', { bank_info })
+
+// ---- 成本中心交叉报表（org × 中心，含毛利） ----
+export interface CostCrossRow {
+  org_id: number
+  org_name: string
+  cost_center_id: number | null
+  center_name: string
+  center_status: number
+  requests: number
+  cache_hits: number
+  prompt_tokens: number
+  completion_tokens: number
+  cost: number
+  vendor_cost: number
+  margin: number
+}
+export const apiCostCenterCross = (params?: any) =>
+  http.get<any, { list: CostCrossRow[]; total_cost: number; total_vendor_cost: number; total_margin: number }>(
+    '/api/platform/reports/cost-centers', { params })
+
+// 额度预警：为某公司设置阈值（0 = 关闭）
+export const apiUpdateOrgAlertLevels = (id: number, threshold: number) =>
+  http.put<any, any>(`/api/platform/orgs/${id}/alert-levels`, { threshold })
+
+export interface VendorDiffRow {
+  channel_id: number; channel_name: string; requests: number
+  our_cost: number; no_usage_count: number
+  bill_id: number | null; billed_points: number; note: string; has_bill: boolean
+  diff: number; diff_pct: number; over_pct: boolean
+}
+
+// 平台视角对账单（含厂商成本/毛利）
+export const apiOrgStatement = (id: number, month: string) =>
+  http.get<any, any>(`/api/platform/orgs/${id}/statement`, { params: { month } })
+
+export async function downloadOrgStatementCSVPlatform(id: number, month: string, orgName: string) {
+  const resp = await http.get(`/api/platform/orgs/${id}/statement/csv`, {
+    params: { month }, responseType: 'blob' as any,
+  })
+  const blob = resp as unknown as Blob
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = `对账单_${orgName}_${month}.csv`
+  a.click()
+  URL.revokeObjectURL(a.href)
+}
+
+// 厂商账单对账
+export const apiVendorBills = (period: string) =>
+  http.get<any, { period: string; list: VendorDiffRow[] }>('/api/platform/vendor-bills', { params: { period } })
+export const apiUpsertVendorBill = (period: string, channel_id: number, billed_points: number, note: string) =>
+  http.put<any, any>('/api/platform/vendor-bills', { period, channel_id, billed_points, note })
+export const apiDeleteVendorBill = (id: number) => http.delete<any, any>(`/api/platform/vendor-bills/${id}`)

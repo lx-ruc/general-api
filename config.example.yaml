@@ -3,6 +3,7 @@
 
 server:
   addr: ":8080"            # 单端口同时服务 /api /v1 与前端静态资源
+  site_url: ""             # 管理台外部地址（如 https://api.example.com）；额度预警邮件的直达链接用；ENV: TG_SITE_URL
   # cors_origins:          # 跨域白名单；嵌入部署同源时留空即可
   #   - http://localhost:5173
 
@@ -24,6 +25,18 @@ gateway:
   max_body_mb: 10
   per_key_rpm: 60           # 每个 API key 每分钟请求数上限
   upstream_first_byte_timeout: 60s
+  # ---- 高并发三件套（见 internal/coord）----
+  channel_max_concurrency: 0   # 每渠道最大并发上游请求数；超出排队等待；0=不限
+  queue_wait_timeout: 10s      # 排队等待上限，超时换下一候选/返回 429
+  key_cooldown: 60s            # 上游 429 后该 Key 冷却时长（Retry-After 更长时优先）
+  cache_ttl: 0s                # 精确缓存（相同请求直接回缓存，不耗上游）；0=关闭
+  cache_max_items: 1000        # 内存 LRU 条数上限
+  cache_isolate_org: false     # true=缓存按公司隔离（默认全局共享）
+
+redis:                     # Key 冷却/并发闸门/缓存 的全局协调；addr 留空 = 进程内存（单机部署零依赖）
+  addr: ""                 # 如 redis:6379；ENV: TG_REDIS_ADDR
+  password: ""             # ENV: TG_REDIS_PASSWORD
+  db: 0                    # ENV: TG_REDIS_DB
 
 smtp:                       # 注册验证码邮件；host 留空 = 不发邮件（开发模式，验证码直接返回给前端）
   host: ""                  # 如 smtp.exmail.qq.com
@@ -31,6 +44,10 @@ smtp:                       # 注册验证码邮件；host 留空 = 不发邮件
   username: ""
   password: ""
   from: "token中转站 <noreply@example.com>"
+
+billing:                    # 月度对账单口径
+  timezone: "Asia/Shanghai" # 账期月边界与日分桶时区（IANA 名）；ENV: TG_BILLING_TIMEZONE。
+                            # 月末余额快照在次月 1 日 00:05（此时区）自动写入，漏跑会在重启时自愈补上
 
 log:
   level: info

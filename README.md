@@ -12,6 +12,9 @@
 - **高可用**：同模型多渠道按优先级 + 权重负载均衡，失败自动切换备用渠道
 - **额度申请审批流**：员工发起 → 公司管理员一键批准（自动追加额度）
 - **公司自助注册**：公司名 + 邮箱验证码 + 管理员账号密码，注册后由平台分配额度；额度授权自动邮件通知公司管理员（含追加量、折算金额、备注与最新额度）
+- **成本中心归集**：公司维护受控中心词表（如「AI客服」「数据分析」），API key 挂靠中心；结算时把中心快照写进 usage_logs——改派只影响未来，历史账单不可变；org 报表按中心×模型×日聚合、未归集恒置底披露占比；平台可看跨公司中心毛利交叉报表
+- **额度预警**：公司/员工两级水位告警，结算后异步检查（60s 节流、多实例 CAS 唯一投递）；每档只提醒一次、追加额度后自动复位；公司耗尽（100%）同时通知平台管理员跟进续费；阈值可按公司设置（0=关闭，默认 80%），告警邮件含水位与直达链接（`server.site_url`）
+- **月度对账单**：三段式（勾稽/冲减/明细），月末余额快照次月 1 日 00:05（`billing.timezone`，默认 Asia/Shanghai）自动写入、漏跑重启自愈，可平台手动补跑；勾稽链 `期末used − 期初used == 期内消耗` 自动校验并显式标 ✗；负数授权即冲减回收入冲减段；明细按 模型×成本中心×日 聚合（未归集置底，含缓存命中列）；CSV 带 BOM 可直接双击打开；org 视角永不携带厂商成本/毛利；另有厂商账单对账页（录入厂商账单，|差异|>2% 标红，披露不计量笔数）
 
 ## 计费模型
 
@@ -19,6 +22,7 @@
 - 单次成本 = `ceil((输入tokens × 输入单价 + 输出tokens × 输出单价) / 1,000,000)`，全整数运算无浮点误差
 - 分配 = 设上限（`quota_limit`），消费 = 双层同时记账（员工 `quota_used` 与公司 `quota_used` 同事务累加），两级都是硬上限
 - 流式请求自动注入 `stream_options.include_usage` 保证计费；上游未返回 usage 时标记不计量
+- **额度审计不变量**：quota_limit 的一切变更（建号初始/追加/充值/设值切换）均与 QuotaGrant 流水同事务，Σgrants == COALESCE(limit, 0) 恒成立
 
 ## 快速开始
 
@@ -58,15 +62,16 @@ sudo systemctl enable --now token-gateway
 ```bash
 cd deploy
 # .env 里放 PG_PASSWORD / TG_JWT_SECRET / TG_ADMIN_PASSWORD
-docker compose up -d          # postgres + gateway×2 + caddy（80/443，轮询+健康检查）
+docker compose up -d          # postgres + redis + gateway×2 + caddy（80/443，轮询+健康检查）
 ```
 
 - **切 PG 搬存量数据**：`TG_DATABASE_DRIVER=postgres TG_DATABASE_DSN="..." ./token-gateway -migrate-from-sqlite data/token_.db`
 - **滚动发布**（不停机）：`docker compose up -d --no-deps --build gateway1`，健康检查通过后再发 gateway2
-- **监控**：`GET /metrics` 输出 Prometheus 指标（请求量/延迟直方图/活跃流/上游错误/熔断计数）
+- **监控**：`GET /metrics` 输出 Prometheus 指标（请求量/延迟直方图/活跃流/上游错误/熔断/上游 429/Key 冷却/排队时长/缓存命中等）
 - **渠道熔断**：某渠道连续失败 N 次（`gateway.channel_breaker_threshold`，默认 5，0=关）自动禁用并写备注，修复后手动启用
+- **高并发协调器**（`internal/coord`）：渠道多 Key 池 + 429 冷却自动换 Key + 渠道并发闸门（排队削峰）+ 非流式精确缓存（命中不扣费）；compose 内置 Redis 全局共享，Redis 故障 fail-open 不拖死数据面
 - Caddyfile 改成你的域名即自动 HTTPS；SSE 已配 `flush_interval -1` 透传
-- 限流为 per-node 内存令牌桶：双实例下单 key 实际上限约为配置值 × 节点数（几百客户场景可接受；需精确全局限流时引入 Redis）
+- per-key 限流仍为 per-node 内存令牌桶：双实例下单 key 实际上限约为配置值 × 节点数（几百客户场景可接受；需精确全局限流时引入 Redis）
 
 架构与压测数据详见 `docs/高并发设计.md`。
 
