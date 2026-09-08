@@ -141,7 +141,7 @@ onBeforeUnmount(() => { clearInterval(tick); clearInterval(feed) })
 
         <!-- 连线上的吞吐标签 -->
         <text v-for="(v, i) in VENDORS" :key="'t' + i" class="edge-label num"
-          :fill="v.hue" x="196" :y="50 + i * 82">{{ tps[i] }} tok/s</text>
+          :fill="v.hue" x="196" :y="50 + i * 82">{{ tps[i] }} token/s</text>
 
         <!-- 流动数据包：厂商 → 网关 -->
         <template v-for="(v, i) in VENDORS" :key="'p' + i">
@@ -198,7 +198,10 @@ onBeforeUnmount(() => { clearInterval(tick); clearInterval(feed) })
     <div class="mod m3 ticker">
       <div class="ticker-head">
         <span class="ticker-title">请求流</span>
-        <span class="ticker-cols num">tokens · 延迟 · 费用</span>
+        <span class="ticker-col">tokens</span>
+        <span class="ticker-col">延迟</span>
+        <span class="ticker-col">费用</span>
+        <span aria-hidden="true"></span>
       </div>
       <transition-group name="tick" tag="ul" class="ticker-list">
         <li v-for="r in rows" :key="r.id" class="ticker-row">
@@ -351,21 +354,25 @@ onBeforeUnmount(() => { clearInterval(tick); clearInterval(feed) })
 
 /* ---------- 请求流 ticker（整宽账本式页脚，无内嵌框） ---------- */
 .ticker {
+  /* 表头与数据行共用同一列模板，保证列标签与数字逐列对齐 */
+  --tk-cols: 56px 1fr 56px 58px 62px 86px;
   border-top: 1px solid var(--bd-line);
   overflow: hidden;
 }
 .ticker-head {
-  display: flex; justify-content: space-between; align-items: center;
+  display: grid;
+  grid-template-columns: var(--tk-cols);
+  align-items: center; gap: 4px;
   padding: 9px 38px 7px;
   border-bottom: 1px solid var(--tg-line);
 }
-.ticker-title { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; color: var(--bd-sub); }
-.ticker-cols { font-size: 10px; color: var(--bd-muted); }
+.ticker-title { grid-column: span 2; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; color: var(--bd-sub); }
+.ticker-col { font-size: 10px; color: var(--bd-muted); text-align: right; }
 
 .ticker-list { list-style: none; margin: 0; padding: 0 0 6px; position: relative; }
 .ticker-row {
   display: grid;
-  grid-template-columns: 56px 1fr 56px 58px 62px 86px;
+  grid-template-columns: var(--tk-cols);
   align-items: center; gap: 4px;
   padding: 5.5px 38px;
   font-size: 11px;
