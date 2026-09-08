@@ -7,7 +7,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// ModelPreset 预置模型（单价 0，由平台管理员按厂商价目填写）
+// ModelPreset 预置模型（单价 0，由系统管理员按厂商价目填写）
 type ModelPreset struct {
 	Name        string
 	DisplayName string
@@ -28,8 +28,10 @@ var Presets = []ChannelPreset{
 		BaseURL: "https://api.deepseek.com",
 		Path:    "/v1/chat/completions",
 		Models: []ModelPreset{
-			{Name: "deepseek-chat", DisplayName: "DeepSeek Chat（V3）"},
-			{Name: "deepseek-reasoner", DisplayName: "DeepSeek Reasoner（R1）"},
+			{Name: "deepseek-v4-flash", DisplayName: "DeepSeek V4 Flash"},
+			{Name: "deepseek-v4-pro", DisplayName: "DeepSeek V4 Pro"},
+			// deepseek-chat 2026-07-24 起官方弃用，上游仍按别名（→v4-flash）响应，保留兼容存量调用
+			{Name: "deepseek-chat", DisplayName: "DeepSeek Chat（别名 v4-flash）"},
 		},
 	},
 	{
@@ -37,8 +39,8 @@ var Presets = []ChannelPreset{
 		BaseURL: "https://open.bigmodel.cn/api/paas/v4",
 		Path:    "/chat/completions",
 		Models: []ModelPreset{
-			{Name: "glm-4.5", DisplayName: "智谱 GLM-4.5"},
-			{Name: "glm-4.5-air", DisplayName: "智谱 GLM-4.5-Air"},
+			{Name: "glm-5.3", DisplayName: "智谱 GLM-5.3"},
+			{Name: "glm-5.3-flash", DisplayName: "智谱 GLM-5.3-Flash"},
 			{Name: "glm-4-flash", DisplayName: "智谱 GLM-4-Flash（免费）"},
 		},
 	},
@@ -47,9 +49,20 @@ var Presets = []ChannelPreset{
 		BaseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1",
 		Path:    "/chat/completions",
 		Models: []ModelPreset{
-			{Name: "qwen-max", DisplayName: "通义千问 Max"},
-			{Name: "qwen-plus", DisplayName: "通义千问 Plus"},
-			{Name: "qwen-turbo", DisplayName: "通义千问 Turbo"},
+			{Name: "qwen3.8-max", DisplayName: "通义千问 3.8 Max"},
+			{Name: "qwen3.8-flash", DisplayName: "通义千问 3.8 Flash"},
+			{Name: "qwen3.7-plus", DisplayName: "通义千问 3.7 Plus"},
+			{Name: "qwen-plus", DisplayName: "通义千问 Plus（稳定别名）"},
+		},
+	},
+	{
+		Name: "Kimi", Vendor: "moonshot",
+		BaseURL: "https://api.moonshot.cn",
+		Path:    "/v1/chat/completions",
+		Models: []ModelPreset{
+			{Name: "kimi-k3", DisplayName: "Kimi K3"},
+			{Name: "kimi-k2.7-code", DisplayName: "Kimi K2.7 Code"},
+			{Name: "kimi-k2.6", DisplayName: "Kimi K2.6"},
 		},
 	},
 }
