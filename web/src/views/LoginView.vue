@@ -46,7 +46,7 @@ async function submit() {
           <label class="field">
             <span class="field-label">用户名</span>
             <input v-model="username" class="field-input" type="text" autocomplete="username"
-              spellcheck="false" placeholder="如 admin" />
+              spellcheck="false" placeholder="请输入用户名" />
           </label>
 
           <label class="field">

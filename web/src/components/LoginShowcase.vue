@@ -201,7 +201,7 @@ onBeforeUnmount(() => { clearInterval(tick); clearInterval(feed) })
         <span class="ticker-col">tokens</span>
         <span class="ticker-col">延迟</span>
         <span class="ticker-col">费用</span>
-        <span aria-hidden="true"></span>
+        <span class="ticker-col">状态</span>
       </div>
       <transition-group name="tick" tag="ul" class="ticker-list">
         <li v-for="r in rows" :key="r.id" class="ticker-row">
