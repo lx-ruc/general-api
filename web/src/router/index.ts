@@ -10,7 +10,7 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../layouts/AdminLayout.vue'),
     children: [
       { path: 'home', redirect: '/platform/dashboard' },
-      // 平台管理员
+      // 系统管理员
       { path: 'platform/dashboard', component: () => import('../views/platform/DashboardView.vue'), meta: { roles: ['platform_admin'] } },
       { path: 'platform/orgs', component: () => import('../views/platform/OrgListView.vue'), meta: { roles: ['platform_admin'] } },
       { path: 'platform/orgs/:id', component: () => import('../views/platform/OrgDetailView.vue'), meta: { roles: ['platform_admin'] } },
@@ -21,7 +21,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'platform/recharges', component: () => import('../views/platform/RechargeView.vue'), meta: { roles: ['platform_admin'] } },
       { path: 'platform/vendor-bills', component: () => import('../views/platform/VendorBillView.vue'), meta: { roles: ['platform_admin'] } },
       { path: 'platform/audit', component: () => import('../views/platform/AuditView.vue'), meta: { roles: ['platform_admin'] } },
-      // 公司管理员
+      // 客户管理员
       { path: 'org/dashboard', component: () => import('../views/org/DashboardView.vue'), meta: { roles: ['org_admin'] } },
       { path: 'org/members', component: () => import('../views/org/MemberListView.vue'), meta: { roles: ['org_admin'] } },
       { path: 'org/requests', component: () => import('../views/org/RequestListView.vue'), meta: { roles: ['org_admin'] } },
@@ -30,12 +30,14 @@ const routes: RouteRecordRaw[] = [
       { path: 'org/billing', component: () => import('../views/org/BillingView.vue'), meta: { roles: ['org_admin'] } },
       { path: 'org/keys', component: () => import('../views/org/KeyListView.vue'), meta: { roles: ['org_admin'] } },
       { path: 'org/cost-centers', component: () => import('../views/org/CostCenterView.vue'), meta: { roles: ['org_admin'] } },
-      // 员工
+      // 子账号
       { path: 'member/models', component: () => import('../views/member/MyModelsView.vue'), meta: { roles: ['member'] } },
       { path: 'member/keys', component: () => import('../views/member/MyKeysView.vue'), meta: { roles: ['member'] } },
       { path: 'member/usage', component: () => import('../views/member/MyUsageView.vue'), meta: { roles: ['member'] } },
       { path: 'member/quota', component: () => import('../views/member/QuotaRequestView.vue'), meta: { roles: ['member'] } },
       { path: 'member/docs', component: () => import('../views/member/DocsView.vue'), meta: { roles: ['member'] } },
+      // 文档中心（所有角色可读，不设 meta.roles）
+      { path: 'docs/:page?', component: () => import('../views/docs/DocsSiteView.vue') },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/home' },

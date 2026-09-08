@@ -18,7 +18,7 @@ import (
 	"token-gateway/internal/service"
 )
 
-// newPlatformEnv 临时库 + 平台管理员身份，挂 POST /api/platform/orgs
+// newPlatformEnv 临时库 + 系统管理员身份，挂 POST /api/platform/orgs
 func newPlatformEnv(t *testing.T) (*gin.Engine, *gorm.DB, string) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
@@ -34,7 +34,7 @@ func newPlatformEnv(t *testing.T) (*gin.Engine, *gorm.DB, string) {
 	now := time.Now().Unix()
 	if err := db.Exec(`INSERT INTO users (id, org_id, username, password_hash, role, status, created_at, updated_at)
 		VALUES (1, NULL, 'root', 'x', 'platform_admin', 1, ?, ?)`, now, now).Error; err != nil {
-		t.Fatalf("造平台管理员失败: %v", err)
+		t.Fatalf("造系统管理员失败: %v", err)
 	}
 
 	const secret = "test-secret"
@@ -44,14 +44,14 @@ func newPlatformEnv(t *testing.T) (*gin.Engine, *gorm.DB, string) {
 	}
 
 	engine := gin.New()
-	pg := engine.Group("/api/platform", middleware.JWTAuth(secret))
+	pg := engine.Group("/api/platform", middleware.JWTAuth(secret, db))
 	cipher, _ := crypto.NewCipher("")
 	h := NewHandler(db, cipher, &http.Client{})
 	pg.POST("/orgs", h.CreateOrg)
 	return engine, db, token
 }
 
-// 建公司初始额度入流水：Σgrants(org) == quota_limit 从第一天起成立
+// 建客户初始额度入流水：Σgrants(org) == quota_limit 从第一天起成立
 func TestCreateOrgInitialGrant(t *testing.T) {
 	engine, db, token := newPlatformEnv(t)
 	req := httptest.NewRequest(http.MethodPost, "/api/platform/orgs", strings.NewReader(
@@ -61,12 +61,12 @@ func TestCreateOrgInitialGrant(t *testing.T) {
 	w := httptest.NewRecorder()
 	engine.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
-		t.Fatalf("建公司应 200，得 %d: %s", w.Code, w.Body.String())
+		t.Fatalf("建客户应 200，得 %d: %s", w.Code, w.Body.String())
 	}
 
 	var cnt int64
 	_ = db.Raw(`SELECT COUNT(*) FROM quota_grants WHERE subject_type='org' AND subject_id=1
-		AND amount=5000000 AND remark='创建公司初始额度'`).Scan(&cnt).Error
+		AND amount=5000000 AND remark='创建客户初始额度'`).Scan(&cnt).Error
 	if cnt != 1 {
 		t.Fatalf("初始额度应入流水，cnt=%d", cnt)
 	}
@@ -85,7 +85,7 @@ func TestVendorBillDiff(t *testing.T) {
 	pg := engine.Routes()
 	_ = pg
 	h := NewHandler(db, nil, nil)
-	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret"))
+	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
 	g.GET("/vendor-bills", h.ListVendorBills)
 	g.PUT("/vendor-bills", h.UpsertVendorBill)
 	g.DELETE("/vendor-bills/:id", h.DeleteVendorBill)

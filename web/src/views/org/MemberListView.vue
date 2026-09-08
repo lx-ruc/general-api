@@ -31,7 +31,7 @@ async function load() {
 }
 onMounted(load)
 
-// 新建员工
+// 新建子账号
 const createVisible = ref(false)
 const createForm = reactive({ username: '', password: '', display_name: '', quota_amount: 0 })
 async function submitCreate() {
@@ -40,7 +40,7 @@ async function submitCreate() {
     return
   }
   await apiCreateMember(createForm)
-  ElMessage.success('员工已创建')
+  ElMessage.success('子账号已创建')
   createVisible.value = false
   Object.assign(createForm, { username: '', password: '', display_name: '', quota_amount: 0 })
   load()
@@ -106,7 +106,7 @@ function setUnlimited(m: Member, unlimited: boolean) {
   })
 }
 function remove(m: Member) {
-  ElMessageBox.confirm(`删除员工「${m.display_name || m.username}」及其全部密钥？`, '危险操作', { type: 'warning' })
+  ElMessageBox.confirm(`删除子账号「${m.display_name || m.username}」及其全部密钥？`, '危险操作', { type: 'warning' })
     .then(() => apiDeleteMember(m.id))
     .then(() => {
       ElMessage.success('已删除')
@@ -120,17 +120,17 @@ function remove(m: Member) {
   <el-card shadow="never">
     <template #header>
       <div class="card-header">
-        <span>员工管理</span>
+        <span>子账号管理</span>
         <div>
           <el-input v-model="query.query" placeholder="搜索用户名/姓名" clearable style="width: 180px; margin-right: 8px"
             @keyup.enter="query.page = 1; load()" @clear="query.page = 1; load()" />
-          <el-button type="primary" @click="createVisible = true">新建员工</el-button>
+          <el-button type="primary" @click="createVisible = true">新建子账号</el-button>
         </div>
       </div>
     </template>
 
     <el-table :data="list" v-loading="loading"
-      empty-text="还没有员工。新建员工并授权模型后，员工即可创建密钥调用 API。">
+      empty-text="还没有子账号。新建子账号并授权模型后，子账号即可创建密钥调用 API。">
       <el-table-column prop="username" label="用户名" width="120" />
       <el-table-column prop="display_name" label="姓名" width="100" />
       <el-table-column label="已用 / 上限（token）" min-width="180">
@@ -190,7 +190,7 @@ function remove(m: Member) {
                 <el-dropdown-item command="toggle">{{ row.status === 1 ? '停用账号' : '启用账号' }}</el-dropdown-item>
                 <el-dropdown-item v-if="row.quota_limit != null" command="unlimited" divided>设为不限额</el-dropdown-item>
                 <el-dropdown-item v-else command="limit">设为限额</el-dropdown-item>
-                <el-dropdown-item command="delete" class="danger-item">删除员工</el-dropdown-item>
+                <el-dropdown-item command="delete" class="danger-item">删除子账号</el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>
@@ -202,7 +202,7 @@ function remove(m: Member) {
       @current-change="(p: number) => { query.page = p; load() }" />
   </el-card>
 
-  <el-dialog v-model="createVisible" title="新建员工" width="460px">
+  <el-dialog v-model="createVisible" title="新建子账号" width="460px">
     <el-form label-width="100px">
       <el-form-item label="用户名" required><el-input v-model="createForm.username" /></el-form-item>
       <el-form-item label="初始密码" required><el-input v-model="createForm.password" show-password placeholder="至少 6 位" /></el-form-item>
@@ -236,9 +236,9 @@ function remove(m: Member) {
     </template>
   </el-dialog>
 
-  <el-dialog v-model="pwdVisible" title="重置员工密码" width="400px">
+  <el-dialog v-model="pwdVisible" title="重置子账号密码" width="400px">
     <el-form label-width="90px">
-      <el-form-item label="员工">{{ pwdForm.member?.username }}</el-form-item>
+      <el-form-item label="子账号">{{ pwdForm.member?.username }}</el-form-item>
       <el-form-item label="新密码"><el-input v-model="pwdForm.new_password" show-password placeholder="至少 6 位" /></el-form-item>
     </el-form>
     <template #footer>
@@ -249,7 +249,7 @@ function remove(m: Member) {
 
   <el-dialog v-model="grantVisible" :title="`模型授权：${grantMember?.display_name || grantMember?.username || ''}`" width="560px">
     <p class="grant-hint">
-      勾选该员工可用 API key 调用的模型（决定其 <code>/v1/models</code> 列表与转发白名单）
+      勾选该子账号可用 API key 调用的模型（决定其 <code>/v1/models</code> 列表与转发白名单）
     </p>
     <el-checkbox-group v-model="grantedModels">
       <el-checkbox v-for="m in availableModels" :key="m.name" :value="m.name" class="grant-item">

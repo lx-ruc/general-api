@@ -112,7 +112,7 @@ export const apiCreateRecharge = (amount: number, voucher: string) =>
 export const apiOrgBankInfo = () => http.get<any, any>('/api/org/bank-info')
 export const apiOrgBilling = (month: string) => http.get<any, any>('/api/org/billing', { params: { month } })
 
-// 额度预警：读取本公司阈值与状态
+// 额度预警：读取本客户阈值与状态
 export const apiGetAlertLevels = () => http.get<any, any>('/api/org/alert-levels')
 // 额度预警：设置阈值（0 = 关闭）
 export const apiUpdateAlertLevels = (threshold: number) =>

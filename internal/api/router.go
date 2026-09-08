@@ -14,6 +14,7 @@ import (
 	"token-gateway/internal/api/member"
 	"token-gateway/internal/api/org"
 	"token-gateway/internal/api/platform"
+	"token-gateway/internal/api/playground"
 	"token-gateway/internal/config"
 	"token-gateway/internal/coord"
 	"token-gateway/internal/crypto"
@@ -95,13 +96,18 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 	), authH.SendCode)
 	apiGrp.POST("/auth/register", authH.Register)
 
-	authed := apiGrp.Group("", middleware.JWTAuth(cfg.Security.JWTSecret), middleware.Audit(db))
+	authed := apiGrp.Group("", middleware.JWTAuth(cfg.Security.JWTSecret, db), middleware.Audit(db))
 	{
 		authed.GET("/me", authH.Me)
 		authed.PUT("/me/password", authH.ChangePassword)
 	}
 
-	// 平台管理员
+	// 在线体验（三角色通用）：注入合成身份复用数据面编排，JWT 保证身份
+	pg := playground.NewHandler(db, gw)
+	authed.GET("/playground/models", pg.Models)
+	authed.POST("/playground/chat", pg.Chat)
+
+	// 系统管理员
 	ph := platform.NewHandler(db, cipher, gw.Client)
 	plat := authed.Group("/platform", middleware.RequireRole(model.RolePlatformAdmin))
 	{
@@ -147,7 +153,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		plat.PUT("/bank-info", ph.UpdateBankInfo)
 	}
 
-	// 公司管理员（org 隔离：handler 内强制 WHERE org_id）
+	// 客户管理员（org 隔离：handler 内强制 WHERE org_id）
 	oh := org.NewHandler(db)
 	og := authed.Group("/org", middleware.RequireRole(model.RoleOrgAdmin))
 	{
@@ -185,7 +191,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		og.PUT("/alert-levels", oh.UpdateAlertLevels)
 	}
 
-	// 员工
+	// 子账号
 	mh := member.NewHandler(db)
 	mg := authed.Group("/member", middleware.RequireRole(model.RoleMember))
 	{

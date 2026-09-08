@@ -174,26 +174,26 @@ func checkAlert(db *gorm.DB, m *metrics.Metrics, kind string, id int64) {
 	}
 }
 
-// sendAlertMail 收件扇出：org → 全部 org_admin（耗尽附加平台管理员）；user → 本人（有邮箱）+ org_admin。
+// sendAlertMail 收件扇出：org → 全部 org_admin（耗尽附加系统管理员）；user → 本人（有邮箱）+ org_admin。
 func sendAlertMail(db *gorm.DB, kind string, id, used, limit, threshold int64) {
 	pct := fmt.Sprintf("%.1f", float64(used)/float64(limit)*100)
 	if kind == "org" {
 		var name string
 		_ = db.Raw("SELECT name FROM orgs WHERE id = ?", id).Scan(&name).Error
 		exhausted := threshold >= 100
-		subject := fmt.Sprintf("【额度预警】公司「%s」使用率已达 %d%%", name, threshold)
+		subject := fmt.Sprintf("【额度预警】客户「%s」使用率已达 %d%%", name, threshold)
 		if exhausted {
-			subject = fmt.Sprintf("【额度耗尽】公司「%s」额度已用尽（100%%）", name)
+			subject = fmt.Sprintf("【额度耗尽】客户「%s」额度已用尽（100%%）", name)
 		}
-		body := fmt.Sprintf(`公司「%s」额度使用率达到预警线：
+		body := fmt.Sprintf(`客户「%s」额度使用率达到预警线：
 
   预警阈值：%d%%
   当前水位：%s%%（已用 %s / 限额 %s token）
 %s
 %s
-如需继续使用，请联系平台管理员追加额度。`,
+如需继续使用，请联系系统管理员追加额度。`,
 			name, threshold, pct, fmtInt(used), fmtInt(limit),
-			map[bool]string{true: "\n公司额度已耗尽：新请求将被拒绝（429），直至追加额度。\n", false: ""}[exhausted],
+			map[bool]string{true: "\n客户额度已耗尽：新请求将被拒绝（429），直至追加额度。\n", false: ""}[exhausted],
 			consoleLink("/org/billing"))
 		NotifyOrgAdmins(db, id, subject, body)
 		if exhausted {
@@ -214,17 +214,17 @@ func sendAlertMail(db *gorm.DB, kind string, id, used, limit, threshold int64) {
 		who = u.Username
 	}
 	exhausted := threshold >= 100
-	subject := fmt.Sprintf("【额度预警】员工「%s」使用率已达 %d%%", who, threshold)
+	subject := fmt.Sprintf("【额度预警】子账号「%s」使用率已达 %d%%", who, threshold)
 	if exhausted {
-		subject = fmt.Sprintf("【额度耗尽】员工「%s」额度已用尽（100%%）", who)
+		subject = fmt.Sprintf("【额度耗尽】子账号「%s」额度已用尽（100%%）", who)
 	}
-	body := fmt.Sprintf(`员工「%s」(%s) 的个人额度使用率达到预警线：
+	body := fmt.Sprintf(`子账号「%s」(%s) 的个人额度使用率达到预警线：
 
   预警阈值：%d%%
   当前水位：%s%%（已用 %s / 限额 %s token）
 %s
 %s
-如需继续使用，请联系公司管理员追加额度。`,
+如需继续使用，请联系客户管理员追加额度。`,
 		who, u.Username, threshold, pct, fmtInt(used), fmtInt(limit),
 		map[bool]string{true: "\n个人额度已耗尽：新请求将被拒绝（429），直至追加额度。\n", false: ""}[exhausted],
 		consoleLink("/member/quota"))

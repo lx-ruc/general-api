@@ -1,0 +1,165 @@
+/* 文档中心共享样式：由 DocsSiteView 引入一次，作用于全部文档子组件（非 scoped） */
+
+.doc-article { max-width: 860px; margin: 0 auto; padding: 40px 44px 72px; }
+.doc-kicker {
+  font-size: 12px; letter-spacing: 0.08em; font-weight: 600;
+  color: var(--tg-green-ink); margin-bottom: 10px;
+}
+.doc-h1 { font-size: 27px; line-height: 1.3; font-weight: 700; color: var(--tg-ink); margin: 0 0 10px; }
+.doc-desc { font-size: 14.5px; color: var(--tg-muted); line-height: 1.7; margin: 0 0 28px; }
+
+/* ---------- 正文排版 ---------- */
+.doc-prose { font-size: 14px; color: #2c3833; line-height: 1.8; }
+.doc-prose h2 {
+  font-size: 20px; font-weight: 700; color: var(--tg-ink);
+  margin: 2.2em 0 0.7em; padding-bottom: 8px; border-bottom: 1px solid var(--tg-line);
+}
+.doc-prose h2:first-child { margin-top: 6px; }
+.doc-prose h3 { font-size: 15.5px; font-weight: 600; color: var(--tg-ink); margin: 1.7em 0 0.5em; }
+.doc-prose p { margin: 0.65em 0; }
+.doc-prose ul, .doc-prose ol { padding-left: 1.5em; margin: 0.6em 0; }
+.doc-prose li { margin: 0.3em 0; }
+.doc-prose strong { color: var(--tg-ink); }
+.doc-prose a { color: var(--tg-green-ink); text-decoration: none; border-bottom: 1px dashed rgba(18, 164, 98, 0.5); }
+.doc-prose a:hover { border-bottom-style: solid; }
+.doc-prose code {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 12.5px;
+  background: var(--tg-paper); border: 1px solid var(--tg-line);
+  border-radius: 4px; padding: 1px 6px; color: #0f6b44;
+}
+
+/* ---------- 表格 ---------- */
+.doc-table-wrap { overflow-x: auto; margin: 14px 0; }
+.doc-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.doc-table th {
+  text-align: left; background: var(--tg-paper); color: var(--tg-muted);
+  font-weight: 600; padding: 9px 12px; border: 1px solid var(--tg-line); white-space: nowrap;
+}
+.doc-table td { padding: 9px 12px; border: 1px solid var(--tg-line); vertical-align: top; line-height: 1.65; }
+.doc-table td code {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 12px;
+  background: var(--tg-paper); border: 1px solid var(--tg-line);
+  border-radius: 4px; padding: 1px 5px; color: #0f6b44; white-space: nowrap;
+}
+.doc-req, .doc-opt {
+  display: inline-block; font-size: 11px; font-weight: 600; line-height: 1;
+  padding: 3px 7px; border-radius: 999px; white-space: nowrap;
+}
+.doc-req { background: var(--tg-green-wash-strong); color: #08623e; }
+.doc-opt { background: var(--tg-paper); color: var(--tg-muted); border: 1px solid var(--tg-line); }
+
+/* ---------- 接口头部（apifox 风格） ---------- */
+.doc-endpoint {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  background: var(--tg-paper); border: 1px solid var(--tg-line);
+  border-radius: 10px; padding: 14px 18px; margin: 18px 0;
+}
+.doc-method {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 12px; font-weight: 700; letter-spacing: 0.05em;
+  padding: 4px 10px; border-radius: 6px;
+}
+.doc-method.post { background: var(--tg-green-wash-strong); color: #08623e; }
+.doc-method.get { background: #e8f1fd; color: #1d4ed8; }
+.doc-path { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 14px; font-weight: 600; color: var(--tg-ink); }
+.doc-base { font-family: ui-monospace, 'SF Mono', Menlo, monospace; font-size: 11.5px; color: var(--tg-muted); }
+
+/* ---------- 代码块 ---------- */
+.doc-code { border: 1px solid #1d2b24; border-radius: 10px; overflow: hidden; margin: 14px 0; background: #0d1512; }
+.doc-code-bar {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 7px 8px 7px 14px; background: #111c17; border-bottom: 1px solid #1d2b24;
+}
+.doc-lang {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 11px; color: #6f8f81; letter-spacing: 0.07em; text-transform: uppercase;
+}
+.doc-copy {
+  background: transparent; border: 1px solid #2a3b32; color: #9fb8ac;
+  font-size: 11.5px; border-radius: 6px; padding: 3px 10px; cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.doc-copy:hover { color: #fff; border-color: #3d5748; }
+.doc-code pre { margin: 0; padding: 14px 16px; overflow-x: auto; }
+.doc-code code {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 12.5px; line-height: 1.75; color: #d7e6dd; white-space: pre;
+}
+
+/* ---------- 示例切换标签 ---------- */
+.doc-tabs { display: inline-flex; border: 1px solid var(--tg-line); border-radius: 8px; overflow: hidden; margin: 8px 0 2px; }
+.doc-tab {
+  background: var(--tg-surface); border: none; padding: 6px 14px;
+  font-size: 12.5px; color: var(--tg-muted); cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.doc-tab + .doc-tab { border-left: 1px solid var(--tg-line); }
+.doc-tab:hover { color: var(--tg-ink); }
+.doc-tab.on { background: var(--tg-green-wash-strong); color: #08623e; font-weight: 600; }
+
+/* ---------- 提示块 ---------- */
+.doc-callout {
+  border: 1px solid; border-left-width: 3px; border-radius: 8px;
+  padding: 12px 16px; margin: 16px 0; font-size: 13.5px; line-height: 1.75;
+}
+.doc-callout.info { background: var(--tg-green-wash); border-color: rgba(18, 164, 98, 0.22); border-left-color: var(--tg-green); color: #14483a; }
+.doc-callout.warn { background: #fdf6ec; border-color: #f3dcae; border-left-color: #d99a2b; color: #7a5416; }
+.doc-callout .doc-callout-title { font-weight: 600; margin-bottom: 4px; }
+.doc-callout p { margin: 0.3em 0; }
+
+/* ---------- 卡片与角色网格 ---------- */
+.doc-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(225px, 1fr)); gap: 12px; margin: 16px 0; }
+.doc-card {
+  display: block; border: 1px solid var(--tg-line); border-radius: 10px;
+  padding: 16px; text-decoration: none; background: var(--tg-surface);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.doc-card:hover { border-color: var(--tg-green); box-shadow: 0 2px 10px rgba(18, 164, 98, 0.09); }
+.doc-card .t { font-size: 14px; font-weight: 600; color: var(--tg-ink); margin-bottom: 4px; }
+.doc-card .d { font-size: 12.5px; color: var(--tg-muted); line-height: 1.65; }
+
+.doc-grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; margin: 16px 0; }
+.doc-role { border: 1px solid var(--tg-line); border-radius: 10px; padding: 16px; background: var(--tg-surface); }
+.doc-role h4 { margin: 0 0 6px; font-size: 14px; font-weight: 600; color: var(--tg-ink); }
+.doc-role p { margin: 0; font-size: 12.5px; color: var(--tg-muted); line-height: 1.7; }
+
+/* ---------- 响应状态分组 ---------- */
+.doc-status { display: flex; align-items: center; gap: 8px; font-size: 14.5px; font-weight: 600; color: var(--tg-ink); margin: 24px 0 4px; }
+.doc-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.doc-dot.ok { background: var(--tg-green); box-shadow: 0 0 0 3px rgba(18, 164, 98, 0.15); }
+.doc-dot.warn { background: #e6a23c; box-shadow: 0 0 0 3px rgba(230, 162, 60, 0.15); }
+.doc-status .code { font-family: ui-monospace, 'SF Mono', Menlo, monospace; }
+
+/* ---------- 步骤条 ---------- */
+.doc-steps { list-style: none; padding: 0; margin: 14px 0; counter-reset: step; }
+.doc-steps li { counter-increment: step; position: relative; padding: 0 0 18px 40px; }
+.doc-steps li::before {
+  content: counter(step); position: absolute; left: 0; top: 1px;
+  width: 26px; height: 26px; border-radius: 50%;
+  background: var(--tg-green-wash-strong); color: #08623e;
+  font-weight: 700; font-size: 13px;
+  display: flex; align-items: center; justify-content: center;
+}
+.doc-steps li:not(:last-child)::after {
+  content: ''; position: absolute; left: 13px; top: 32px; bottom: 4px;
+  width: 1px; background: var(--tg-line-strong);
+}
+.doc-steps .st { display: block; font-weight: 600; color: var(--tg-ink); font-size: 14px; margin-bottom: 3px; }
+.doc-steps .sd { font-size: 13px; color: var(--tg-muted); line-height: 1.7; }
+
+/* ---------- 上一页 / 下一页 ---------- */
+.doc-pager-wrap { max-width: 860px; margin: 0 auto; padding: 0 44px 56px; }
+.doc-pager { display: flex; justify-content: space-between; gap: 12px; margin-top: 0; padding-top: 20px; border-top: 1px solid var(--tg-line); }
+.doc-pager a {
+  text-decoration: none; border: 1px solid var(--tg-line); border-radius: 10px;
+  padding: 12px 16px; min-width: 220px; transition: border-color 0.15s;
+}
+.doc-pager a:hover { border-color: var(--tg-green); }
+.doc-pager .dir { display: block; font-size: 11.5px; color: var(--tg-muted); margin-bottom: 3px; }
+.doc-pager .name { font-size: 14px; font-weight: 600; color: var(--tg-ink); }
+.doc-pager .next { text-align: right; margin-left: auto; }
+
+@media (max-width: 720px) {
+  .doc-article { padding: 28px 20px 56px; }
+  .doc-pager-wrap { padding: 0 20px 40px; }
+}

@@ -49,7 +49,7 @@ const statusName = (s: string) => ({ pending: '待审批', approved: '已批准'
   <el-card shadow="never">
     <template #header>
       <div class="card-header">
-        <span>员工额度申请</span>
+        <span>子账号额度申请</span>
         <el-radio-group v-model="filters.status" @change="filters.page = 1; load()">
           <el-radio-button value="">全部</el-radio-button>
           <el-radio-button value="pending">待审批</el-radio-button>
@@ -59,7 +59,7 @@ const statusName = (s: string) => ({ pending: '待审批', approved: '已批准'
       </div>
     </template>
 
-    <el-table :data="list" v-loading="loading" empty-text="暂无申请记录。员工额度不足时会在这里发起申请。">
+    <el-table :data="list" v-loading="loading" empty-text="暂无申请记录。子账号额度不足时会在这里发起申请。">
       <el-table-column prop="id" label="#" width="60" />
       <el-table-column prop="username" label="申请人" width="110" />
       <el-table-column label="申请额度" width="170">

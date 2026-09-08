@@ -1,6 +1,6 @@
 package model
 
-// QuotaRequest 员工额度申请（公司管理员审批）
+// QuotaRequest 子账号额度申请（客户管理员审批）
 type QuotaRequest struct {
 	ID         int64  `gorm:"primaryKey" json:"id"`
 	OrgID      int64  `json:"org_id"`
@@ -24,7 +24,7 @@ type Setting struct {
 
 func (Setting) TableName() string { return "settings" }
 
-// RechargeRequest 公司充值申请（对公转账 + 平台人工确认到账）
+// RechargeRequest 客户充值申请（对公转账 + 平台人工确认到账）
 type RechargeRequest struct {
 	ID        int64  `gorm:"primaryKey" json:"id"`
 	OrgID     int64  `json:"org_id"`

@@ -69,19 +69,19 @@ func getOrgCols(f *dbFixture2) (status int, monthlyCost int64, monthlyPeriod str
 // 同月累计 → 达限拦截 → 跨月首笔原子清零
 func TestMonthlyCapAndRollover(t *testing.T) {
 	f := newMonthlyDB(t)
-	orgID, userID := f.insertMonthlyUser(100_000_000, 30_000, 10_000) // org 月限 30k，员工月限 10k
+	orgID, userID := f.insertMonthlyUser(100_000_000, 30_000, 10_000) // org 月限 30k，子账号月限 10k
 
-	// 同月两笔累计：4k + 4k = 8k，未达员工月限 10k
+	// 同月两笔累计：4k + 4k = 8k，未达子账号月限 10k
 	settle(f, orgID, userID, 4_000)
 	settle(f, orgID, userID, 4_000)
 	if err := Precheck(f.db, userID); err != nil {
 		t.Fatalf("8k/10k 不应拦截: %v", err)
 	}
 
-	// 再结 2k → 月累计 10k 达员工月限 → Precheck 拦截
+	// 再结 2k → 月累计 10k 达子账号月限 → Precheck 拦截
 	settle(f, orgID, userID, 2_000)
 	if !errors.Is(Precheck(f.db, userID), ErrUserMonthly) {
-		t.Fatalf("员工月限应拦截，得 %v", Precheck(f.db, userID))
+		t.Fatalf("子账号月限应拦截，得 %v", Precheck(f.db, userID))
 	}
 
 	// 跨月清零：把存储账期伪造成上月 → 读侧视为 0，下一笔结算原子重置
@@ -103,13 +103,13 @@ func TestMonthlyCapAndRollover(t *testing.T) {
 	}
 }
 
-// org 月限独立拦截（员工不限时）
+// org 月限独立拦截（子账号不限时）
 func TestOrgMonthlyCap(t *testing.T) {
 	f := newMonthlyDB(t)
 	orgID, userID := f.insertMonthlyUser(100_000_000, 5_000, 0)
 	settle(f, orgID, userID, 5_000)
 	if !errors.Is(Precheck(f.db, userID), ErrOrgMonthly) {
-		t.Fatal("公司月限应拦截")
+		t.Fatal("客户月限应拦截")
 	}
 }
 

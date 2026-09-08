@@ -19,33 +19,33 @@ func SetMailer(cfg *config.Smtp) { mailerCfg = cfg }
 
 func MailerConfigured() bool { return mailerCfg != nil && mailerCfg.Host != "" }
 
-// NotifyOrgAdmins 向公司全部有邮箱的管理员发送通知，返回已投递（异步）人数。
+// NotifyOrgAdmins 向客户全部有邮箱的管理员发送通知，返回已投递（异步）人数。
 // SMTP 未配置时不发送，内容写入服务日志（开发模式可验证文案）。
 func NotifyOrgAdmins(db *gorm.DB, orgID int64, subject, body string) int {
 	var emails []string
 	_ = db.Raw(`SELECT email FROM users WHERE org_id = ? AND role = 'org_admin' AND email != ''`,
 		orgID).Scan(&emails).Error
 	if len(emails) == 0 {
-		slog.Info("邮件通知跳过：公司管理员未留邮箱", "org_id", orgID, "subject", subject)
+		slog.Info("邮件通知跳过：客户管理员未留邮箱", "org_id", orgID, "subject", subject)
 		return 0
 	}
 	sendToAll(emails, subject, body)
 	return len(emails)
 }
 
-// NotifyPlatformAdmins 通知全部留了邮箱的平台管理员（如公司额度耗尽的续费线索）。
+// NotifyPlatformAdmins 通知全部留了邮箱的系统管理员（如客户额度耗尽的续费线索）。
 func NotifyPlatformAdmins(db *gorm.DB, subject, body string) int {
 	var emails []string
 	_ = db.Raw(`SELECT email FROM users WHERE role = 'platform_admin' AND email != ''`).Scan(&emails).Error
 	if len(emails) == 0 {
-		slog.Info("邮件通知跳过：平台管理员未留邮箱", "subject", subject)
+		slog.Info("邮件通知跳过：系统管理员未留邮箱", "subject", subject)
 		return 0
 	}
 	sendToAll(emails, subject, body)
 	return len(emails)
 }
 
-// NotifyUserAndAdmins 员工级告警扇出：本人（有邮箱时）+ 其公司全部管理员。
+// NotifyUserAndAdmins 子账号级告警扇出：本人（有邮箱时）+ 其客户全部管理员。
 func NotifyUserAndAdmins(db *gorm.DB, orgID int64, memberEmail, subject, body string) int {
 	emails := make([]string, 0, 4)
 	if memberEmail != "" {
@@ -56,7 +56,7 @@ func NotifyUserAndAdmins(db *gorm.DB, orgID int64, memberEmail, subject, body st
 		orgID).Scan(&admins).Error
 	emails = append(emails, admins...)
 	if len(emails) == 0 {
-		slog.Info("邮件通知跳过：员工与公司管理员均未留邮箱", "org_id", orgID, "subject", subject)
+		slog.Info("邮件通知跳过：子账号与客户管理员均未留邮箱", "org_id", orgID, "subject", subject)
 		return 0
 	}
 	sendToAll(emails, subject, body)
@@ -96,14 +96,14 @@ func QuotaGrantEmailBody(orgName, adminName string, amount, newLimit, used int64
 	}
 	return fmt.Sprintf(`%s，你好：
 
-你的公司「%s」额度已由平台管理员更新。
+你的客户「%s」额度已由系统管理员更新。
 
 %s%s token（折合 ¥%s）
 %s当前额度上限：%s
 已消耗：%s token
 操作时间：%s
 
-请登录管理台查看详情。如非预期，请尽快联系平台管理员。
+请登录管理台查看详情。如非预期，请尽快联系系统管理员。
 —— token 中转站`,
 		adminName, orgName, sign, formatToken(amount), yuan, remarkLine, limitStr, formatToken(used),
 		time.Now().Format("2006-01-02 15:04:05"))

@@ -6,7 +6,7 @@ const (
 	RoleMember        = "member"
 )
 
-// User 三级账号同表，role 区分；org_id 为 NULL 即平台管理员
+// User 三级账号同表，role 区分；org_id 为 NULL 即系统管理员
 type User struct {
 	ID           int64  `gorm:"primaryKey" json:"id"`
 	OrgID        *int64 `json:"org_id"`

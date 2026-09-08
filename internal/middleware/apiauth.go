@@ -27,6 +27,16 @@ type KeyInfo struct {
 	UserUsed     int64  `json:"user_used"`
 	OrgLimit     int64  `json:"org_limit"`
 	OrgUsed      int64  `json:"org_used"`
+
+	// Playground 管理台「在线体验」注入的合成身份标记：模型授权已由管理面按角色校验
+	// （见 api/playground），此处跳过子账号白名单检查；系统管理员（OrgID=0）无额度语义，
+	// 结算时不计费。数据面 API key 鉴权永远不设此标记。
+	Playground bool `json:"playground,omitempty"`
+}
+
+// SetKeyInfo 管理面「在线体验」注入合成身份后复用数据面编排（身份由 JWT 保证，不走 API key）
+func SetKeyInfo(c *gin.Context, ki *KeyInfo) {
+	c.Set(ctxKeyInfo, ki)
 }
 
 // APIKeyAuth /v1 数据面鉴权：sk- key → SHA-256 → 唯一索引等值查找（单查询联表带出全部状态）

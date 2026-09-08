@@ -73,7 +73,7 @@ func SnapshotBalances(db *gorm.DB, period string) error {
 	now := time.Now().Unix()
 	var orgs []model.Org
 	if err := db.Find(&orgs).Error; err != nil {
-		return fmt.Errorf("读取公司列表失败: %w", err)
+		return fmt.Errorf("读取客户列表失败: %w", err)
 	}
 	return db.Transaction(func(tx *gorm.DB) error {
 		for _, o := range orgs {
@@ -322,7 +322,7 @@ func WriteStatementCSV(st *BillStatement, orgName string, includeVendor bool) []
 		chain = "✗"
 	}
 
-	line("公司", orgName)
+	line("客户", orgName)
 	line("账期", st.Month, "（时区 "+st.Timezone+"）")
 	line("口径", "归期=结算完成时刻；月边界按账期时区；计价=整数点数（结算快照价）")
 	line("")

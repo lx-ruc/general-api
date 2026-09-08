@@ -139,7 +139,7 @@ async function remove(k: MyKey) {
         <el-select v-model="keyCenter" placeholder="未归集" clearable style="width: 100%">
           <el-option v-for="cc in centers" :key="cc.id" :label="cc.name" :value="cc.id" />
         </el-select>
-        <div class="form-tip">成本中心用于公司按项目核算；改派不影响历史账单</div>
+        <div class="form-tip">成本中心用于客户按项目核算；改派不影响历史账单</div>
       </el-form-item>
     </el-form>
     <template #footer>

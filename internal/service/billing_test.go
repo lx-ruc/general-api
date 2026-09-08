@@ -230,7 +230,7 @@ func TestStatementCSVisolation(t *testing.T) {
 			t.Fatal("org 视角明细不得携带厂商成本/毛利")
 		}
 	}
-	bOrg := WriteStatementCSV(stOrg, "测试公司", false)
+	bOrg := WriteStatementCSV(stOrg, "测试客户", false)
 	if !bytes.HasPrefix(bOrg, []byte("\xEF\xBB\xBF")) {
 		t.Fatal("CSV 必须带 UTF-8 BOM")
 	}
@@ -249,7 +249,7 @@ func TestStatementCSVisolation(t *testing.T) {
 	if len(stPlat.Rows) != 1 || stPlat.Rows[0].VendorCost != 120_000 || stPlat.Rows[0].Margin != 80_000 {
 		t.Fatalf("platform 明细应含厂商成本/毛利: %+v", stPlat.Rows)
 	}
-	bPlat := WriteStatementCSV(stPlat, "测试公司", true)
+	bPlat := WriteStatementCSV(stPlat, "测试客户", true)
 	if !strings.Contains(string(bPlat), "厂商成本") || !strings.Contains(string(bPlat), "毛利") {
 		t.Fatal("platform CSV 应含厂商成本与毛利列")
 	}

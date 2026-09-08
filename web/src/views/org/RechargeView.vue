@@ -11,7 +11,7 @@ const submitting = ref(false)
 
 async function load() {
   const r = await apiOrgBankInfo()
-  bankInfo.value = r.bank_info || '平台尚未配置收款信息，请联系平台管理员'
+  bankInfo.value = r.bank_info || '平台尚未配置收款信息，请联系系统管理员'
   list.value = await apiOrgRecharges()
 }
 onMounted(load)

@@ -1,6 +1,6 @@
 package model
 
-// UserModelGrant 员工模型白名单（公司管理员授权；无记录=无权限）
+// UserModelGrant 子账号模型白名单（客户管理员授权；无记录=无权限）
 type UserModelGrant struct {
 	ID        int64  `gorm:"primaryKey" json:"id"`
 	UserID    int64  `json:"user_id"`

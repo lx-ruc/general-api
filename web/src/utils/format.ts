@@ -51,7 +51,7 @@ export function fmtNum(n: number | null | undefined): string {
 }
 
 export const roleNames: Record<string, string> = {
-  platform_admin: '平台管理员',
-  org_admin: '公司管理员',
-  member: '员工',
+  platform_admin: '系统管理员',
+  org_admin: '客户管理员',
+  member: '子账号',
 }

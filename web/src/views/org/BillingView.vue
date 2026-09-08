@@ -45,7 +45,7 @@ async function loadStatement() {
 
 async function exportStatementCSV() {
   try {
-    await downloadOrgStatementCSV(month.value, auth.user?.org_name || '本公司')
+    await downloadOrgStatementCSV(month.value, auth.user?.org_name || '本客户')
     ElMessage.success('账单 CSV 已生成')
   } catch {
     ElMessage.error('导出失败，请重试')
@@ -130,13 +130,13 @@ function exportCSV() {
         <span class="dim tip-inline">达限后当月停用，次月自动清零恢复</span>
       </div>
       <div class="alert-cfg">
-        <span>公司额度使用率达到阈值时邮件提醒公司管理员（每档只提醒一次，追加额度后自动复位）</span>
+        <span>客户额度使用率达到阈值时邮件提醒客户管理员（每档只提醒一次，追加额度后自动复位）</span>
         <div class="alert-input">
           <el-input-number v-model="threshold" :min="0" :max="100" :controls="false" style="width: 90px" />
           <span class="dim">%</span>
           <el-button type="primary" size="small" :loading="thresholdLoading" @click="saveThreshold">保存</el-button>
         </div>
-        <span class="dim tip">0 = 关闭预警；达 100%（额度耗尽）时同时通知平台管理员跟进续费</span>
+        <span class="dim tip">0 = 关闭预警；达 100%（额度耗尽）时同时通知系统管理员跟进续费</span>
       </div>
     </el-card>
 

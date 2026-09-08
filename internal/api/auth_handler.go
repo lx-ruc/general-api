@@ -48,7 +48,7 @@ func (h *AuthHandler) SendCode(c *gin.Context) {
 	httpx.OK(c, resp)
 }
 
-// Register POST /api/auth/register：公司自助注册（公司名+邮箱验证码+账号+密码）
+// Register POST /api/auth/register：客户自助注册（客户名+邮箱验证码+账号+密码）
 func (h *AuthHandler) Register(c *gin.Context) {
 	var req struct {
 		OrgName  string `json:"org_name" binding:"required"`
@@ -64,9 +64,9 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		httpx.Fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	slog.Info("公司自助注册", "org", req.OrgName, "email", req.Email, "admin", req.Username)
+	slog.Info("客户自助注册", "org", req.OrgName, "email", req.Email, "admin", req.Username)
 	httpx.OK(c, gin.H{
-		"message": "注册成功，请登录。公司初始额度为 0，请联系平台管理员分配额度后再调用 API",
+		"message": "注册成功，请登录。客户初始额度为 0，请联系系统管理员分配额度后再调用 API",
 		"org_name": req.OrgName, "username": req.Username,
 	})
 }
@@ -95,7 +95,8 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	}
 	if u.OrgID != nil {
 		var orgStatus int
-		if err := h.DB.Raw("SELECT status FROM orgs WHERE id = ?", *u.OrgID).Scan(&orgStatus).Error; err != nil || orgStatus != 1 {
+		if err := h.DB.Raw("SELECT status FROM orgs WHERE id = ?", *u.OrgID).Scan(&orgStatus).Error; err != nil || orgStatus == 0 {
+			// 仅拦手动停用（0）；欠费停服（2）允许登录管理台查账单/申请充值，数据面另行拦截
 			httpx.Fail(c, http.StatusForbidden, "所属组织已被停用")
 			return
 		}

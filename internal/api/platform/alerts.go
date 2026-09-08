@@ -11,7 +11,7 @@ import (
 )
 
 // UpdateOrgAlertLevels PUT /api/platform/orgs/:id/alert-levels {threshold}
-// 平台代运营视角：为某公司设预警阈值（0=关）。编辑后静默重算 alert_level。
+// 平台代运营视角：为某客户设预警阈值（0=关）。编辑后静默重算 alert_level。
 func (h *Handler) UpdateOrgAlertLevels(c *gin.Context) {
 	id, ok := httpx.PathID(c)
 	if !ok {
@@ -35,7 +35,7 @@ func (h *Handler) UpdateOrgAlertLevels(c *gin.Context) {
 		return
 	}
 	if res.RowsAffected == 0 {
-		httpx.Fail(c, http.StatusNotFound, "公司不存在")
+		httpx.Fail(c, http.StatusNotFound, "客户不存在")
 		return
 	}
 	service.RecomputeAlertLevel(h.DB, "org", id)

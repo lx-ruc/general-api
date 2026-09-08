@@ -64,7 +64,7 @@ async function submit() {
 
 async function remove(m: MModel) {
   await ElMessageBox.confirm(
-    `删除模型「${m.name}」会同时清理渠道能力与全部员工授权。确定？`, '危险操作',
+    `删除模型「${m.name}」会同时清理渠道能力与全部子账号授权。确定？`, '危险操作',
     { type: 'warning' },
   )
   await apiDeleteModel(m.id)
@@ -83,7 +83,7 @@ async function remove(m: MModel) {
     </template>
 
     <el-table :data="list" v-loading="loading"
-      empty-text="还没有模型。新建模型并定价后，才能在渠道能力与员工授权中选用。">
+      empty-text="还没有模型。新建模型并定价后，才能在渠道能力与子账号授权中选用。">
       <el-table-column prop="name" label="模型名" min-width="150">
         <template #default="{ row }"><code>{{ row.name }}</code></template>
       </el-table-column>

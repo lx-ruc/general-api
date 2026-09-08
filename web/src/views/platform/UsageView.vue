@@ -60,7 +60,7 @@ function reset() {
           <el-option label="5xx" value="500" />
         </el-select>
       </el-form-item>
-      <el-form-item label="公司ID"><el-input v-model="filters.org_id" style="width: 90px" /></el-form-item>
+      <el-form-item label="客户ID"><el-input v-model="filters.org_id" style="width: 90px" /></el-form-item>
       <el-form-item label="用户ID"><el-input v-model="filters.user_id" style="width: 90px" /></el-form-item>
       <el-form-item label="日期">
         <el-date-picker v-model="filters.start_date" type="date" value-format="YYYY-MM-DD" placeholder="开始" style="width: 140px" />
@@ -76,7 +76,7 @@ function reset() {
     <el-table :data="list" size="small" v-loading="loading" empty-text="暂无调用记录。用户用 API key 调用 /v1/chat/completions 后会显示在这里。">
       <el-table-column prop="id" label="#" width="70" />
       <el-table-column prop="request_id" label="请求ID" width="130" show-overflow-tooltip />
-      <el-table-column prop="org_name" label="公司" width="110" show-overflow-tooltip />
+      <el-table-column prop="org_name" label="客户" width="110" show-overflow-tooltip />
       <el-table-column prop="username" label="用户" width="100" />
       <el-table-column prop="model_name" label="模型" width="130" />
       <el-table-column label="tokens（入 / 出）" width="130" align="right">

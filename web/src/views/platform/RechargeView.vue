@@ -28,7 +28,7 @@ onMounted(async () => {
 
 async function saveBank() {
   await apiUpdateBankInfo(bankInfo.value)
-  ElMessage.success('收款信息已保存，公司端发起充值时可见')
+  ElMessage.success('收款信息已保存，客户端发起充值时可见')
 }
 
 const replyVisible = ref(false)
@@ -58,12 +58,12 @@ const statusName = (s: string) => ({ pending: '待确认', approved: '已到账'
     <el-card shadow="never" class="bank">
       <template #header>
         <div class="card-header">
-          <span>收款信息（公司端充值时展示）</span>
+          <span>收款信息（客户端充值时展示）</span>
           <el-button size="small" type="primary" plain @click="saveBank">保存</el-button>
         </div>
       </template>
       <el-input v-model="bankInfo" type="textarea" :rows="3"
-        placeholder="对公转账信息，如：&#10;开户名：XX科技有限公司&#10;开户行：XX银行XX支行&#10;账号：1234 5678 9012&#10;备注请注明公司名" />
+        placeholder="对公转账信息，如：&#10;开户名：XX科技有限公司&#10;开户行：XX银行XX支行&#10;账号：1234 5678 9012&#10;备注请注明客户名称" />
     </el-card>
 
     <el-card shadow="never">
@@ -78,9 +78,9 @@ const statusName = (s: string) => ({ pending: '待确认', approved: '已到账'
           </el-radio-group>
         </div>
       </template>
-      <el-table :data="list" v-loading="loading" empty-text="暂无充值申请。公司管理员在「充值」页对公转账后提交。">
+      <el-table :data="list" v-loading="loading" empty-text="暂无充值申请。客户管理员在「充值」页对公转账后提交。">
         <el-table-column prop="id" label="#" width="60" />
-        <el-table-column prop="org_name" label="公司" width="120" />
+        <el-table-column prop="org_name" label="客户" width="120" />
         <el-table-column label="金额" width="180">
           <template #default="{ row }">{{ fmtQuota(row.amount) }}（¥{{ pointsToYuan(row.amount) }}）</template>
         </el-table-column>
@@ -114,7 +114,7 @@ const statusName = (s: string) => ({ pending: '待确认', approved: '已到账'
         <span class="dim">凭证：{{ current.voucher }}</span>
       </p>
       <p v-if="action === 'approve'" class="dim" style="font-size: 12.5px">
-        确认后额度自动增加到该公司，并邮件通知其管理员。
+        确认后额度自动增加到该客户，并邮件通知其管理员。
       </p>
       <el-input v-model="reply" type="textarea" :rows="2" placeholder="回复（可选）" style="margin-top: 8px" />
       <template #footer>

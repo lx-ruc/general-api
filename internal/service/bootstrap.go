@@ -29,7 +29,7 @@ func ResetUserPassword(db *gorm.DB, username, newPassword string) error {
 		hash, time.Now().Unix(), username).Error
 }
 
-// BootstrapAdmin 首次启动（users 表为空）时创建平台管理员
+// BootstrapAdmin 首次启动（users 表为空）时创建系统管理员
 func BootstrapAdmin(db *gorm.DB, cfg *config.Config) error {
 	var cnt int64
 	if err := db.Model(&model.User{}).Count(&cnt).Error; err != nil {
@@ -45,7 +45,7 @@ func BootstrapAdmin(db *gorm.DB, cfg *config.Config) error {
 	admin := &model.User{
 		Username:     cfg.Security.BootstrapAdminUsername,
 		PasswordHash: hash,
-		DisplayName:  "平台管理员",
+		DisplayName:  "系统管理员",
 		Role:         model.RolePlatformAdmin,
 		Status:       1,
 	}

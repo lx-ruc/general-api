@@ -17,15 +17,15 @@ onMounted(async () => {
 
 const opts = computed(() => (data.value ? trendOptions(data.value.series) : null))
 
-// 接入引导：额度 / 员工 / 调用 三步
+// 接入引导：额度 / 子账号 / 调用 三步
 const setupSteps = computed(() => {
   if (!org.value || !data.value) return []
   const hasQuota = org.value.quota_limit > 0
   const hasActive = (data.value.by_user || []).length > 0
   const steps = [
     { n: '1', label: '获得额度', hint: hasQuota ? '已开通' : '对公转账充值或联系平台分配', done: hasQuota, link: '/org/recharges' },
-    { n: '2', label: '创建员工并授权模型', hint: '员工管理 → 新建员工 → 模型授权', done: hasActive, link: '/org/members' },
-    { n: '3', label: '开始调用', hint: '员工在「我的密钥」创建 key 后即可调用', done: hasActive && data.value.total.requests > 0, link: '/org/usage' },
+    { n: '2', label: '创建子账号并授权模型', hint: '子账号管理 → 新建子账号 → 模型授权', done: hasActive, link: '/org/members' },
+    { n: '3', label: '开始调用', hint: '子账号在「我的密钥」创建 key 后即可调用', done: hasActive && data.value.total.requests > 0, link: '/org/usage' },
   ]
   return steps.some((s) => !s.done) ? steps : []
 })
@@ -50,7 +50,7 @@ const setupSteps = computed(() => {
     <el-card shadow="never" class="pool">
       <div class="pool-row">
         <div class="pool-item">
-          <div class="pool-label">公司池余额</div>
+          <div class="pool-label">客户池余额</div>
           <div class="pool-value num green">{{ fmtQuota(org.quota_limit - org.quota_used) }}</div>
         </div>
         <div class="pool-item">
@@ -101,7 +101,7 @@ const setupSteps = computed(() => {
     <el-row :gutter="16">
       <el-col :xs="24" :md="12">
         <el-card shadow="never">
-          <template #header>员工消耗 Top</template>
+          <template #header>子账号消耗 Top</template>
           <LineChart v-if="data.by_user.length"
             :option="barOption(data.by_user.map((u: any) => u.name), data.by_user.map((u: any) => u.cost))"
             height="180px" />

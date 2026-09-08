@@ -2,6 +2,7 @@
 import { onBeforeUnmount, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import http from '../api/http'
+import SiteTopBar from '../components/SiteTopBar.vue'
 
 const router = useRouter()
 const loading = ref(false)
@@ -68,17 +69,19 @@ async function submit() {
 
 <template>
   <div class="register">
+    <SiteTopBar />
+    <div class="register-body">
     <div class="wrap">
       <button class="back" type="button" @click="router.push('/login')">
         ← 返回登录
       </button>
 
       <form class="form" @submit.prevent="submit">
-        <h1 class="title">注册公司</h1>
-        <p class="hint">注册后你将成为该公司的管理员，可管理员工、模型授权与额度</p>
+        <h1 class="title">客户注册</h1>
+        <p class="hint">注册后你将成为该客户的管理员，可管理子账号、模型授权与额度</p>
 
         <label class="field">
-          <span class="label">公司名称</span>
+          <span class="label">客户名称</span>
           <input v-model="form.org_name" class="input" type="text" placeholder="如：星河科技" />
         </label>
 
@@ -124,8 +127,9 @@ async function submit() {
           {{ loading ? '正在注册…' : '注 册' }}
         </button>
 
-        <p class="note">注册即代表同意由平台管理员为你的公司分配调用额度（初始额度为 0）</p>
+        <p class="note">注册即代表同意由系统管理员为你的客户分配调用额度（初始额度为 0）</p>
       </form>
+    </div>
     </div>
   </div>
 </template>
@@ -136,6 +140,12 @@ async function submit() {
   background:
     radial-gradient(1100px 520px at 10% -12%, rgba(18, 164, 98, 0.10), transparent 62%),
     var(--tg-paper);
+  display: flex; flex-direction: column;
+}
+
+/* 顶栏占 60px，剩余区域居中放注册表单 */
+.register-body {
+  flex: 1;
   display: flex; align-items: center; justify-content: center;
   padding: 32px 20px;
 }

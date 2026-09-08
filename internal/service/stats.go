@@ -43,7 +43,7 @@ type Overview struct {
 	ByModel []GroupPoint `json:"by_model"`
 }
 
-// Scope 统计范围：平台=全部；公司=org_id；员工=user_id
+// Scope 统计范围：平台=全部；客户=org_id；子账号=user_id
 type Scope struct {
 	OrgID  *int64
 	UserID *int64

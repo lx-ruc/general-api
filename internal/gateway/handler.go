@@ -129,6 +129,10 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			h.Metrics.Requests.With(strconv.Itoa(rec.Status)).Inc()
 			h.Metrics.Latency.Observe(time.Since(start).Seconds())
 		}
+		// 系统管理员在线体验：无客户归属、无额度语义，不产生计费（与渠道测试一致），只留计量日志
+		if ki.Playground && ki.OrgID == 0 {
+			rec.Cost = 0
+		}
 		if err := service.Settle(h.DB, rec); err != nil {
 			if h.Metrics != nil {
 				h.Metrics.SettleErrors.Inc()
@@ -183,31 +187,36 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		return
 	}
 
-	// 模型授权（员工白名单）
-	var cnt int64
-	if err := h.DB.Model(&model.UserModelGrant{}).
-		Where("user_id = ? AND model_name = ?", ki.UserID, modelName).Count(&cnt).Error; err != nil || cnt == 0 {
-		rec.Status, rec.Error = http.StatusForbidden, "model not allowed: "+modelName
-		openaiError(c, http.StatusForbidden, "model_not_allowed",
-			fmt.Sprintf("you are not allowed to use model %q, please contact your company admin", modelName))
-		return
+	// 模型授权（子账号白名单）；在线体验（Playground）由管理面按角色预授权，跳过此检查
+	if !ki.Playground {
+		var cnt int64
+		if err := h.DB.Model(&model.UserModelGrant{}).
+			Where("user_id = ? AND model_name = ?", ki.UserID, modelName).Count(&cnt).Error; err != nil || cnt == 0 {
+			rec.Status, rec.Error = http.StatusForbidden, "model not allowed: "+modelName
+			openaiError(c, http.StatusForbidden, "model_not_allowed",
+				fmt.Sprintf("you are not allowed to use model %q, please contact your company admin", modelName))
+			return
+		}
 	}
 
-	// 额度预检查（读）；真实扣减在响应结束后的结算事务里
-	if err := service.Precheck(h.DB, ki.UserID); err != nil {
-		if errors.Is(err, service.ErrUserQuota) || errors.Is(err, service.ErrOrgQuota) {
-			rec.Status, rec.Error = http.StatusTooManyRequests, err.Error()
-			openaiError(c, http.StatusTooManyRequests, "insufficient_balance", err.Error())
+	// 额度预检查（读）；真实扣减在响应结束后的结算事务里。
+	// 系统管理员在线体验无客户归属（OrgID=0），无额度语义，跳过。
+	if ki.OrgID > 0 {
+		if err := service.Precheck(h.DB, ki.UserID); err != nil {
+			if errors.Is(err, service.ErrUserQuota) || errors.Is(err, service.ErrOrgQuota) {
+				rec.Status, rec.Error = http.StatusTooManyRequests, err.Error()
+				openaiError(c, http.StatusTooManyRequests, "insufficient_balance", err.Error())
+				return
+			}
+			if errors.Is(err, service.ErrUserMonthly) || errors.Is(err, service.ErrOrgMonthly) {
+				rec.Status, rec.Error = http.StatusTooManyRequests, err.Error()
+				openaiError(c, http.StatusTooManyRequests, "monthly_limit_exceeded", err.Error())
+				return
+			}
+			rec.Status, rec.Error = http.StatusInternalServerError, err.Error()
+			openaiError(c, http.StatusInternalServerError, "internal_error", "quota precheck failed")
 			return
 		}
-		if errors.Is(err, service.ErrUserMonthly) || errors.Is(err, service.ErrOrgMonthly) {
-			rec.Status, rec.Error = http.StatusTooManyRequests, err.Error()
-			openaiError(c, http.StatusTooManyRequests, "monthly_limit_exceeded", err.Error())
-			return
-		}
-		rec.Status, rec.Error = http.StatusInternalServerError, err.Error()
-		openaiError(c, http.StatusInternalServerError, "internal_error", "quota precheck failed")
-		return
 	}
 
 	// 精确缓存查询（授权/预检之后、选渠道之前）：命中直接回，不触发上游调用与扣费
@@ -345,12 +354,13 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			return attemptNextKey
 
 		case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-			// 401/403：Key 失效 → 禁用该 Key → 换渠道（同渠道其他 Key 仍可被后续请求选中）
+			// 401/403：Key 失效 → 禁用该 Key → 同渠道下一把 Key（主 Key 报错自动切备用；
+			// 候选列表只前进不回看，被禁 Key 不会在本请求内重复选中）
 			drain()
 			onlyRateLimited = false
 			h.disableKey(cand, resp.StatusCode)
 			lastErr = fmt.Sprintf("upstream %s key %d returned %d", cand.ChannelName, cand.KeyID, resp.StatusCode)
-			return attemptNextChannel
+			return attemptNextKey
 
 		case resp.StatusCode >= 500:
 			// 5xx：渠道级故障，熔断计数并跳过该渠道全部剩余 Key（同 endpoint 换 Key 无意义）

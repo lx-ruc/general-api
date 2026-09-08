@@ -111,8 +111,8 @@ function copy(text: string) {
 
     <h3>6. 常见问题</h3>
     <ul class="faq">
-      <li><b>403 model_not_allowed</b>：该模型未被授权，联系公司管理员在「员工管理 → 模型授权」中勾选。</li>
-      <li><b>429 insufficient_balance</b>：个人或公司额度已耗尽，发起额度申请或联系管理员。</li>
+      <li><b>403 model_not_allowed</b>：该模型未被授权，联系客户管理员在「子账号管理 → 模型授权」中勾选。</li>
+      <li><b>429 insufficient_balance</b>：个人或客户额度已耗尽，发起额度申请或联系管理员。</li>
       <li><b>429 monthly_limit_exceeded</b>：当月消费已达单月上限，次月自动恢复。</li>
       <li><b>429 rate_limit_error</b>：请求过于频繁（每密钥默认 60 次/分钟）。</li>
       <li><b>流式响应</b>：中转站会自动向上游请求 usage 统计用于计费，无需客户端做任何改动。</li>

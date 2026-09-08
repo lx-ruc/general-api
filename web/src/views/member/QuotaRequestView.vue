@@ -23,7 +23,7 @@ async function submit() {
   submitting.value = true
   try {
     await apiCreateRequest(form.amount, form.reason)
-    ElMessage.success('申请已提交，等待公司管理员审批')
+    ElMessage.success('申请已提交，等待客户管理员审批')
     form.amount = 1000000
     form.reason = ''
     load()

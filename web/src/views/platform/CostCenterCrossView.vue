@@ -44,20 +44,20 @@ function spanOrg({ rowIndex, columnIndex }: { rowIndex: number; columnIndex: num
 
 <template>
   <el-card shadow="never">
-    <template #header>成本中心交叉报表（各公司 × 中心，含毛利）</template>
+    <template #header>成本中心交叉报表（各客户 × 中心，含毛利）</template>
     <el-form inline @submit.enter.prevent="load">
       <el-form-item label="日期">
         <el-date-picker v-model="filter.range" type="daterange" value-format="YYYY-MM-DD"
           start-placeholder="开始" end-placeholder="结束" style="width: 240px" />
       </el-form-item>
-      <el-form-item label="公司 ID">
+      <el-form-item label="客户 ID">
         <el-input-number v-model="filter.org_id" :min="0" :controls="false" placeholder="全部" style="width: 120px" />
       </el-form-item>
       <el-form-item><el-button type="primary" @click="load">查询</el-button></el-form-item>
     </el-form>
 
     <el-table :data="list" :span-method="spanOrg" border>
-      <el-table-column prop="org_name" label="公司" min-width="130" />
+      <el-table-column prop="org_name" label="客户" min-width="130" />
       <el-table-column label="成本中心" min-width="130">
         <template #default="{ row }">
           <span :class="{ dim: row.cost_center_id == null }">{{ centerName(row) }}</span>

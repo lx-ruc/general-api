@@ -61,7 +61,7 @@ type Gateway struct {
 	KeyCooldown           Duration `yaml:"key_cooldown"`            // 上游 429 后该 Key 的冷却时长
 	CacheTTL              Duration `yaml:"cache_ttl"`               // 精确缓存 TTL；0=关闭
 	CacheMaxItems         int      `yaml:"cache_max_items"`         // 内存 LRU 条数上限（redis 模式仅约束写入侧频率）
-	CacheIsolateOrg       bool     `yaml:"cache_isolate_org"`       // true=缓存按公司隔离（默认全局共享）
+	CacheIsolateOrg       bool     `yaml:"cache_isolate_org"`       // true=缓存按客户隔离（默认全局共享）
 }
 
 // Redis 协调器（key 冷却/并发闸门/缓存 全局共享）；addr 为空 = 全部回退进程内存（单机/无依赖部署）

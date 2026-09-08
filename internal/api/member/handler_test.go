@@ -55,7 +55,7 @@ func newMemberEnv(t *testing.T) *memberEnv {
 	}
 
 	engine := gin.New()
-	api := engine.Group("/api/member", middleware.JWTAuth(secret))
+	api := engine.Group("/api/member", middleware.JWTAuth(secret, db))
 	h := NewHandler(db)
 	api.POST("/keys", h.CreateKey)
 	api.PUT("/keys/:id/cost-center", h.AssignKeyCenter)

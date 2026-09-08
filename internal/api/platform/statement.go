@@ -34,7 +34,7 @@ func (h *Handler) OrgStatement(c *gin.Context) {
 	st, err := service.BuildBillStatement(h.DB, service.BillingLoc(), id, month, true, 500)
 	if err != nil {
 		if err == service.ErrNotFound {
-			httpx.Fail(c, http.StatusNotFound, "公司不存在")
+			httpx.Fail(c, http.StatusNotFound, "客户不存在")
 			return
 		}
 		httpx.Fail(c, http.StatusBadRequest, err.Error())

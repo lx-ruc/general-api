@@ -115,11 +115,11 @@ func (v *Verification) Verify(email, code string) error {
 	return nil
 }
 
-// RegisterCompany 公司自助注册：验证码校验通过后创建公司（额度 0）+ 首任管理员
+// RegisterCompany 客户自助注册：验证码校验通过后创建客户（额度 0）+ 首任管理员
 func (v *Verification) RegisterCompany(db *gorm.DB, orgName, email, code, username, password string) error {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if orgName == "" || len(orgName) > 64 {
-		return fmt.Errorf("请填写公司名（64 字以内）")
+		return fmt.Errorf("请填写客户名（64 字以内）")
 	}
 	if len(username) < 3 {
 		return fmt.Errorf("管理员账号至少 3 位")
@@ -133,7 +133,7 @@ func (v *Verification) RegisterCompany(db *gorm.DB, orgName, email, code, userna
 	var cnt int64
 	_ = db.Model(&model.Org{}).Where("name = ?", orgName).Count(&cnt).Error
 	if cnt > 0 {
-		return fmt.Errorf("公司名已被注册")
+		return fmt.Errorf("客户名已被注册")
 	}
 	_ = db.Model(&model.User{}).Where("username = ? OR (email != '' AND email = ?)", username, email).Count(&cnt).Error
 	if cnt > 0 {

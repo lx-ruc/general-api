@@ -19,7 +19,7 @@ async function load() {
 }
 onMounted(load)
 
-// 新建公司
+// 新建客户
 const createVisible = ref(false)
 const createForm = reactive({
   name: '', remark: '', contact_name: '', contact_phone: '', quota_amount: 100000000,
@@ -27,11 +27,11 @@ const createForm = reactive({
 })
 async function submitCreate() {
   if (!createForm.name || !createForm.admin_username || !createForm.admin_password) {
-    ElMessage.warning('请填写公司名、管理员账号和密码')
+    ElMessage.warning('请填写客户名称、管理员账号和密码')
     return
   }
   await apiCreateOrg(createForm)
-  ElMessage.success('公司已创建')
+  ElMessage.success('客户已创建')
   createVisible.value = false
   Object.assign(createForm, { name: '', remark: '', contact_name: '', contact_phone: '', quota_amount: 100000000, admin_username: '', admin_password: '', admin_display_name: '' })
   load()
@@ -61,7 +61,7 @@ async function toggleStatus(org: Org) {
 
 async function removeOrg(org: Org) {
   await ElMessageBox.confirm(
-    `删除公司「${org.name}」将同时删除其全部账号与密钥（调用日志保留）。确定？`, '危险操作',
+    `删除客户「${org.name}」将同时删除其全部账号与密钥（调用日志保留）。确定？`, '危险操作',
     { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
   )
   await apiDeleteOrg(org.id)
@@ -74,17 +74,17 @@ async function removeOrg(org: Org) {
   <el-card shadow="never">
     <template #header>
       <div class="card-header">
-        <span>公司管理</span>
+        <span>客户管理</span>
         <div>
-          <el-input v-model="query.query" placeholder="搜索公司名" clearable style="width: 200px; margin-right: 8px"
+          <el-input v-model="query.query" placeholder="搜索客户名称" clearable style="width: 200px; margin-right: 8px"
             @keyup.enter="query.page = 1; load()" />
-          <el-button type="primary" @click="createVisible = true">新建公司</el-button>
+          <el-button type="primary" @click="createVisible = true">新建客户</el-button>
         </div>
       </div>
     </template>
 
-    <el-table :data="list" empty-text="还没有公司。新建一家公司后，其管理员即可登录管理员工与额度。">
-      <el-table-column label="公司" min-width="160">
+    <el-table :data="list" empty-text="还没有客户。新建一家客户后，其管理员即可登录管理子账号与额度。">
+      <el-table-column label="客户" min-width="160">
         <template #default="{ row }">
           <el-link type="primary" @click="router.push(`/platform/orgs/${row.id}`)">{{ row.name }}</el-link>
         </template>
@@ -129,9 +129,9 @@ async function removeOrg(org: Org) {
       @current-change="(p: number) => { query.page = p; load() }" />
   </el-card>
 
-  <el-dialog v-model="createVisible" title="新建公司" width="520px">
+  <el-dialog v-model="createVisible" title="新建客户" width="520px">
     <el-form label-width="110px">
-      <el-form-item label="公司名" required><el-input v-model="createForm.name" /></el-form-item>
+      <el-form-item label="客户名称" required><el-input v-model="createForm.name" /></el-form-item>
       <el-form-item label="备注"><el-input v-model="createForm.remark" /></el-form-item>
       <el-form-item label="联系人"><el-input v-model="createForm.contact_name" placeholder="客户企业联系人" /></el-form-item>
       <el-form-item label="联系电话"><el-input v-model="createForm.contact_phone" /></el-form-item>
@@ -139,7 +139,7 @@ async function removeOrg(org: Org) {
         <el-input-number v-model="createForm.quota_amount" :min="0" :step="10000000" />
         <span class="tip">= ¥{{ pointsToYuan(createForm.quota_amount) }}</span>
       </el-form-item>
-      <el-divider content-position="left">首任公司管理员</el-divider>
+      <el-divider content-position="left">首任客户管理员</el-divider>
       <el-form-item label="管理员用户名" required><el-input v-model="createForm.admin_username" /></el-form-item>
       <el-form-item label="管理员密码" required><el-input v-model="createForm.admin_password" show-password /></el-form-item>
       <el-form-item label="管理员姓名"><el-input v-model="createForm.admin_display_name" /></el-form-item>

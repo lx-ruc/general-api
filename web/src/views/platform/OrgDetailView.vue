@@ -34,7 +34,7 @@ async function load() {
   }
 }
 
-// 重置公司管理员密码（忘记密码时平台管理员的恢复入口）
+// 重置客户管理员密码（忘记密码时系统管理员的恢复入口）
 const admins = computed(() => (users.value || []).filter((u: any) => u.role === 'org_admin'))
 const resetVisible = ref(false)
 const resetForm = ref({ userId: 0, new_password: '' })
@@ -132,7 +132,7 @@ async function exportStatementCSV() {
 <template>
   <div v-if="org" v-loading="loading" class="detail">
     <button class="back" type="button" @click="router.back()">
-      <el-icon><ArrowLeft /></el-icon> 返回公司列表
+      <el-icon><ArrowLeft /></el-icon> 返回客户列表
     </button>
     <h1 class="org-name">
       {{ org.name }}
@@ -174,7 +174,7 @@ async function exportStatementCSV() {
           <span class="pool-meter-label num">已用 {{ usedPct.toFixed(2) }}%</span>
         </div>
         <div class="pool-alert">
-          <el-tooltip content="公司额度达到阈值时邮件提醒其管理员；0 = 关闭。达 100% 会同时通知你（平台管理员）" placement="top">
+          <el-tooltip content="客户额度达到阈值时邮件提醒其管理员；0 = 关闭。达 100% 会同时通知你（系统管理员）" placement="top">
             <span class="pool-label">预警阈值</span>
           </el-tooltip>
           <div class="pool-alert-input">
@@ -211,7 +211,7 @@ async function exportStatementCSV() {
       </el-col>
     </el-row>
 
-    <!-- 每个模型 / 每个员工的用量明细 -->
+    <!-- 每个模型 / 每个子账号的用量明细 -->
     <el-row v-if="stats" :gutter="16">
       <el-col :xs="24" :md="12">
         <el-card shadow="never">
@@ -221,7 +221,7 @@ async function exportStatementCSV() {
             height="200px" />
           <div class="chart-gap"></div>
           <el-table :data="stats.by_model" size="small"
-            empty-text="该公司还没有调用记录。">
+            empty-text="该客户还没有调用记录。">
             <el-table-column prop="name" label="模型" min-width="140">
               <template #default="{ row }">
                 <span v-if="row.name"><code>{{ row.name }}</code></span>
@@ -243,14 +243,14 @@ async function exportStatementCSV() {
       </el-col>
       <el-col :xs="24" :md="12">
         <el-card shadow="never">
-          <template #header>员工消耗<span class="unit">（按成本排序）</span></template>
+          <template #header>子账号消耗<span class="unit">（按成本排序）</span></template>
           <LineChart v-if="stats.by_user.length"
             :option="barOption(stats.by_user.map((u: any) => u.name), stats.by_user.map((u: any) => u.cost))"
             height="200px" />
           <div class="chart-gap"></div>
           <el-table :data="stats.by_user" size="small"
             empty-text="暂无数据">
-            <el-table-column prop="name" label="员工" min-width="110" />
+            <el-table-column prop="name" label="子账号" min-width="110" />
             <el-table-column prop="requests" label="请求数" width="80" align="right" />
             <el-table-column label="tokens" width="110" align="right">
               <template #default="{ row }"><span class="num">{{ fmtNum(row.tokens) }}</span></template>
@@ -271,7 +271,7 @@ async function exportStatementCSV() {
         <el-card shadow="never">
           <template #header>额度流水<span class="unit">（最近 50 条）</span></template>
           <el-table :data="grants" size="small" max-height="420"
-            empty-text="暂无流水。给公司追加额度后会记录在这里。">
+            empty-text="暂无流水。给客户追加额度后会记录在这里。">
             <el-table-column label="时间" width="160">
               <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
             </el-table-column>
@@ -290,7 +290,7 @@ async function exportStatementCSV() {
         <el-card shadow="never">
           <template #header>
             <div class="card-head">
-              <span>公司账号<span class="unit">（只读，日常管理由公司管理员进行）</span></span>
+              <span>客户账号<span class="unit">（只读，日常管理由客户管理员进行）</span></span>
               <el-button size="small" @click="openReset">重置管理员密码</el-button>
             </div>
           </template>
@@ -421,7 +421,7 @@ async function exportStatementCSV() {
     </el-card>
 
     <!-- 重置管理员密码 -->
-    <el-dialog v-model="resetVisible" title="重置公司管理员密码" width="420px">
+    <el-dialog v-model="resetVisible" title="重置客户管理员密码" width="420px">
       <p class="reset-hint">
         用于管理员忘记密码时的恢复。新密码只在此刻有效传递 — 平台侧不保存明文，
         请重置后立即告知对方，并提醒其登录后在「修改密码」中改成自己的密码。

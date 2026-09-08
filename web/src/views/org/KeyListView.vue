@@ -43,10 +43,10 @@ async function reassign(k: OrgKey, centerID: number | null) {
 
 <template>
   <el-card shadow="never">
-    <template #header>密钥一览（公司内全部员工的 API key）</template>
-    <el-table :data="list" v-loading="loading" empty-text="公司内还没有密钥。员工登录后在「我的密钥」里创建。">
+    <template #header>密钥一览（客户内全部子账号的 API key）</template>
+    <el-table :data="list" v-loading="loading" empty-text="客户内还没有密钥。子账号登录后在「我的密钥」里创建。">
       <el-table-column prop="id" label="#" width="60" />
-      <el-table-column prop="username" label="所属员工" width="110" />
+      <el-table-column prop="username" label="所属子账号" width="110" />
       <el-table-column prop="name" label="名称" min-width="120" />
       <el-table-column label="密钥" width="160">
         <template #default="{ row }"><code class="num">{{ row.key_prefix }}…</code></template>

@@ -54,7 +54,7 @@ func newOrgEnv(t *testing.T) *orgEnv {
 	}
 
 	engine := gin.New()
-	og := engine.Group("/api/org", middleware.JWTAuth(secret))
+	og := engine.Group("/api/org", middleware.JWTAuth(secret, db))
 	h := NewHandler(db)
 	og.POST("/members", h.CreateMember)
 	og.PUT("/members/:id", h.UpdateMember)
@@ -92,7 +92,7 @@ func (e *orgEnv) sumUserGrants(userID int64) int64 {
 func TestMemberQuotaLedger(t *testing.T) {
 	e := newOrgEnv(t)
 
-	// 建号初始额度 1,000,000 → 一条"创建员工初始额度"流水
+	// 建号初始额度 1,000,000 → 一条"创建子账号初始额度"流水
 	w := e.do(http.MethodPost, "/api/org/members", `{"username":"mem1","password":"pass123","quota_amount":1000000}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("建号应 200，得 %d: %s", w.Code, w.Body.String())
@@ -103,7 +103,7 @@ func TestMemberQuotaLedger(t *testing.T) {
 		t.Fatal("未找到新成员")
 	}
 	var cnt int64
-	_ = e.db.Raw(`SELECT COUNT(*) FROM quota_grants WHERE subject_type='user' AND subject_id=? AND amount=1000000 AND remark='创建员工初始额度'`, mid).Scan(&cnt).Error
+	_ = e.db.Raw(`SELECT COUNT(*) FROM quota_grants WHERE subject_type='user' AND subject_id=? AND amount=1000000 AND remark='创建子账号初始额度'`, mid).Scan(&cnt).Error
 	if cnt != 1 {
 		t.Fatalf("初始额度应入流水，cnt=%d", cnt)
 	}

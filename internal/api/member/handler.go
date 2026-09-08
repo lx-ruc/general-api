@@ -24,7 +24,7 @@ func NewHandler(db *gorm.DB) *Handler {
 
 func uid(c *gin.Context) int64 { return middleware.GetUID(c) }
 
-// ownKey 校验密钥属于当前员工
+// ownKey 校验密钥属于当前子账号
 func (h *Handler) ownKey(c *gin.Context, id int64) (*model.APIKey, bool) {
 	var k model.APIKey
 	if err := h.DB.Where("id = ? AND user_id = ?", id, uid(c)).First(&k).Error; err != nil {
@@ -67,7 +67,7 @@ func (h *Handler) ListCostCenters(c *gin.Context) {
 	httpx.OK(c, centers)
 }
 
-// myOrg 当前员工与其 org（org 必须存在且启用）
+// myOrg 当前子账号与其 org（org 必须存在且启用）
 func (h *Handler) myOrg(c *gin.Context) (*model.User, *model.Org, bool) {
 	var u model.User
 	if err := h.DB.Where("id = ?", uid(c)).First(&u).Error; err != nil || u.OrgID == nil {
@@ -111,7 +111,7 @@ func (h *Handler) CreateKey(c *gin.Context) {
 			return
 		}
 	} else if o.RequireCostCenter == 1 {
-		httpx.Fail(c, http.StatusBadRequest, "本公司已开启强制归集：创建密钥必须选择成本中心")
+		httpx.Fail(c, http.StatusBadRequest, "本客户已开启强制归集：创建密钥必须选择成本中心")
 		return
 	}
 	plain, prefix, hash, err := auth.GenerateAPIKey()
@@ -136,7 +136,7 @@ func (h *Handler) CreateKey(c *gin.Context) {
 	})
 }
 
-// AssignKeyCenter PUT /api/member/keys/:id/cost-center：员工改自己 key 的归集（只影响未来）
+// AssignKeyCenter PUT /api/member/keys/:id/cost-center：子账号改自己 key 的归集（只影响未来）
 func (h *Handler) AssignKeyCenter(c *gin.Context) {
 	id, ok := httpx.PathID(c)
 	if !ok {

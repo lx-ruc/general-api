@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-token 中转站 — 自托管的大模型 API 网关与计量计费平台（Go 后端 + Vue3 管理台，前端 embed 进单个二进制）。把厂商 API（DeepSeek / 智谱 GLM / 通义千问等任意 OpenAI 兼容厂商）转换为自己签发的统一 OpenAI 兼容接口，支持三级账号（平台管理员 → 公司管理员 → 员工）、模型级授权、token 计量计费与双层额度控制。
+token 中转站 — 自托管的大模型 API 网关与计量计费平台（Go 后端 + Vue3 管理台，前端 embed 进单个二进制）。把厂商 API（DeepSeek / 智谱 GLM / 通义千问等任意 OpenAI 兼容厂商）转换为自己签发的统一 OpenAI 兼容接口，支持三级账号（系统管理员 → 客户管理员 → 子账号）、模型级授权、token 计量计费与双层额度控制。
 
 代码注释、commit message、文档均为中文；commit 格式 `feat: <中文描述>`。
 
@@ -43,7 +43,7 @@ go vet ./...                         # 静态检查（仓库目前没有任何�
 - 全整数运算：`cost = ceil((输入tokens×输入单价 + 输出tokens×输出单价)/1M)`，见 `gateway.CalcCost`。单价以**额度点/百万token**存储：默认 `1 元 = 1,000,000 点`（`settings.points_per_yuan` 可调），故 ¥2/百万token 的模型 `input_price = 2,000,000`，即每 token 扣 2 点；前端定价表单直接输入点数，展示时折算成元
 - 分配是"设上限"式：只写 `quota_limit`，消耗只有 `quota_used` 一个真相来源，不存在点数划拨
 - `Precheck` 纯读不锁（advisory）；`Settle` 在响应已发出后无条件执行：同一事务内双记账（users.quota_used + orgs.quota_used）+ 写 usage_logs；超扣幅度封顶在单请求成本内
-- 新增额度入口只有 `AddOrgQuota` / `AddUserQuota`（带 QuotaGrant 审计流水）；设值式变更（员工转不限/转限额）走 `SetUserQuotaUnlimited`，同样差值入流水——**quota_limit 的一切变更必须与流水同事务**，恒保持 Σgrants == COALESCE(quota_limit, 0)
+- 新增额度入口只有 `AddOrgQuota` / `AddUserQuota`（带 QuotaGrant 审计流水）；设值式变更（子账号转不限/转限额）走 `SetUserQuotaUnlimited`，同样差值入流水——**quota_limit 的一切变更必须与流水同事务**，恒保持 Σgrants == COALESCE(quota_limit, 0)
 
 **SSE 红线**：永远不要给 `http.Server` 设 `WriteTimeout`、给上游 `http.Client` 设整体 `Timeout` —— 都会杀流式长连接（见 main.go 注释与 `gateway.NewHTTPClient`）；只允许用 `ResponseHeaderTimeout` / 首字节超时。
 
@@ -51,7 +51,7 @@ go vet ./...                         # 静态检查（仓库目前没有任何�
 
 **密钥安全**：上游厂商 key AES-256-GCM 加密存储（`internal/crypto`，`aes_key` 空 = 明文），接口永不回显（更新时留空 = 不修改）；用户 API key 明文不落库（SHA-256 唯一索引 O(1) 查找，仅创建时显示一次）；密码 bcrypt；JWT HS256。
 
-**启动自举**：users 表为空时按 `bootstrap_admin_*` 建平台管理员；`seed_presets: true` 时确保预置渠道/模型存在（`internal/presets`，单价 0，需管理台定价）。
+**启动自举**：users 表为空时按 `bootstrap_admin_*` 建系统管理员；`seed_presets: true` 时确保预置渠道/模型存在（`internal/presets`，单价 0，需管理台定价）。
 
 **前端**（`web/`）：Vue3 + Element Plus + ECharts + Pinia；视图按角色分目录（`views/platform|org|member/`）；API 层 `web/src/api/{platform,org,member,auth}.ts` 与后端 handler 一一对应。
 

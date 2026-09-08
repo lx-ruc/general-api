@@ -48,13 +48,13 @@ onMounted(async () => {
     <el-row :gutter="16">
       <el-col :xs="24" :md="12">
         <el-card shadow="never">
-          <template #header>公司消耗 Top</template>
+          <template #header>客户消耗 Top</template>
           <LineChart v-if="data.by_org.length"
             :option="barOption(data.by_org.map((o: any) => o.name), data.by_org.map((o: any) => o.cost))"
             height="180px" />
           <div class="chart-gap"></div>
           <el-table :data="data.by_org" size="small">
-            <el-table-column prop="name" label="公司" />
+            <el-table-column prop="name" label="客户" />
             <el-table-column prop="requests" label="请求数" width="90" align="right" />
             <el-table-column label="营收" width="170" align="right">
               <template #default="{ row }">

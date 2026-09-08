@@ -74,7 +74,7 @@ func Precheck(db *gorm.DB, userID int64) error {
 
 // Settle 事后结算：响应已发给客户端，无法回滚，故无条件记账（超扣幅度封顶在单请求成本内）。
 // cost>0 时同事务双记账（总额 + 月累计，跨月首笔原子重置）+ 欠费检查：
-// 公司总额度耗尽 → 自动置 status=2 欠费停服（仅从 1 迁移；手动停用 0 不受影响）。
+// 客户总额度耗尽 → 自动置 status=2 欠费停服（仅从 1 迁移；手动停用 0 不受影响）。
 func Settle(db *gorm.DB, rec *model.UsageLog) error {
 	now := time.Now().Unix()
 	period := currentPeriod()
@@ -103,7 +103,7 @@ func Settle(db *gorm.DB, rec *model.UsageLog) error {
 	})
 }
 
-// AddOrgQuota 平台给公司追加限额（带审计流水）；amount 可为负用于回收。
+// AddOrgQuota 平台给客户追加限额（带审计流水）；amount 可为负用于回收。
 // 追加后如有余量，欠费停服（status=2）自动恢复为启用——手动停用（0）不会被误恢复。
 func AddOrgQuota(db *gorm.DB, orgID, amount, operatorID int64, remark string) error {
 	now := time.Now().Unix()
@@ -127,7 +127,7 @@ func AddOrgQuota(db *gorm.DB, orgID, amount, operatorID int64, remark string) er
 	})
 }
 
-// AddUserQuota 公司管理员给员工追加限额；强制 org 归属校验防越权
+// AddUserQuota 客户管理员给子账号追加限额；强制 org 归属校验防越权
 func AddUserQuota(db *gorm.DB, orgID, userID, amount, operatorID int64, remark string) error {
 	now := time.Now().Unix()
 	return db.Transaction(func(tx *gorm.DB) error {
@@ -146,7 +146,7 @@ func AddUserQuota(db *gorm.DB, orgID, userID, amount, operatorID int64, remark s
 	})
 }
 
-// SetUserQuotaUnlimited 员工限额"设值"路径（转不限 / 转限额）：同事务读旧值→更新→差值入流水，
+// SetUserQuotaUnlimited 子账号限额"设值"路径（转不限 / 转限额）：同事务读旧值→更新→差值入流水，
 // 使 Σgrants == COALESCE(quota_limit, 0) 恒成立（不限额以 0 为基）。
 // 仅状态实际切换时动作：转不限记 amount=−旧值；转限额以当前消耗为起点记 amount=起点；同态重复调用为无操作。
 func SetUserQuotaUnlimited(db *gorm.DB, orgID, userID int64, unlimited bool, operatorID int64) error {

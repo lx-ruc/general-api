@@ -27,7 +27,7 @@ func bindThreshold(c *gin.Context) (int, bool) {
 	return *req.Threshold, true
 }
 
-// GetAlertLevels GET /api/org/alert-levels —— 本公司当前预警配置与状态
+// GetAlertLevels GET /api/org/alert-levels —— 本客户当前预警配置与状态
 func (h *Handler) GetAlertLevels(c *gin.Context) {
 	oid, ok := orgID(c)
 	if !ok {
@@ -46,7 +46,7 @@ func (h *Handler) GetAlertLevels(c *gin.Context) {
 	if err := h.DB.Raw(
 		"SELECT alert_levels, alert_level, alert_since, quota_limit, quota_used, monthly_quota, monthly_cost, monthly_period FROM orgs WHERE id = ?",
 		oid).Scan(&row).Error; err != nil || row.AlertLevels == "" {
-		httpx.Fail(c, http.StatusNotFound, "公司不存在")
+		httpx.Fail(c, http.StatusNotFound, "客户不存在")
 		return
 	}
 	// 月累计仅在存储账期 == 当前账期时有效（跨月惰性清零的读侧）

@@ -1,6 +1,6 @@
 import http from './http'
 
-// ---- 公司 ----
+// ---- 客户 ----
 export interface Org {
   id: number
   name: string
@@ -35,10 +35,10 @@ export const apiDeleteOrg = (id: number) => http.delete<any, any>(`/api/platform
 export const apiAddOrgQuota = (id: number, amount: number, remark: string) =>
   http.post<any, any>(`/api/platform/orgs/${id}/quota`, { amount, remark })
 
-// 公司用量统计（含每个模型的用量明细 by_model / 每个员工 by_user）
+// 客户用量统计（含每个模型的用量明细 by_model / 每个子账号 by_user）
 export const apiOrgDetailStats = (id: number) => http.get<any, any>(`/api/platform/orgs/${id}/stats`)
 
-// 重置公司管理员密码（userId 为空时取首任管理员）
+// 重置客户管理员密码（userId 为空时取首任管理员）
 export const apiResetOrgAdminPassword = (orgId: number, newPassword: string, userId?: number) =>
   http.post<any, any>(`/api/platform/orgs/${orgId}/reset-admin-password`,
     { new_password: newPassword, user_id: userId || 0 })
@@ -139,7 +139,7 @@ export const apiCostCenterCross = (params?: any) =>
   http.get<any, { list: CostCrossRow[]; total_cost: number; total_vendor_cost: number; total_margin: number }>(
     '/api/platform/reports/cost-centers', { params })
 
-// 额度预警：为某公司设置阈值（0 = 关闭）
+// 额度预警：为某客户设置阈值（0 = 关闭）
 export const apiUpdateOrgAlertLevels = (id: number, threshold: number) =>
   http.put<any, any>(`/api/platform/orgs/${id}/alert-levels`, { threshold })
 

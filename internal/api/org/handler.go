@@ -1,6 +1,7 @@
 package org
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -8,10 +9,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	"token-gateway/internal/httpx"
 	"token-gateway/internal/auth"
-	"token-gateway/internal/middleware"
 	"token-gateway/internal/database"
+	"token-gateway/internal/httpx"
+	"token-gateway/internal/middleware"
 	"token-gateway/internal/model"
 	"token-gateway/internal/service"
 )
@@ -24,7 +25,7 @@ func NewHandler(db *gorm.DB) *Handler {
 	return &Handler{DB: db}
 }
 
-// orgID 当前公司管理员所属组织（org 隔离的基础）
+// orgID 当前客户管理员所属组织（org 隔离的基础）
 func orgID(c *gin.Context) (int64, bool) {
 	if oid := middleware.GetOrgID(c); oid != nil && *oid > 0 {
 		return *oid, true
@@ -33,7 +34,7 @@ func orgID(c *gin.Context) (int64, bool) {
 	return 0, false
 }
 
-// ---------------- 员工管理 ----------------
+// ---------------- 子账号管理 ----------------
 
 // ListMembers GET /api/org/members
 func (h *Handler) ListMembers(c *gin.Context) {
@@ -108,13 +109,13 @@ func (h *Handler) CreateMember(c *gin.Context) {
 			}
 			return tx.Create(&model.QuotaGrant{
 				SubjectType: "user", SubjectID: m.ID, Amount: req.QuotaAmount,
-				Remark: "创建员工初始额度", OperatorID: opID(middleware.GetUID(c)), CreatedAt: now,
+				Remark: "创建子账号初始额度", OperatorID: opID(middleware.GetUID(c)), CreatedAt: now,
 			}).Error
 		}
 		return nil
 	})
 	if err != nil {
-		httpx.Fail(c, http.StatusInternalServerError, "创建员工失败: "+err.Error())
+		httpx.Fail(c, http.StatusInternalServerError, "创建子账号失败: "+err.Error())
 		return
 	}
 	_ = h.DB.Where("id = ?", m.ID).First(&m).Error // 回读，带上事务内设置的额度
@@ -133,7 +134,7 @@ func (h *Handler) GetMember(c *gin.Context) {
 	}
 	var m model.User
 	if err := h.DB.Where("id = ? AND org_id = ?", id, oid).First(&m).Error; err != nil {
-		httpx.Fail(c, http.StatusNotFound, "员工不存在")
+		httpx.Fail(c, http.StatusNotFound, "子账号不存在")
 		return
 	}
 	httpx.OK(c, m)
@@ -158,10 +159,10 @@ func (h *Handler) UpdateMember(c *gin.Context) {
 	if !httpx.BindJSON(c, &req) {
 		return
 	}
-	// 员工必须属于本公司（防越权），且不能动公司管理员自己
+	// 子账号必须属于本客户（防越权），且不能动客户管理员自己
 	var m model.User
 	if err := h.DB.Where("id = ? AND org_id = ? AND role = 'member'", id, oid).First(&m).Error; err != nil {
-		httpx.Fail(c, http.StatusNotFound, "员工不存在")
+		httpx.Fail(c, http.StatusNotFound, "子账号不存在")
 		return
 	}
 	updates := map[string]any{"updated_at": time.Now().Unix()}
@@ -206,13 +207,23 @@ func (h *Handler) DeleteMember(c *gin.Context) {
 	if !ok {
 		return
 	}
-	res := h.DB.Where("id = ? AND org_id = ? AND role = 'member'", id, oid).Delete(&model.User{})
-	if res.Error != nil {
+	// 级联删除子账号的 API key（历史 usage_logs 保留）
+	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		res := tx.Where("id = ? AND org_id = ? AND role = 'member'", id, oid).Delete(&model.User{})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		return tx.Where("user_id = ?", id).Delete(&model.APIKey{}).Error
+	})
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			httpx.Fail(c, http.StatusNotFound, "子账号不存在")
+			return
+		}
 		httpx.Fail(c, http.StatusInternalServerError, "删除失败")
-		return
-	}
-	if res.RowsAffected == 0 {
-		httpx.Fail(c, http.StatusNotFound, "员工不存在")
 		return
 	}
 	httpx.OK(c, gin.H{"message": "已删除"})
@@ -237,7 +248,7 @@ func (h *Handler) ResetMemberPassword(c *gin.Context) {
 	var cnt int64
 	_ = h.DB.Model(&model.User{}).Where("id = ? AND org_id = ? AND role = 'member'", id, oid).Count(&cnt).Error
 	if cnt == 0 {
-		httpx.Fail(c, http.StatusNotFound, "员工不存在")
+		httpx.Fail(c, http.StatusNotFound, "子账号不存在")
 		return
 	}
 	hash, err := auth.HashPassword(req.NewPassword)
@@ -272,7 +283,7 @@ func (h *Handler) AddMemberQuota(c *gin.Context) {
 	}
 	if err := service.AddUserQuota(h.DB, oid, id, req.Amount, middleware.GetUID(c), req.Remark); err != nil {
 		if err == service.ErrNotFound {
-			httpx.Fail(c, http.StatusNotFound, "员工不存在")
+			httpx.Fail(c, http.StatusNotFound, "子账号不存在")
 			return
 		}
 		httpx.Fail(c, http.StatusInternalServerError, "追加额度失败")
@@ -296,7 +307,7 @@ func (h *Handler) GetMemberModels(c *gin.Context) {
 	var cnt int64
 	_ = h.DB.Model(&model.User{}).Where("id = ? AND org_id = ?", id, oid).Count(&cnt).Error
 	if cnt == 0 {
-		httpx.Fail(c, http.StatusNotFound, "员工不存在")
+		httpx.Fail(c, http.StatusNotFound, "子账号不存在")
 		return
 	}
 	var granted []string
@@ -329,7 +340,7 @@ func (h *Handler) SetMemberModels(c *gin.Context) {
 	var cnt int64
 	_ = h.DB.Model(&model.User{}).Where("id = ? AND org_id = ? AND role = 'member'", id, oid).Count(&cnt).Error
 	if cnt == 0 {
-		httpx.Fail(c, http.StatusNotFound, "员工不存在")
+		httpx.Fail(c, http.StatusNotFound, "子账号不存在")
 		return
 	}
 	// 校验模型都存在且启用
@@ -433,7 +444,7 @@ func (h *Handler) ListUsage(c *gin.Context) {
 	httpx.PageResult(c, rows, total, page, size)
 }
 
-// ListKeys GET /api/org/keys：公司内全部密钥
+// ListKeys GET /api/org/keys：客户内全部密钥
 func (h *Handler) ListKeys(c *gin.Context) {
 	oid, ok := orgID(c)
 	if !ok {
@@ -562,8 +573,8 @@ func (h *Handler) HandleRequest(c *gin.Context) {
 			// 流水与加额度同事务，杜绝"额度已动、流水缺失"的审计断裂
 			return tx.Create(&model.QuotaGrant{
 				SubjectType: "user", SubjectID: qr.UserID, Amount: qr.Amount,
-				Remark:      fmt.Sprintf("额度申请 #%d 审批通过", id),
-				OperatorID:  opID(operator), CreatedAt: now,
+				Remark:     fmt.Sprintf("额度申请 #%d 审批通过", id),
+				OperatorID: opID(operator), CreatedAt: now,
 			}).Error
 		}
 		return nil
@@ -591,7 +602,7 @@ func (h *Handler) GetBankInfo(c *gin.Context) {
 	httpx.OK(c, gin.H{"bank_info": v})
 }
 
-// ListRecharges GET /api/org/recharges：本公司充值记录
+// ListRecharges GET /api/org/recharges：本客户充值记录
 func (h *Handler) ListRecharges(c *gin.Context) {
 	oid, ok := orgID(c)
 	if !ok {

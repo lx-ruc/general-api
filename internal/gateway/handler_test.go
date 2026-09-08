@@ -289,7 +289,7 @@ func TestAll429Returns429WithRetryAfter(t *testing.T) {
 	}
 }
 
-// 上游 401 → 池内该 Key 异步禁用；后续请求走池内好 Key
+// 上游 401 → 池内该 Key 禁用并同渠道切备用 Key：命中坏 Key 的请求本身也应成功（3.6 主 Key 报错自动切备用）
 func Test401AutoDisablesPoolKey(t *testing.T) {
 	e := newTestEnv(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -303,20 +303,14 @@ func Test401AutoDisablesPoolKey(t *testing.T) {
 	defer up.Close()
 	e.seedUpstreamChannel(t, 1, "ch", up.URL, []string{"bad-key", "good-key"}, 10)
 
-	// 池内两把 key 每请求加权随机排序，可能先选中好 key（200）；
-	// 循环直到坏 key 被选中：401 → 本请求内跳过该渠道剩余 key → 单渠道耗尽回 502
-	var w *httptest.ResponseRecorder
+	// 无论先选中哪把 key，请求都应成功：好 key 直接 200；坏 key 401 → 同渠道换好 key → 200
 	for i := 0; i < 20; i++ {
-		w = e.post(chatBody("q", ""))
-		if w.Code != http.StatusOK {
-			break
+		if w := e.post(chatBody("q", "")); w.Code != http.StatusOK {
+			t.Fatalf("第 %d 笔请求应全部 200（坏 key 应就地切备用），got %d body=%s", i, w.Code, w.Body)
 		}
 	}
-	if w.Code != http.StatusBadGateway {
-		t.Fatalf("选中坏 key 的请求应 502（渠道内换 key 已跳过），got %d", w.Code)
-	}
 
-	// 异步禁用落库
+	// 坏 key 已被异步禁用落库
 	var cnt int64
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -329,14 +323,8 @@ func Test401AutoDisablesPoolKey(t *testing.T) {
 	if cnt != 1 {
 		t.Fatal("坏 key 应被异步禁用")
 	}
-	if e.m.KeyDisabled.Value() != 1 {
-		t.Fatalf("key_disabled 指标应为 1，got %d", e.m.KeyDisabled.Value())
-	}
-
-	// 第二次请求：坏 key 已在 SQL 层过滤 → 好 key 200
-	w = e.post(chatBody("q", ""))
-	if w.Code != http.StatusOK {
-		t.Fatalf("第二次请求应走好 key 成功，got %d body=%s", w.Code, w.Body)
+	if e.m.KeyDisabled.Value() < 1 {
+		t.Fatalf("key_disabled 指标应 ≥1，got %d", e.m.KeyDisabled.Value())
 	}
 }
 

@@ -24,8 +24,10 @@ func Audit(db *gorm.DB) gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		// 登录请求不落库（成功登录有 last_login_at，失败有 IP 限流）
-		if c.Request.URL.Path == "/api/auth/login" || c.Request.URL.Path == "/api/auth/send-code" {
+		// 登录请求不落库（成功登录有 last_login_at，失败有 IP 限流）；
+		// 在线体验对话不落库（对话内容不进审计，计量已有 usage_logs 承载）
+		if c.Request.URL.Path == "/api/auth/login" || c.Request.URL.Path == "/api/auth/send-code" ||
+			c.Request.URL.Path == "/api/playground/chat" {
 			c.Next()
 			return
 		}

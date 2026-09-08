@@ -44,9 +44,9 @@ function reset() {
 
 <template>
   <el-card shadow="never">
-    <template #header>调用日志（本公司）</template>
+    <template #header>调用日志（本客户）</template>
     <el-form inline style="margin-bottom: 8px">
-      <el-form-item label="员工">
+      <el-form-item label="子账号">
         <el-select v-model="filters.user_id" clearable placeholder="全部" style="width: 150px">
           <el-option v-for="m in members" :key="m.id" :label="m.username" :value="m.id" />
         </el-select>
@@ -71,7 +71,7 @@ function reset() {
       </el-form-item>
     </el-form>
 
-    <el-table :data="list" size="small" v-loading="loading" empty-text="本公司还没有调用记录。">
+    <el-table :data="list" size="small" v-loading="loading" empty-text="本客户还没有调用记录。">
       <el-table-column prop="id" label="#" width="70" />
       <el-table-column prop="username" label="用户" width="100" />
       <el-table-column prop="model_name" label="模型" width="130" />

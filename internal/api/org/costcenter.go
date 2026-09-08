@@ -85,7 +85,7 @@ func (h *Handler) CreateCostCenter(c *gin.Context) {
 	}
 	cc := model.CostCenter{OrgID: oid, Name: req.Name, Status: 1}
 	if err := h.DB.Create(&cc).Error; err != nil {
-		httpx.Fail(c, http.StatusBadRequest, "创建失败：名称在本公司内已存在")
+		httpx.Fail(c, http.StatusBadRequest, "创建失败：名称在本客户内已存在")
 		return
 	}
 	httpx.OK(c, cc)
@@ -151,7 +151,7 @@ func (h *Handler) UpdateCostCenterConfig(c *gin.Context) {
 	httpx.OK(c, gin.H{"message": "已更新"})
 }
 
-// ReassignKeyCenter PUT /api/org/keys/:id/cost-center：org 管理员改派本公司任何 key。
+// ReassignKeyCenter PUT /api/org/keys/:id/cost-center：org 管理员改派本客户任何 key。
 // 只影响未来结算——历史 usage_logs 快照不可变。
 func (h *Handler) ReassignKeyCenter(c *gin.Context) {
 	oid, ok := orgID(c)

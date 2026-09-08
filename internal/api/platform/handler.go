@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,9 +13,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	"token-gateway/internal/httpx"
 	"token-gateway/internal/auth"
 	"token-gateway/internal/crypto"
+	"token-gateway/internal/httpx"
 	"token-gateway/internal/middleware"
 	"token-gateway/internal/model"
 	"token-gateway/internal/service"
@@ -30,7 +31,7 @@ func NewHandler(db *gorm.DB, cipher *crypto.Cipher, client *http.Client) *Handle
 	return &Handler{DB: db, Cipher: cipher, Client: client}
 }
 
-// ---------------- 公司管理 ----------------
+// ---------------- 客户管理 ----------------
 
 // ListOrgs GET /api/platform/orgs
 func (h *Handler) ListOrgs(c *gin.Context) {
@@ -69,7 +70,7 @@ type createOrgReq struct {
 	AdminDisplayName string `json:"admin_display_name"`
 }
 
-// CreateOrg POST /api/platform/orgs：创建公司 + 首任公司管理员
+// CreateOrg POST /api/platform/orgs：创建客户 + 首任客户管理员
 func (h *Handler) CreateOrg(c *gin.Context) {
 	var req createOrgReq
 	if !httpx.BindJSON(c, &req) {
@@ -78,7 +79,7 @@ func (h *Handler) CreateOrg(c *gin.Context) {
 	var cnt int64
 	_ = h.DB.Model(&model.Org{}).Where("name = ?", req.Name).Count(&cnt).Error
 	if cnt > 0 {
-		httpx.Fail(c, http.StatusBadRequest, "公司名已存在")
+		httpx.Fail(c, http.StatusBadRequest, "客户名已存在")
 		return
 	}
 	_ = h.DB.Model(&model.User{}).Where("username = ?", req.AdminUsername).Count(&cnt).Error
@@ -105,7 +106,7 @@ func (h *Handler) CreateOrg(c *gin.Context) {
 			}
 			if err := tx.Create(&model.QuotaGrant{
 				SubjectType: "org", SubjectID: org.ID, Amount: req.QuotaAmount,
-				Remark: "创建公司初始额度", OperatorID: opID(middleware.GetUID(c)), CreatedAt: now,
+				Remark: "创建客户初始额度", OperatorID: opID(middleware.GetUID(c)), CreatedAt: now,
 			}).Error; err != nil {
 				return err
 			}
@@ -116,16 +117,16 @@ func (h *Handler) CreateOrg(c *gin.Context) {
 		}).Error
 	})
 	if err != nil {
-		httpx.Fail(c, http.StatusInternalServerError, "创建公司失败: "+err.Error())
+		httpx.Fail(c, http.StatusInternalServerError, "创建客户失败: "+err.Error())
 		return
 	}
 	httpx.OK(c, gin.H{
-		"org": gin.H{"id": org.ID, "name": org.Name, "quota_limit": req.QuotaAmount},
+		"org":            gin.H{"id": org.ID, "name": org.Name, "quota_limit": req.QuotaAmount},
 		"admin_username": req.AdminUsername,
 	})
 }
 
-// GetOrg GET /api/platform/orgs/:id：公司详情 + 额度流水 + 成员一览
+// GetOrg GET /api/platform/orgs/:id：客户详情 + 额度流水 + 成员一览
 func (h *Handler) GetOrg(c *gin.Context) {
 	id, ok := httpx.PathID(c)
 	if !ok {
@@ -133,7 +134,7 @@ func (h *Handler) GetOrg(c *gin.Context) {
 	}
 	var org model.Org
 	if err := h.DB.Where("id = ?", id).First(&org).Error; err != nil {
-		httpx.Fail(c, http.StatusNotFound, "公司不存在")
+		httpx.Fail(c, http.StatusNotFound, "客户不存在")
 		return
 	}
 	var grants []model.QuotaGrant
@@ -169,7 +170,7 @@ func (h *Handler) UpdateOrg(c *gin.Context) {
 	}
 	var org model.Org
 	if err := h.DB.Where("id = ?", id).First(&org).Error; err != nil {
-		httpx.Fail(c, http.StatusNotFound, "公司不存在")
+		httpx.Fail(c, http.StatusNotFound, "客户不存在")
 		return
 	}
 	updates := map[string]any{"updated_at": time.Now().Unix()}
@@ -178,7 +179,7 @@ func (h *Handler) UpdateOrg(c *gin.Context) {
 			var cnt int64
 			_ = h.DB.Model(&model.Org{}).Where("name = ? AND id != ?", *req.Name, id).Count(&cnt).Error
 			if cnt > 0 {
-				httpx.Fail(c, http.StatusBadRequest, "公司名已存在")
+				httpx.Fail(c, http.StatusBadRequest, "客户名已存在")
 				return
 			}
 		}
@@ -214,19 +215,33 @@ func (h *Handler) UpdateOrg(c *gin.Context) {
 	httpx.OK(c, gin.H{"message": "已更新"})
 }
 
-// DeleteOrg DELETE /api/platform/orgs/:id（级联删除公司账号与密钥；日志保留）
+// DeleteOrg DELETE /api/platform/orgs/:id（级联删除客户账号与密钥；日志保留）
 func (h *Handler) DeleteOrg(c *gin.Context) {
 	id, ok := httpx.PathID(c)
 	if !ok {
 		return
 	}
-	res := h.DB.Where("id = ?", id).Delete(&model.Org{})
-	if res.Error != nil {
+	// 级联清理：客户 + 其全部用户 + 用户的 API key 同事务删除；
+	// usage_logs / quota_grants 为历史账单与审计流水，保留不动
+	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		res := tx.Where("id = ?", id).Delete(&model.Org{})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		if err := tx.Exec("DELETE FROM api_keys WHERE user_id IN (SELECT id FROM users WHERE org_id = ?)", id).Error; err != nil {
+			return err
+		}
+		return tx.Where("org_id = ?", id).Delete(&model.User{}).Error
+	})
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			httpx.Fail(c, http.StatusNotFound, "客户不存在")
+			return
+		}
 		httpx.Fail(c, http.StatusInternalServerError, "删除失败")
-		return
-	}
-	if res.RowsAffected == 0 {
-		httpx.Fail(c, http.StatusNotFound, "公司不存在")
 		return
 	}
 	httpx.OK(c, gin.H{"message": "已删除"})
@@ -247,13 +262,13 @@ func (h *Handler) AddOrgQuota(c *gin.Context) {
 	}
 	if err := service.AddOrgQuota(h.DB, id, req.Amount, middleware.GetUID(c), req.Remark); err != nil {
 		if err == service.ErrNotFound {
-			httpx.Fail(c, http.StatusNotFound, "公司不存在")
+			httpx.Fail(c, http.StatusNotFound, "客户不存在")
 			return
 		}
 		httpx.Fail(c, http.StatusInternalServerError, "追加额度失败")
 		return
 	}
-	// 邮件通知公司管理员具体的授权信息（异步；未配置 SMTP 走日志）
+	// 邮件通知客户管理员具体的授权信息（异步；未配置 SMTP 走日志）
 	notifyNote := notifyOrgQuota(h.DB, id, req.Amount, req.Remark)
 	httpx.OK(c, gin.H{"message": fmt.Sprintf("已追加 %d token%s", req.Amount, notifyNote)})
 }
@@ -264,15 +279,15 @@ func notifyOrgQuota(db *gorm.DB, orgID, amount int64, remark string) string {
 	if err := db.Where("id = ?", orgID).First(&org).Error; err != nil {
 		return ""
 	}
-	subject := "「token 中转站」你的公司额度已更新"
+	subject := "「token 中转站」你的客户额度已更新"
 	body := service.QuotaGrantEmailBody(org.Name, org.Name+" 管理员",
 		amount, org.QuotaLimit, org.QuotaUsed, remark)
 	sent := service.NotifyOrgAdmins(db, orgID, subject, body)
 	switch {
 	case sent > 0:
-		return fmt.Sprintf("，已邮件通知 %d 位公司管理员", sent)
+		return fmt.Sprintf("，已邮件通知 %d 位客户管理员", sent)
 	case service.MailerConfigured():
-		return "（该公司管理员未留邮箱，未发送通知）"
+		return "（该客户管理员未留邮箱，未发送通知）"
 	default:
 		return "（SMTP 未配置，通知内容已写入服务日志）"
 	}
@@ -292,7 +307,7 @@ func (h *Handler) ListOrgUsers(c *gin.Context) {
 	httpx.OK(c, users)
 }
 
-// OrgStats GET /api/platform/orgs/:id/stats：该公司用量统计（含每个模型的用量明细）
+// OrgStats GET /api/platform/orgs/:id/stats：该客户用量统计（含每个模型的用量明细）
 func (h *Handler) OrgStats(c *gin.Context) {
 	id, ok := httpx.PathID(c)
 	if !ok {
@@ -301,7 +316,7 @@ func (h *Handler) OrgStats(c *gin.Context) {
 	var cnt int64
 	_ = h.DB.Model(&model.Org{}).Where("id = ?", id).Count(&cnt).Error
 	if cnt == 0 {
-		httpx.Fail(c, http.StatusNotFound, "公司不存在")
+		httpx.Fail(c, http.StatusNotFound, "客户不存在")
 		return
 	}
 	ov, err := service.StatsOverview(h.DB, service.Scope{OrgID: &id})
@@ -313,7 +328,7 @@ func (h *Handler) OrgStats(c *gin.Context) {
 }
 
 // ResetOrgAdminPassword POST /api/platform/orgs/:id/reset-admin-password
-// 平台管理员重置公司管理员密码（忘记密码时的唯一恢复路径）；user_id 为空时取首任管理员
+// 系统管理员重置客户管理员密码（忘记密码时的唯一恢复路径）；user_id 为空时取首任管理员
 func (h *Handler) ResetOrgAdminPassword(c *gin.Context) {
 	id, ok := httpx.PathID(c)
 	if !ok {
@@ -332,7 +347,7 @@ func (h *Handler) ResetOrgAdminPassword(c *gin.Context) {
 	}
 	var u model.User
 	if err := q.Order("id").First(&u).Error; err != nil || u.ID == 0 {
-		httpx.Fail(c, http.StatusNotFound, "该公司还没有管理员账号")
+		httpx.Fail(c, http.StatusNotFound, "该客户还没有管理员账号")
 		return
 	}
 	hash, err := auth.HashPassword(req.NewPassword)
@@ -356,16 +371,16 @@ type abilityReq struct {
 }
 
 type channelReq struct {
-	Name        string        `json:"name" binding:"required"`
-	Vendor      string        `json:"vendor"`
-	BaseURL     string        `json:"base_url" binding:"required"`
-	Path        string        `json:"path"`
-	UpstreamKey string        `json:"upstream_key"` // 多行：每行一把 key，可后缀 :权重；留空=不修改
-	Weight      int           `json:"weight"`
-	Priority    int           `json:"priority"`
-	Status      *int          `json:"status"`
-	Remark      string        `json:"remark"`
-	Models      []abilityReq  `json:"models" binding:"required,min=1"`
+	Name        string       `json:"name" binding:"required"`
+	Vendor      string       `json:"vendor"`
+	BaseURL     string       `json:"base_url" binding:"required"`
+	Path        string       `json:"path"`
+	UpstreamKey string       `json:"upstream_key"` // 多行：每行一把 key，可后缀 :权重；留空=不修改
+	Weight      int          `json:"weight"`
+	Priority    int          `json:"priority"`
+	Status      *int         `json:"status"`
+	Remark      string       `json:"remark"`
+	Models      []abilityReq `json:"models" binding:"required,min=1"`
 }
 
 func (r *channelReq) pathOrDefault() string {
@@ -486,7 +501,7 @@ func (h *Handler) ListChannels(c *gin.Context) {
 		list = append(list, gin.H{
 			"id": ch.ID, "name": ch.Name, "vendor": ch.Vendor,
 			"base_url": ch.BaseURL, "path": ch.Path,
-			"has_key": hasKey(ch.UpstreamKeyEnc, kc.Active),
+			"has_key":   hasKey(ch.UpstreamKeyEnc, kc.Active),
 			"key_count": keyCount, "key_active_count": keyActive,
 			"weight": ch.Weight, "priority": ch.Priority, "status": ch.Status,
 			"last_test_at": ch.LastTestAt, "last_test_ok": ch.LastTestOk,
@@ -520,7 +535,7 @@ func (h *Handler) CreateChannel(c *gin.Context) {
 	}
 	ch := model.Channel{
 		Name: req.Name, Vendor: req.Vendor, BaseURL: req.BaseURL,
-		Path: req.pathOrDefault(),
+		Path:   req.pathOrDefault(),
 		Weight: maxInt(req.Weight, 1), Priority: req.Priority,
 		Status: status, Remark: req.Remark,
 	}
@@ -574,7 +589,7 @@ func (h *Handler) GetChannel(c *gin.Context) {
 	httpx.OK(c, gin.H{
 		"id": ch.ID, "name": ch.Name, "vendor": ch.Vendor,
 		"base_url": ch.BaseURL, "path": ch.Path,
-		"has_key": hasKey(ch.UpstreamKeyEnc, kc.Active),
+		"has_key":   hasKey(ch.UpstreamKeyEnc, kc.Active),
 		"key_count": keyCount, "key_active_count": keyActive,
 		"weight": ch.Weight, "priority": ch.Priority, "status": ch.Status,
 		"remark": ch.Remark, "models": abilities,
@@ -851,15 +866,15 @@ func (h *Handler) TestChannel(c *gin.Context) {
 // ---------------- 模型与定价 ----------------
 
 type modelReq struct {
-	Name        string `json:"name" binding:"required"`
-	DisplayName string `json:"display_name"`
-	Vendor      string `json:"vendor"`
-	InputPrice  int64  `json:"input_price"`
-	OutputPrice int64  `json:"output_price"`
-	CostInputPrice  int64 `json:"cost_input_price"`
-	CostOutputPrice int64 `json:"cost_output_price"`
-	Status      *int   `json:"status"`
-	Remark      string `json:"remark"`
+	Name            string `json:"name" binding:"required"`
+	DisplayName     string `json:"display_name"`
+	Vendor          string `json:"vendor"`
+	InputPrice      int64  `json:"input_price"`
+	OutputPrice     int64  `json:"output_price"`
+	CostInputPrice  int64  `json:"cost_input_price"`
+	CostOutputPrice int64  `json:"cost_output_price"`
+	Status          *int   `json:"status"`
+	Remark          string `json:"remark"`
 }
 
 // ListModels GET /api/platform/models
@@ -912,14 +927,14 @@ func (h *Handler) UpdateModel(c *gin.Context) {
 		return
 	}
 	var req struct {
-		DisplayName string `json:"display_name"`
-		Vendor      string `json:"vendor"`
-		InputPrice  *int64 `json:"input_price" binding:"required,min=0"`
-		OutputPrice *int64 `json:"output_price" binding:"required,min=0"`
+		DisplayName     string `json:"display_name"`
+		Vendor          string `json:"vendor"`
+		InputPrice      *int64 `json:"input_price" binding:"required,min=0"`
+		OutputPrice     *int64 `json:"output_price" binding:"required,min=0"`
 		CostInputPrice  *int64 `json:"cost_input_price"`
 		CostOutputPrice *int64 `json:"cost_output_price"`
-		Status      *int   `json:"status"`
-		Remark      string `json:"remark"`
+		Status          *int   `json:"status"`
+		Remark          string `json:"remark"`
 	}
 	if !httpx.BindJSON(c, &req) {
 		return
@@ -1064,7 +1079,7 @@ func b2i(b bool) int {
 
 // ---------------- 充值管理 ----------------
 
-// GetBankInfo GET /api/platform/bank-info：收款信息（公司端展示用）
+// GetBankInfo GET /api/platform/bank-info：收款信息（客户端展示用）
 func (h *Handler) GetBankInfo(c *gin.Context) {
 	var v string
 	_ = h.DB.Raw("SELECT value FROM settings WHERE key = 'bank_info'").Scan(&v).Error
@@ -1151,8 +1166,8 @@ func (h *Handler) HandleRecharge(c *gin.Context) {
 			// 流水与加额度同事务，杜绝"额度已动、流水缺失"的审计断裂
 			return tx.Create(&model.QuotaGrant{
 				SubjectType: "org", SubjectID: r.OrgID, Amount: r.Amount,
-				Remark:      fmt.Sprintf("充值申请 #%d 到账", id),
-				OperatorID:  opID(operator), CreatedAt: now,
+				Remark:     fmt.Sprintf("充值申请 #%d 到账", id),
+				OperatorID: opID(operator), CreatedAt: now,
 			}).Error
 		}
 		return nil

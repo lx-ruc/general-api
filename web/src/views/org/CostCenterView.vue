@@ -109,7 +109,7 @@ function centerName(r: CostReportRow): string {
     <el-alert v-if="requireCC === 0" type="info" :closable="false" show-icon style="margin-bottom: 12px"
       title="未开启强制归集：未归集密钥的消耗会在报表中单独披露（置底显示）" />
     <el-alert v-else type="warning" :closable="false" show-icon style="margin-bottom: 12px"
-      title="已开启强制归集：员工新建密钥必须选择成本中心" />
+      title="已开启强制归集：子账号新建密钥必须选择成本中心" />
 
     <el-table :data="list">
       <el-table-column prop="name" label="名称" min-width="160">
