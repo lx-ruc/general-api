@@ -106,6 +106,8 @@ export interface MModel {
   vendor: string
   input_price: number
   output_price: number
+  cost_input_price: number
+  cost_output_price: number
   status: number
   remark: string
 }

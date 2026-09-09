@@ -71,13 +71,40 @@ async function remove(m: MModel) {
   ElMessage.success('已删除')
   load()
 }
+
+// 行内直接改价：点击单价单元格变输入框，回车/失焦即保存，值未变不请求
+const editing = ref<{ id: number; field: 'input' | 'output' } | null>(null)
+const editVal = ref(0)
+const vFocus = { mounted: (el: HTMLElement) => { const inp = el.querySelector('input'); inp?.focus(); inp?.select() } }
+
+function startEdit(row: MModel, field: 'input' | 'output') {
+  editing.value = { id: row.id, field }
+  editVal.value = field === 'input' ? row.input_price : row.output_price
+}
+
+async function savePrice(row: MModel) {
+  const cur = editing.value
+  if (!cur) return // change 与 blur 双触发，只处理第一次
+  editing.value = null
+  const orig = cur.field === 'input' ? row.input_price : row.output_price
+  if (editVal.value === orig) return
+  await apiUpdateModel(row.id, {
+    display_name: row.display_name, vendor: row.vendor, remark: row.remark,
+    input_price: cur.field === 'input' ? editVal.value : row.input_price,
+    output_price: cur.field === 'output' ? editVal.value : row.output_price,
+    cost_input_price: row.cost_input_price, cost_output_price: row.cost_output_price,
+    status: row.status,
+  })
+  ElMessage.success(`${row.name} 单价已更新`)
+  load()
+}
 </script>
 
 <template>
   <el-card shadow="never">
     <template #header>
       <div class="card-header">
-        <span>模型定价（单价 = 元 / M token；额度按 token 预算计（1 元 = 1,000,000 token））</span>
+        <span>模型定价（单价 = 元 / M token；额度按 token 预算计（1 元 = 1,000,000 token）；点击表中单价数字可直接修改）</span>
         <el-button type="primary" @click="openCreate">新建模型</el-button>
       </div>
     </template>
@@ -89,18 +116,28 @@ async function remove(m: MModel) {
       </el-table-column>
       <el-table-column prop="display_name" label="显示名" min-width="150" />
       <el-table-column prop="vendor" label="厂商" width="90" />
-      <el-table-column label="输入单价" width="150" align="right">
+      <el-table-column label="输入单价" width="170" align="right">
         <template #default="{ row }">
-          <span class="num green">{{ fmtPrice(row.input_price, PPY) }}</span>
-          <span class="dim">/M ·{{ fmtPrice1K(row.input_price, PPY) }}/千</span>
-          <span v-if="row.input_price === 0" class="zero">（未定价）</span>
+          <el-input-number v-if="editing && editing.id === row.id && editing.field === 'input'"
+            v-model="editVal" :min="0" :step="500000" size="small" style="width: 140px"
+            v-focus @change="savePrice(row)" @blur="savePrice(row)" />
+          <template v-else>
+            <span class="price-edit num green" title="点击修改" @click="startEdit(row, 'input')">{{ fmtPrice(row.input_price, PPY) }}</span>
+            <span class="dim">/M · {{ fmtPrice1K(row.input_price, PPY) }}/千</span>
+            <span v-if="row.input_price === 0" class="zero">（未定价）</span>
+          </template>
         </template>
       </el-table-column>
-      <el-table-column label="输出单价" width="150" align="right">
+      <el-table-column label="输出单价" width="170" align="right">
         <template #default="{ row }">
-          <span class="num green">{{ fmtPrice(row.output_price, PPY) }}</span>
-          <span class="dim">/M ·{{ fmtPrice1K(row.output_price, PPY) }}/千</span>
-          <span v-if="row.output_price === 0" class="zero">（未定价）</span>
+          <el-input-number v-if="editing && editing.id === row.id && editing.field === 'output'"
+            v-model="editVal" :min="0" :step="500000" size="small" style="width: 140px"
+            v-focus @change="savePrice(row)" @blur="savePrice(row)" />
+          <template v-else>
+            <span class="price-edit num green" title="点击修改" @click="startEdit(row, 'output')">{{ fmtPrice(row.output_price, PPY) }}</span>
+            <span class="dim">/M · {{ fmtPrice1K(row.output_price, PPY) }}/千</span>
+            <span v-if="row.output_price === 0" class="zero">（未定价）</span>
+          </template>
         </template>
       </el-table-column>
       <el-table-column label="毛利（入/出）" width="150" align="right">
@@ -167,4 +204,7 @@ async function remove(m: MModel) {
 .dim { color: var(--tg-muted); font-size: 11px; }
 .green { color: var(--tg-green-ink); }
 .zero { color: var(--tg-amber); font-size: 11px; margin-left: 3px; }
+/* 行内改价：hover 提示可点 */
+.price-edit { cursor: pointer; border-bottom: 1px dashed transparent; }
+.price-edit:hover { border-bottom-color: var(--tg-green-ink); }
 </style>
