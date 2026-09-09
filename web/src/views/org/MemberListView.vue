@@ -7,7 +7,7 @@ import {
   apiResetMemberPassword, apiAddMemberQuota, apiGetMemberModels, apiSetMemberModels,
   type Member,
 } from '../../api/org'
-import { fmtTime, fmtQuota, fmtPrice, pointsToYuan } from '../../utils/format'
+import { fmtTime, fmtQuota } from '../../utils/format'
 
 // 月累计仅在存储账期为当前月时有效（跨月惰性清零的读侧）
 function currentMonthUsed(m: Member): number {
@@ -145,7 +145,7 @@ function remove(m: Member) {
         <template #default="{ row }">
           <span v-if="row.monthly_quota > 0">
             <span class="num">{{ fmtQuota(row.monthly_quota) }}</span>
-            <span class="dim"> · 已用 ¥{{ pointsToYuan(currentMonthUsed(row)) }}</span>
+            <span class="dim"> · 已用 {{ fmtQuota(currentMonthUsed(row)) }}</span>
           </span>
           <span v-else class="dim">—</span>
         </template>
@@ -154,7 +154,7 @@ function remove(m: Member) {
         <template #default="{ row }">
           <span v-if="row.quota_limit == null" class="green">不限</span>
           <span v-else class="num" :class="row.quota_limit - row.quota_used > 0 ? 'green' : 'red'">
-            ¥{{ pointsToYuan(row.quota_limit - row.quota_used) }}
+            {{ fmtQuota(row.quota_limit - row.quota_used) }}
           </span>
         </template>
       </el-table-column>
@@ -254,7 +254,7 @@ function remove(m: Member) {
     <el-checkbox-group v-model="grantedModels">
       <el-checkbox v-for="m in availableModels" :key="m.name" :value="m.name" class="grant-item">
         <code>{{ m.name }}</code>
-        <span class="grant-price">{{ fmtPrice(m.input_price) }} 入 / {{ fmtPrice(m.output_price) }} 出 · M token</span>
+        <span v-if="m.display_name" class="grant-price">{{ m.display_name }}</span>
       </el-checkbox>
     </el-checkbox-group>
     <template #footer>

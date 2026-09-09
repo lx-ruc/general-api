@@ -2,7 +2,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiOrgRecharges, apiCreateRecharge, apiOrgBankInfo } from '../../api/org'
-import { fmtTime, fmtQuota, pointsToYuan } from '../../utils/format'
+import { fmtTime, fmtQuota } from '../../utils/format'
 
 const bankInfo = ref('')
 const list = ref<any[]>([])
@@ -48,7 +48,6 @@ const statusName = (s: string) => ({ pending: '待确认', approved: '已到账'
       <el-form inline>
         <el-form-item label="充值金额（token）">
           <el-input-number v-model="form.amount" :min="1000000" :step="5000000" />
-          <span class="tip">= ¥{{ pointsToYuan(form.amount) }}</span>
         </el-form-item>
         <el-form-item label="转账凭证">
           <el-input v-model="form.voucher" placeholder="银行流水号 / 转账时间 / 户名" style="width: 260px" />
@@ -64,7 +63,7 @@ const statusName = (s: string) => ({ pending: '待确认', approved: '已到账'
       <el-table :data="list" empty-text="暂无充值记录">
         <el-table-column prop="id" label="#" width="60" />
         <el-table-column label="金额" width="180">
-          <template #default="{ row }">{{ fmtQuota(row.amount) }}（¥{{ pointsToYuan(row.amount) }}）</template>
+          <template #default="{ row }">{{ fmtQuota(row.amount) }}</template>
         </el-table-column>
         <el-table-column prop="voucher" label="凭证说明" min-width="160" show-overflow-tooltip />
         <el-table-column label="状态" width="90">

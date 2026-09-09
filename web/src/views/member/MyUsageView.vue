@@ -3,7 +3,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { apiMyUsage, apiMyStats } from '../../api/member'
 import StatRow from '../../components/StatRow.vue'
 import LineChart from '../../components/LineChart.vue'
-import { fmtNum, fmtQuota, fmtTime, pointsToYuan } from '../../utils/format'
+import { fmtNum, fmtQuota, fmtTime } from '../../utils/format'
 import { trendOptions } from '../../utils/chart'
 
 const stats = ref<any>(null)
@@ -27,7 +27,7 @@ onMounted(async () => {
     <StatRow :items="[
       { label: '今日请求', value: fmtNum(stats.today.requests), sub: `累计 ${fmtNum(stats.total.requests)}` },
       { label: '今日 tokens', value: fmtNum(stats.today.tokens), sub: `累计 ${fmtNum(stats.total.tokens)}` },
-      { label: '今日成本', value: fmtQuota(stats.today.cost), tone: 'green', sub: `¥${pointsToYuan(stats.today.cost)}` },
+      { label: '今日额度消耗', value: fmtQuota(stats.today.cost), tone: 'green' },
     ]" />
 
     <el-row :gutter="16">
@@ -39,7 +39,7 @@ onMounted(async () => {
       </el-col>
       <el-col :xs="24" :md="12">
         <el-card shadow="never">
-          <template #header>近 7 日成本<span class="unit">（token）</span></template>
+          <template #header>近 7 日额度消耗<span class="unit">（token）</span></template>
           <LineChart :option="trendOptions(stats.series).costOption" />
         </el-card>
       </el-col>
@@ -62,7 +62,7 @@ onMounted(async () => {
         <el-table-column label="tokens（入 / 出）" width="130" align="right">
           <template #default="{ row }"><span class="num">{{ row.prompt_tokens }} / {{ row.completion_tokens }}</span></template>
         </el-table-column>
-        <el-table-column label="成本" width="110" align="right">
+        <el-table-column label="扣减额度" width="110" align="right">
           <template #default="{ row }">
             <span v-if="row.no_usage" class="warn">未计量</span>
             <span v-else class="num green">{{ fmtQuota(row.cost) }}</span>

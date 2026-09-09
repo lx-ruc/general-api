@@ -81,7 +81,7 @@ function reset() {
       <el-table-column label="tokens（入 / 出）" width="130" align="right">
         <template #default="{ row }"><span class="num">{{ row.prompt_tokens }} / {{ row.completion_tokens }}</span></template>
       </el-table-column>
-      <el-table-column label="成本" width="110" align="right">
+      <el-table-column label="扣减额度" width="110" align="right">
         <template #default="{ row }">
           <span v-if="row.cache_hit" class="num green">0 <el-tag size="small" type="success" effect="plain">缓存</el-tag></span>
           <span v-else-if="row.no_usage" class="warn">未计量</span>

@@ -9,7 +9,7 @@ import {
 } from '../../api/platform'
 import LineChart from '../../components/LineChart.vue'
 import { trendOptions, barOption } from '../../utils/chart'
-import { fmtTime, fmtQuota, fmtNum, pointsToYuan, roleNames } from '../../utils/format'
+import { fmtTime, fmtQuota, fmtNum, roleNames } from '../../utils/format'
 
 const route = useRoute()
 const router = useRouter()
@@ -99,7 +99,7 @@ async function saveMonthly() {
 }
 const monthlySaving = ref(false)
 
-// 三段式对账单（平台视角：明细含厂商成本/毛利）
+// 三段式对账单（平台视角）
 const stMonth = ref(dayjs().format('YYYY-MM'))
 const st = ref<any>(null)
 const stLoading = ref(false)
@@ -156,10 +156,6 @@ async function exportStatementCSV() {
           </div>
         </div>
         <div class="pool-item">
-          <div class="pool-label">折合金额</div>
-          <div class="pool-value num">¥{{ pointsToYuan(org.quota_limit - org.quota_used) }}</div>
-        </div>
-        <div class="pool-item">
           <div class="pool-label">额度上限</div>
           <div class="pool-value num">{{ fmtQuota(org.quota_limit) }}</div>
         </div>
@@ -185,7 +181,7 @@ async function exportStatementCSV() {
         </div>
         <div class="pool-alert">
           <el-tooltip content="单月消费上限（token 预算）；0 = 不限。当月达限拦截新请求，次月自动清零恢复" placement="top">
-            <span class="pool-label">单月上限<span v-if="monthly > 0" class="dim">（本月已用 ¥{{ pointsToYuan(monthlyUsed) }}）</span></span>
+            <span class="pool-label">单月上限<span v-if="monthly > 0" class="dim">（本月已用 {{ fmtQuota(monthlyUsed) }}）</span></span>
           </el-tooltip>
           <div class="pool-alert-input">
             <el-input-number v-model="monthly" :min="0" :step="10000000" size="small" style="width: 140px" />
@@ -205,7 +201,7 @@ async function exportStatementCSV() {
       </el-col>
       <el-col :xs="24" :md="12">
         <el-card shadow="never">
-          <template #header>近 7 日成本<span class="unit">（token）</span></template>
+          <template #header>近 7 日额度消耗<span class="unit">（token）</span></template>
           <LineChart :option="trendOptions(stats.series).costOption" />
         </el-card>
       </el-col>
@@ -215,7 +211,7 @@ async function exportStatementCSV() {
     <el-row v-if="stats" :gutter="16">
       <el-col :xs="24" :md="12">
         <el-card shadow="never">
-          <template #header>各模型用量<span class="unit">（按成本排序）</span></template>
+          <template #header>各模型用量<span class="unit">（按消耗排序）</span></template>
           <LineChart v-if="stats.by_model.length"
             :option="barOption(stats.by_model.map((m: any) => m.name || '未路由'), stats.by_model.map((m: any) => m.cost))"
             height="200px" />
@@ -232,10 +228,9 @@ async function exportStatementCSV() {
             <el-table-column label="tokens" width="110" align="right">
               <template #default="{ row }"><span class="num">{{ fmtNum(row.tokens) }}</span></template>
             </el-table-column>
-            <el-table-column label="成本" min-width="150" align="right">
+            <el-table-column label="消耗" min-width="150" align="right">
               <template #default="{ row }">
                 <span class="num green">{{ fmtQuota(row.cost) }}</span>
-                <span class="dim"> · ¥{{ pointsToYuan(row.cost) }}</span>
               </template>
             </el-table-column>
           </el-table>
@@ -243,7 +238,7 @@ async function exportStatementCSV() {
       </el-col>
       <el-col :xs="24" :md="12">
         <el-card shadow="never">
-          <template #header>子账号消耗<span class="unit">（按成本排序）</span></template>
+          <template #header>子账号消耗<span class="unit">（按消耗排序）</span></template>
           <LineChart v-if="stats.by_user.length"
             :option="barOption(stats.by_user.map((u: any) => u.name), stats.by_user.map((u: any) => u.cost))"
             height="200px" />
@@ -255,10 +250,9 @@ async function exportStatementCSV() {
             <el-table-column label="tokens" width="110" align="right">
               <template #default="{ row }"><span class="num">{{ fmtNum(row.tokens) }}</span></template>
             </el-table-column>
-            <el-table-column label="成本" min-width="150" align="right">
+            <el-table-column label="消耗" min-width="150" align="right">
               <template #default="{ row }">
                 <span class="num green">{{ fmtQuota(row.cost) }}</span>
-                <span class="dim"> · ¥{{ pointsToYuan(row.cost) }}</span>
               </template>
             </el-table-column>
           </el-table>
@@ -324,7 +318,7 @@ async function exportStatementCSV() {
     <el-card v-if="st" shadow="never">
       <template #header>
         <div class="card-head">
-          <span>月度对账单<span class="unit">（勾稽 / 冲减 / 明细，平台视角含厂商成本与毛利）</span></span>
+          <span>月度对账单<span class="unit">（勾稽 / 冲减 / 明细，平台视角）</span></span>
           <div>
             <el-select v-model="stMonth" size="small" style="width: 120px; margin-right: 8px" @change="loadStatement">
               <el-option v-for="m in stMonthOptions" :key="m" :label="m" :value="m" />
@@ -352,8 +346,8 @@ async function exportStatementCSV() {
         <el-descriptions-item label="期内冲减">
           <span class="num red">{{ fmtQuota(st.total_revoked) }}</span>
         </el-descriptions-item>
-        <el-descriptions-item label="期内消耗（营收）">
-          <span class="num">¥{{ pointsToYuan(st.consumption) }}</span>
+        <el-descriptions-item label="期内消耗">
+          <span class="num">{{ fmtQuota(st.consumption) }}</span>
         </el-descriptions-item>
         <el-descriptions-item label="期末限额">
           <span class="num">{{ fmtQuota(st.closing_limit) }}</span>
@@ -397,21 +391,9 @@ async function exportStatementCSV() {
             <span :class="{ green: row.cache_hits > 0 }">{{ row.cache_hits }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="营收（点）" width="130" align="right">
+        <el-table-column label="消耗（token）" width="130" align="right">
           <template #default="{ row }">
-            <span class="num green">{{ row.cost.toLocaleString('zh-CN') }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="厂商成本（点）" width="120" align="right">
-          <template #default="{ row }">
-            <span class="num">{{ (row.vendor_cost ?? 0).toLocaleString('zh-CN') }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="毛利（点）" width="110" align="right">
-          <template #default="{ row }">
-            <span class="num" :class="row.margin >= 0 ? 'green' : 'red'">
-              {{ (row.margin ?? 0).toLocaleString('zh-CN') }}
-            </span>
+            <span class="num green">{{ fmtQuota(row.cost) }}</span>
           </template>
         </el-table-column>
       </el-table>

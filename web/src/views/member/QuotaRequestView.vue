@@ -2,7 +2,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiMyRequests, apiCreateRequest, apiMyModels } from '../../api/member'
-import { fmtQuota, fmtTime, pointsToYuan } from '../../utils/format'
+import { fmtQuota, fmtTime } from '../../utils/format'
 
 const me = ref<any>(null)
 const list = ref<any[]>([])
@@ -42,13 +42,13 @@ const statusName = (s: string) => ({ pending: '待审批', approved: '已批准'
       <template #header>我的额度</template>
       <el-descriptions :column="3" border>
         <el-descriptions-item label="额度上限">
-          {{ me.quota_limit == null ? '不限额' : `${fmtQuota(me.quota_limit)} token（¥${pointsToYuan(me.quota_limit)}）` }}
+          {{ me.quota_limit == null ? '不限额' : fmtQuota(me.quota_limit) }}
         </el-descriptions-item>
-        <el-descriptions-item label="已消耗">{{ fmtQuota(me.quota_used) }} token（¥{{ pointsToYuan(me.quota_used) }}）</el-descriptions-item>
+        <el-descriptions-item label="已消耗">{{ fmtQuota(me.quota_used) }}</el-descriptions-item>
         <el-descriptions-item label="剩余">
           <span v-if="me.quota_limit == null" style="color: #67c23a">不限</span>
           <span v-else :style="{ color: me.quota_limit - me.quota_used > 0 ? '#67c23a' : '#f56c6c', fontWeight: 600 }">
-            {{ fmtQuota(me.quota_limit - me.quota_used) }} token（¥{{ pointsToYuan(me.quota_limit - me.quota_used) }}）
+            {{ fmtQuota(me.quota_limit - me.quota_used) }}
           </span>
         </el-descriptions-item>
       </el-descriptions>
@@ -57,7 +57,6 @@ const statusName = (s: string) => ({ pending: '待审批', approved: '已批准'
       <el-form inline>
         <el-form-item label="申请token 数">
           <el-input-number v-model="form.amount" :min="100000" :step="1000000" />
-          <span class="tip">= ¥{{ pointsToYuan(form.amount) }}</span>
         </el-form-item>
         <el-form-item label="理由">
           <el-input v-model="form.reason" placeholder="如：XX 项目联调需要" style="width: 260px" />
@@ -73,7 +72,7 @@ const statusName = (s: string) => ({ pending: '待审批', approved: '已批准'
       <el-table :data="list">
         <el-table-column prop="id" label="#" width="60" />
         <el-table-column label="申请额度" width="170">
-          <template #default="{ row }">{{ fmtQuota(row.amount) }} token（¥{{ pointsToYuan(row.amount) }}）</template>
+          <template #default="{ row }">{{ fmtQuota(row.amount) }}</template>
         </el-table-column>
         <el-table-column prop="reason" label="理由" min-width="150" show-overflow-tooltip />
         <el-table-column label="状态" width="90">

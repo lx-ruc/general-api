@@ -121,45 +121,14 @@ export const apiDeleteModel = (id: number) => http.delete<any, any>(`/api/platfo
 export const apiStatsOverview = () => http.get<any, any>('/api/platform/stats/overview')
 export const apiListUsage = (params?: any) => http.get<any, any>('/api/platform/usage', { params })
 
-// ---- 充值 / 审计 / 收款信息 ----
-export const apiListRecharges = (params?: any) => http.get<any, any>('/api/platform/recharges', { params })
-export const apiHandleRecharge = (id: number, action: 'approve' | 'reject', reply: string) =>
-  http.put<any, any>(`/api/platform/recharges/${id}`, { action, reply })
+// ---- 审计 ----
 export const apiListAudit = (params?: any) => http.get<any, any>('/api/platform/audit', { params })
-export const apiGetBankInfo = () => http.get<any, any>('/api/platform/bank-info')
-export const apiUpdateBankInfo = (bank_info: string) => http.put<any, any>('/api/platform/bank-info', { bank_info })
-
-// ---- 成本中心交叉报表（org × 中心，含毛利） ----
-export interface CostCrossRow {
-  org_id: number
-  org_name: string
-  cost_center_id: number | null
-  center_name: string
-  center_status: number
-  requests: number
-  cache_hits: number
-  prompt_tokens: number
-  completion_tokens: number
-  cost: number
-  vendor_cost: number
-  margin: number
-}
-export const apiCostCenterCross = (params?: any) =>
-  http.get<any, { list: CostCrossRow[]; total_cost: number; total_vendor_cost: number; total_margin: number }>(
-    '/api/platform/reports/cost-centers', { params })
 
 // 额度预警：为某客户设置阈值（0 = 关闭）
 export const apiUpdateOrgAlertLevels = (id: number, threshold: number) =>
   http.put<any, any>(`/api/platform/orgs/${id}/alert-levels`, { threshold })
 
-export interface VendorDiffRow {
-  channel_id: number; channel_name: string; requests: number
-  our_cost: number; no_usage_count: number
-  bill_id: number | null; billed_points: number; note: string; has_bill: boolean
-  diff: number; diff_pct: number; over_pct: boolean
-}
-
-// 平台视角对账单（含厂商成本/毛利）
+// 平台视角对账单
 export const apiOrgStatement = (id: number, month: string) =>
   http.get<any, any>(`/api/platform/orgs/${id}/statement`, { params: { month } })
 
@@ -174,10 +143,3 @@ export async function downloadOrgStatementCSVPlatform(id: number, month: string,
   a.click()
   URL.revokeObjectURL(a.href)
 }
-
-// 厂商账单对账
-export const apiVendorBills = (period: string) =>
-  http.get<any, { period: string; list: VendorDiffRow[] }>('/api/platform/vendor-bills', { params: { period } })
-export const apiUpsertVendorBill = (period: string, channel_id: number, billed_points: number, note: string) =>
-  http.put<any, any>('/api/platform/vendor-bills', { period, channel_id, billed_points, note })
-export const apiDeleteVendorBill = (id: number) => http.delete<any, any>(`/api/platform/vendor-bills/${id}`)

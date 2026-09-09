@@ -30,9 +30,6 @@ const menus = computed<MenuItem[]>(() => {
         { index: '/platform/channels', title: '渠道管理', icon: 'Connection' },
         { index: '/platform/models', title: '模型定价', icon: 'PriceTag' },
         { index: '/platform/usage', title: '调用日志', icon: 'Document' },
-        { index: '/platform/cost-centers', title: '成本交叉', icon: 'Coin' },
-        { index: '/platform/recharges', title: '充值审批', icon: 'Wallet' },
-        { index: '/platform/vendor-bills', title: '厂商对账', icon: 'Money' },
         { index: '/platform/audit', title: '审计日志', icon: 'List' },
       ]
     case 'org_admin':

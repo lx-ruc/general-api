@@ -2,7 +2,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiListModels, apiCreateModel, apiUpdateModel, apiDeleteModel, type MModel } from '../../api/platform'
-import { fmtPrice, fmtPrice1K, fmtPoints } from '../../utils/format'
+import { fmtPrice, fmtPrice1K } from '../../utils/format'
 
 const PPY = 1_000_000
 const list = ref<MModel[]>([])
@@ -121,11 +121,11 @@ async function savePrice(row: MModel) {
           <el-input-number v-if="editing && editing.id === row.id && editing.field === 'input'"
             v-model="editVal" :min="0" :step="500000" size="small" style="width: 140px"
             v-focus @change="savePrice(row)" @blur="savePrice(row)" />
-          <template v-else>
+          <template v-else-if="row.input_price > 0">
             <span class="price-edit num green" title="点击修改" @click="startEdit(row, 'input')">{{ fmtPrice(row.input_price, PPY) }}</span>
             <span class="dim">/M · {{ fmtPrice1K(row.input_price, PPY) }}/千</span>
-            <span v-if="row.input_price === 0" class="zero">（未定价）</span>
           </template>
+          <span v-else class="price-edit zero" title="点击定价" @click="startEdit(row, 'input')">未定价</span>
         </template>
       </el-table-column>
       <el-table-column label="输出单价" width="170" align="right">
@@ -133,16 +133,11 @@ async function savePrice(row: MModel) {
           <el-input-number v-if="editing && editing.id === row.id && editing.field === 'output'"
             v-model="editVal" :min="0" :step="500000" size="small" style="width: 140px"
             v-focus @change="savePrice(row)" @blur="savePrice(row)" />
-          <template v-else>
+          <template v-else-if="row.output_price > 0">
             <span class="price-edit num green" title="点击修改" @click="startEdit(row, 'output')">{{ fmtPrice(row.output_price, PPY) }}</span>
             <span class="dim">/M · {{ fmtPrice1K(row.output_price, PPY) }}/千</span>
-            <span v-if="row.output_price === 0" class="zero">（未定价）</span>
           </template>
-        </template>
-      </el-table-column>
-      <el-table-column label="毛利（入/出）" width="150" align="right">
-        <template #default="{ row }">
-          <span class="num">{{ fmtPrice(row.input_price - row.cost_input_price, PPY) }} / {{ fmtPrice(row.output_price - row.cost_output_price, PPY) }}</span>
+          <span v-else class="price-edit zero" title="点击定价" @click="startEdit(row, 'output')">未定价</span>
         </template>
       </el-table-column>
       <el-table-column label="状态" width="80">
@@ -177,14 +172,6 @@ async function savePrice(row: MModel) {
       <el-form-item label="输出单价（元/M token）">
         <el-input-number v-model="form.output_price" :min="0" :step="500000" />
         <span class="tip">= {{ fmtPrice(form.output_price, PPY) }}/M ·{{ fmtPrice1K(form.output_price, PPY) }}/千</span>
-      </el-form-item>
-      <el-form-item label="厂商成本价（入）">
-        <el-input-number v-model="form.cost_input_price" :min="0" :step="500000" />
-        <span class="tip">毛利 = {{ fmtPrice(form.input_price - form.cost_input_price, PPY) }} /1M 入</span>
-      </el-form-item>
-      <el-form-item label="厂商成本价（出）">
-        <el-input-number v-model="form.cost_output_price" :min="0" :step="500000" />
-        <span class="tip">毛利 = {{ fmtPrice(form.output_price - form.cost_output_price, PPY) }} /1M 出</span>
       </el-form-item>
       <el-form-item label="状态">
         <el-switch v-model="form.status" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="停用" />

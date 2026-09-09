@@ -6,7 +6,7 @@ import {
   apiOrgCostCenters, apiCreateCostCenter, apiUpdateCostCenter, apiUpdateCostCenterConfig,
   apiCostCenterReport, type CostCenter, type CostReportRow,
 } from '../../api/org'
-import { fmtQuota, pointsToYuan } from '../../utils/format'
+import { fmtQuota } from '../../utils/format'
 
 const list = ref<CostCenter[]>([])
 const requireCC = ref(0)
@@ -119,7 +119,7 @@ function centerName(r: CostReportRow): string {
         </template>
       </el-table-column>
       <el-table-column label="本月消耗" width="180">
-        <template #default="{ row }">{{ fmtQuota(row.month_cost) }}<span class="dim"> · ¥{{ pointsToYuan(row.month_cost) }}</span></template>
+        <template #default="{ row }">{{ fmtQuota(row.month_cost) }}</template>
       </el-table-column>
       <el-table-column label="挂靠密钥" width="100">
         <template #default="{ row }">{{ row.key_count }}</template>
@@ -156,7 +156,7 @@ function centerName(r: CostReportRow): string {
     </el-form>
 
     <el-alert v-if="summary.unallocated_cost > 0" type="warning" :closable="false" show-icon style="margin-bottom: 12px"
-      :title="`未归集消耗 ¥${pointsToYuan(summary.unallocated_cost)}（${summary.unallocated_pct.toFixed(1)}%）——建议在密钥一览中补派中心`" />
+      :title="`未归集消耗 ${fmtQuota(summary.unallocated_cost)}（${summary.unallocated_pct.toFixed(1)}%）——建议在密钥一览中补派中心`" />
 
     <el-table :data="report">
       <el-table-column label="成本中心" min-width="150">
@@ -170,13 +170,13 @@ function centerName(r: CostReportRow): string {
       <el-table-column prop="cache_hits" label="缓存命中" width="90" />
       <el-table-column prop="prompt_tokens" label="输入 tokens" width="120" />
       <el-table-column prop="completion_tokens" label="输出 tokens" width="120" />
-      <el-table-column label="费用" width="140">
-        <template #default="{ row }">¥{{ pointsToYuan(row.cost) }}</template>
+      <el-table-column label="消耗" width="140">
+        <template #default="{ row }">{{ fmtQuota(row.cost) }}</template>
       </el-table-column>
       <template #empty>暂无数据</template>
     </el-table>
     <div v-if="report.length" class="dim tip">
-      合计 ¥{{ pointsToYuan(summary.total_cost) }}；未归集恒置底
+      合计 {{ fmtQuota(summary.total_cost) }}；未归集恒置底
     </div>
   </el-card>
 

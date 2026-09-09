@@ -3,7 +3,7 @@ import { onMounted, ref, computed } from 'vue'
 import { apiOrgStats } from '../../api/org'
 import StatRow from '../../components/StatRow.vue'
 import LineChart from '../../components/LineChart.vue'
-import { fmtNum, fmtQuota, pointsToYuan, fmtTokenCompact } from '../../utils/format'
+import { fmtNum, fmtQuota, fmtTokenCompact } from '../../utils/format'
 import { trendOptions, barOption } from '../../utils/chart'
 
 const data = ref<any>(null)
@@ -23,7 +23,7 @@ const setupSteps = computed(() => {
   const hasQuota = org.value.quota_limit > 0
   const hasActive = (data.value.by_user || []).length > 0
   const steps = [
-    { n: '1', label: '获得额度', hint: hasQuota ? '已开通' : '对公转账充值或联系平台分配', done: hasQuota, link: '/org/recharges' },
+    { n: '1', label: '获得额度', hint: hasQuota ? '已开通' : '联系平台分配额度或提交充值申请', done: hasQuota, link: '/org/recharges' },
     { n: '2', label: '创建子账号并授权模型', hint: '子账号管理 → 新建子账号 → 模型授权', done: hasActive, link: '/org/members' },
     { n: '3', label: '开始调用', hint: '子账号在「我的密钥」创建 key 后即可调用', done: hasActive && data.value.total.requests > 0, link: '/org/usage' },
   ]
@@ -54,10 +54,6 @@ const setupSteps = computed(() => {
           <div class="pool-value num green">{{ fmtQuota(org.quota_limit - org.quota_used) }}</div>
         </div>
         <div class="pool-item">
-          <div class="pool-label">折合金额</div>
-          <div class="pool-value num">¥{{ pointsToYuan(org.quota_limit - org.quota_used) }}</div>
-        </div>
-        <div class="pool-item">
           <div class="pool-label">额度上限</div>
           <div class="pool-value num">{{ fmtQuota(org.quota_limit) }}</div>
         </div>
@@ -79,7 +75,7 @@ const setupSteps = computed(() => {
     <StatRow :items="[
       { label: '今日请求', value: fmtNum(data.today.requests), sub: `累计 ${fmtNum(data.total.requests)}` },
       { label: '今日 tokens', value: fmtNum(data.today.tokens), sub: `累计 ${fmtNum(data.total.tokens)}` },
-      { label: '今日成本', value: fmtQuota(data.today.cost), tone: 'green', sub: `¥${pointsToYuan(data.today.cost)}` },
+      { label: '今日额度消耗', value: fmtQuota(data.today.cost), tone: 'green' },
       { label: '今日失败', value: fmtNum(data.today.errors), tone: data.today.errors > 0 ? 'danger' : 'default' },
     ]" />
 
@@ -92,7 +88,7 @@ const setupSteps = computed(() => {
       </el-col>
       <el-col :xs="24" :md="12">
         <el-card shadow="never">
-          <template #header>近 7 日成本<span class="unit">（token）</span></template>
+          <template #header>近 7 日额度消耗<span class="unit">（token）</span></template>
           <LineChart v-if="opts" :option="opts.costOption" />
         </el-card>
       </el-col>
@@ -109,12 +105,9 @@ const setupSteps = computed(() => {
           <el-table :data="data.by_user" size="small">
             <el-table-column prop="name" label="用户名" />
             <el-table-column prop="requests" label="请求数" width="90" align="right" />
-            <el-table-column label="成本" width="170" align="right">
+            <el-table-column label="消耗" width="170" align="right">
               <template #default="{ row }">
-                <div class="cost-lines">
-                  <span><span class="num green">{{ fmtTokenCompact(row.cost) }}</span> <span class="dim">token</span></span>
-                  <span class="dim">¥{{ pointsToYuan(row.cost) }}</span>
-                </div>
+                <span class="num green">{{ fmtTokenCompact(row.cost) }}</span> <span class="dim">token</span>
               </template>
             </el-table-column>
           </el-table>
@@ -134,12 +127,9 @@ const setupSteps = computed(() => {
               </template>
             </el-table-column>
             <el-table-column prop="requests" label="请求数" width="90" align="right" />
-            <el-table-column label="成本" width="170" align="right">
+            <el-table-column label="消耗" width="170" align="right">
               <template #default="{ row }">
-                <div class="cost-lines">
-                  <span><span class="num green">{{ fmtTokenCompact(row.cost) }}</span> <span class="dim">token</span></span>
-                  <span class="dim">¥{{ pointsToYuan(row.cost) }}</span>
-                </div>
+                <span class="num green">{{ fmtTokenCompact(row.cost) }}</span> <span class="dim">token</span>
               </template>
             </el-table-column>
           </el-table>
@@ -166,7 +156,6 @@ const setupSteps = computed(() => {
 .unit { font-size: 12px; color: var(--tg-muted); font-weight: 400; margin-left: 4px; }
 .green { color: var(--tg-green-ink); }
 .dim { color: var(--tg-muted); font-size: 12px; }
-.cost-lines { display: inline-flex; flex-direction: column; align-items: flex-end; line-height: 1.6; }
 
 .pool-row { display: flex; align-items: center; gap: 40px; flex-wrap: wrap; }
 .pool-item { min-width: 120px; }

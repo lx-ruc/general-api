@@ -70,7 +70,7 @@ function makeRow(): Row {
     hue: pick.hue,
     tokens,
     latency: 90 + Math.floor(Math.random() * 640),
-    cost: tokens * (0.5 + Math.random() * 3) / 1_000_000,
+    cost: Math.ceil(tokens * (0.5 + Math.random() * 3)), // 扣减额度（点 = token 预算）
     retried: Math.random() < 0.12, // 少量行展示 429 换渠道自愈
   }
 }
@@ -200,7 +200,7 @@ onBeforeUnmount(() => { clearInterval(tick); clearInterval(feed) })
         <span class="ticker-title">请求流</span>
         <span class="ticker-col">tokens</span>
         <span class="ticker-col">延迟</span>
-        <span class="ticker-col">费用</span>
+        <span class="ticker-col">消耗</span>
         <span class="ticker-col">状态</span>
       </div>
       <transition-group name="tick" tag="ul" class="ticker-list">
@@ -209,7 +209,7 @@ onBeforeUnmount(() => { clearInterval(tick); clearInterval(feed) })
           <span class="t-model"><i class="t-dot" :style="{ background: r.hue }"></i>{{ r.model }}</span>
           <span class="num t-tok">{{ r.tokens.toLocaleString('en-US') }}</span>
           <span class="num t-lat">{{ r.latency }} ms</span>
-          <span class="num t-cost">¥{{ r.cost.toFixed(4) }}</span>
+          <span class="num t-cost">{{ r.cost.toLocaleString('en-US') }}</span>
           <span class="t-ok" :class="{ retried: r.retried }">{{ r.retried ? '429→换渠道 ✓' : '✓' }}</span>
         </li>
       </transition-group>

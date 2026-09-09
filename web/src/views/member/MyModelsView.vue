@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { apiMyModels } from '../../api/member'
-import { fmtPrice, fmtQuota, pointsToYuan } from '../../utils/format'
+import { fmtQuota } from '../../utils/format'
 
 const data = ref<any>(null)
 
@@ -23,13 +23,7 @@ const usedPct = computed(() => {
         <div class="pool-item">
           <div class="pool-label">可用额度</div>
           <div class="pool-value num green">
-            {{ fmtQuota(data.quota_limit == null ? 0 : data.quota_limit - data.quota_used) }}
-          </div>
-        </div>
-        <div class="pool-item">
-          <div class="pool-label">折合金额</div>
-          <div class="pool-value num">
-            {{ data.quota_limit == null ? '不限' : `¥${pointsToYuan(data.quota_limit - data.quota_used)}` }}
+            {{ data.quota_limit == null ? '不限' : fmtQuota(data.quota_limit - data.quota_used) }}
           </div>
         </div>
         <div class="pool-item">
@@ -57,16 +51,10 @@ const usedPct = computed(() => {
         </el-table-column>
         <el-table-column prop="display_name" label="说明" min-width="160" />
         <el-table-column prop="vendor" label="厂商" width="100" />
-        <el-table-column label="输入单价" width="130" align="right">
-          <template #default="{ row }"><span class="num">{{ fmtPrice(row.input_price) }}</span> <span class="dim">/M token</span></template>
-        </el-table-column>
-        <el-table-column label="输出单价" width="130" align="right">
-          <template #default="{ row }"><span class="num">{{ fmtPrice(row.output_price) }}</span> <span class="dim">/M token</span></template>
-        </el-table-column>
       </el-table>
       <p class="billing-note">
-        计费说明：成本 = 输入 tokens × 输入单价 + 输出 tokens × 输出单价；1 元 = 1,000,000 token。
-        调用方式见 <router-link to="/member/docs" class="docs-link">接入文档</router-link>。
+        调用产生的 token 用量按模型单价折算为额度扣减；调用方式见
+        <router-link to="/member/docs" class="docs-link">接入文档</router-link>。
       </p>
     </el-card>
   </div>

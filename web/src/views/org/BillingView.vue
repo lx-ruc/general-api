@@ -8,7 +8,7 @@ import {
   apiOrgBillingStatement, downloadOrgStatementCSV, type BillStatement,
 } from '../../api/org'
 import StatRow from '../../components/StatRow.vue'
-import { fmtNum, fmtQuota, pointsToYuan } from '../../utils/format'
+import { fmtNum, fmtQuota } from '../../utils/format'
 
 const auth = useAuthStore()
 
@@ -78,15 +78,15 @@ function exportCSV() {
   if (!d) return
   const lines = [
     `月份,${d.month}`,
-    '汇总,请求数,tokens,消耗（平台营收）',
+    '汇总,请求数,tokens,消耗',
     `合计,${d.summary.requests},${d.summary.tokens},${d.summary.cost}`,
     '',
     '模型,请求数,tokens,消耗',
     ...d.by_model.map((m: any) => `${m.name},${m.requests},${m.tokens},${m.cost}`),
     '',
-    '充值时间,金额（token）,折合金额,状态,凭证说明',
+    '充值时间,金额（token）,状态,凭证说明',
     ...d.recharges.map((r: any) =>
-      `${dayjs.unix(r.created_at).format('YYYY-MM-DD HH:mm')},${r.amount},${pointsToYuan(r.amount)},${r.status},${(r.voucher || '').replace(/[,\n]/g, ' ')}`),
+      `${dayjs.unix(r.created_at).format('YYYY-MM-DD HH:mm')},${r.amount},${r.status},${(r.voucher || '').replace(/[,\n]/g, ' ')}`),
   ]
   const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' })
   const a = document.createElement('a')
@@ -114,16 +114,16 @@ function exportCSV() {
       <StatRow v-if="data" :items="[
         { label: '本月请求数', value: fmtNum(data.summary.requests) },
         { label: '本月 tokens', value: fmtNum(data.summary.tokens) },
-        { label: '本月消耗', value: fmtQuota(data.summary.cost), tone: 'green', sub: `¥${pointsToYuan(data.summary.cost)}` },
-        { label: '本月充值', value: fmtQuota(data.recharged), tone: 'green', sub: `¥${pointsToYuan(data.recharged)}` },
+        { label: '本月消耗', value: fmtQuota(data.summary.cost), tone: 'green' },
+        { label: '本月充值', value: fmtQuota(data.recharged), tone: 'green' },
       ]" />
     </el-card>
 
     <el-card v-if="data" shadow="never">
       <template #header>额度预警</template>
       <div v-if="monthly.quota > 0" class="monthly-line">
-        <span>单月消费上限：<b class="num">{{ fmtQuota(monthly.quota) }}</b>（¥{{ pointsToYuan(monthly.quota) }}），
-          本月已用 <b class="num">{{ fmtQuota(monthly.used) }}</b>（¥{{ pointsToYuan(monthly.used) }}）<el-progress
+        <span>单月消费上限：<b class="num">{{ fmtQuota(monthly.quota) }}</b>，
+          本月已用 <b class="num">{{ fmtQuota(monthly.used) }}</b><el-progress
             :percentage="Math.min(100, monthly.quota ? (monthly.used / monthly.quota) * 100 : 0)"
             :stroke-width="8" :show-text="false" style="width: 180px; display: inline-block; margin-left: 10px; vertical-align: middle" />
         </span>
@@ -168,7 +168,7 @@ function exportCSV() {
           <span class="num red">{{ fmtQuota(st.total_revoked) }}</span>
         </el-descriptions-item>
         <el-descriptions-item label="期内消耗">
-          <span class="num">{{ fmtQuota(st.consumption) }} · ¥{{ pointsToYuan(st.consumption) }}</span>
+          <span class="num">{{ fmtQuota(st.consumption) }}</span>
         </el-descriptions-item>
         <el-descriptions-item label="期末限额">
           <span class="num">{{ fmtQuota(st.closing_limit) }}</span>
@@ -196,8 +196,7 @@ function exportCSV() {
         </el-table-column>
         <el-table-column label="金额（token）" width="180" align="right">
           <template #default="{ row }">
-            <span class="num red">{{ row.amount.toLocaleString('zh-CN') }}</span>
-            <span class="dim"> · ¥{{ pointsToYuan(row.amount) }}</span>
+            <span class="num red">{{ fmtQuota(row.amount) }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="remark" label="事由" min-width="160" show-overflow-tooltip />
@@ -225,10 +224,9 @@ function exportCSV() {
             <span class="dim">入 {{ fmtNum(row.prompt_tokens) }} / 出 {{ fmtNum(row.completion_tokens) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="金额（点）" width="150" align="right">
+        <el-table-column label="消耗（token）" width="150" align="right">
           <template #default="{ row }">
-            <span class="num">{{ row.cost.toLocaleString('zh-CN') }}</span>
-            <span class="dim"> · ¥{{ pointsToYuan(row.cost) }}</span>
+            <span class="num">{{ fmtQuota(row.cost) }}</span>
           </template>
         </el-table-column>
       </el-table>
@@ -250,7 +248,6 @@ function exportCSV() {
             <el-table-column label="消耗" min-width="150" align="right">
               <template #default="{ row }">
                 <span class="num green">{{ fmtQuota(row.cost) }}</span>
-                <span class="dim"> · ¥{{ pointsToYuan(row.cost) }}</span>
               </template>
             </el-table-column>
           </el-table>
@@ -264,7 +261,7 @@ function exportCSV() {
               <template #default="{ row }">{{ dayjs.unix(row.created_at).format('MM-DD HH:mm') }}</template>
             </el-table-column>
             <el-table-column label="金额" width="150">
-              <template #default="{ row }">¥{{ pointsToYuan(row.amount) }}</template>
+              <template #default="{ row }">{{ fmtQuota(row.amount) }}</template>
             </el-table-column>
             <el-table-column label="状态" width="80">
               <template #default="{ row }">

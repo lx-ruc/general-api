@@ -1,14 +1,7 @@
 import dayjs from 'dayjs'
 
-// token 数显示：千分位
-export function fmtPoints(p: number | null | undefined): string {
-  if (p == null) return '-'
-  return p.toLocaleString('zh-CN')
-}
-
-// 额度/成本显示：以 token 为单位（≥1 百万时以「M token」计，M=百万）
-// 说明：额度按 ¥1/百万token 折算为 token 预算（1 元 = 1,000,000 token），
-// 高价模型（如 ¥2/百万token 输入）按单价等比多扣
+// 额度/消耗显示：以 token 为单位（≥1 百万时以「M token」计，M=百万）
+// 说明：额度即 token 预算，高价模型按单价等比多扣
 export function fmtQuota(p: number | null | undefined): string {
   if (p == null) return '-'
   if (Math.abs(p) >= 1_000_000) {
@@ -17,12 +10,6 @@ export function fmtQuota(p: number | null | undefined): string {
     return `${s}M token`
   }
   return `${p.toLocaleString('zh-CN')} token`
-}
-
-// token 数 → 元（默认 1 元 = 1,000,000 token 额度）
-export function pointsToYuan(p: number | null | undefined, ppy = 1_000_000): string {
-  if (p == null) return '-'
-  return (p / ppy).toFixed(4)
 }
 
 // token 数紧凑单位：<1k 原样；之后 k → M → G → T 封顶（至多 3 位有效数字）
