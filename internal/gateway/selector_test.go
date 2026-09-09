@@ -40,7 +40,7 @@ func TestSelectCandidatesPoolExpansion(t *testing.T) {
 	cipher, _ := crypto.NewCipher("")
 	cd := coord.NewMem(0)
 
-	cands, err := SelectCandidates(f.db, cipher, "m1", cd)
+	cands, _, err := SelectCandidates(f.db, cipher, "m1", cd)
 	if err != nil || len(cands) != 3 {
 		t.Fatalf("应展开 3 个候选，got %d err=%v", len(cands), err)
 	}
@@ -66,7 +66,7 @@ func TestSelectCandidatesCooldownFilter(t *testing.T) {
 	cd := coord.NewMem(0)
 	cd.SetCooldown("ck:1:2", time.Minute) // 冷却中间那把
 
-	cands, err := SelectCandidates(f.db, cipher, "m1", cd)
+	cands, _, err := SelectCandidates(f.db, cipher, "m1", cd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestSelectCandidatesAllKeysCoolingSkipsChannel(t *testing.T) {
 	cd := coord.NewMem(0)
 	cd.SetCooldown("ck:1:1", time.Minute) // 渠道 1 全部 key 冷却
 
-	cands, err := SelectCandidates(f.db, cipher, "m1", cd)
+	cands, _, err := SelectCandidates(f.db, cipher, "m1", cd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestSelectCandidatesLegacyFallbackAndScope(t *testing.T) {
 	cipher, _ := crypto.NewCipher("")
 	cd := coord.NewMem(0)
 
-	cands, err := SelectCandidates(f.db, cipher, "m1", cd)
+	cands, _, err := SelectCandidates(f.db, cipher, "m1", cd)
 	if err != nil || len(cands) != 1 {
 		t.Fatalf("legacy 应回退单 key，got %d err=%v", len(cands), err)
 	}
@@ -116,7 +116,7 @@ func TestSelectCandidatesLegacyFallbackAndScope(t *testing.T) {
 
 	// legacy 冷却 → 渠道跳过
 	cd.SetCooldown("ck:1:legacy", time.Minute)
-	cands, err = SelectCandidates(f.db, cipher, "m1", cd)
+	cands, _, err = SelectCandidates(f.db, cipher, "m1", cd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestSelectCandidatesDisabledKeyExcluded(t *testing.T) {
 	mustExec(t, f, "UPDATE channel_keys SET status = 0 WHERE channel_id = 1 AND key_enc = 'k1'")
 	cipher, _ := crypto.NewCipher("")
 
-	cands, err := SelectCandidates(f.db, cipher, "m1", coord.NewMem(0))
+	cands, _, err := SelectCandidates(f.db, cipher, "m1", coord.NewMem(0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestSelectCandidatesPriorityGroups(t *testing.T) {
 	seedChannel(t, f, 2, "low", "", []string{"lk"}, 1)
 	cipher, _ := crypto.NewCipher("")
 
-	cands, err := SelectCandidates(f.db, cipher, "m1", coord.NewMem(0))
+	cands, _, err := SelectCandidates(f.db, cipher, "m1", coord.NewMem(0))
 	if err != nil || len(cands) != 2 {
 		t.Fatalf("应有两个候选 got %d err=%v", len(cands), err)
 	}

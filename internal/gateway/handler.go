@@ -248,19 +248,33 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	}
 
 	// 渠道候选（渠道 × Key，冷却/禁用已过滤）
-	cands, err := SelectCandidates(h.DB, h.Cipher, modelName, h.Coord)
+	cands, selStats, err := SelectCandidates(h.DB, h.Cipher, modelName, h.Coord)
 	if err != nil {
 		rec.Status, rec.Error = http.StatusInternalServerError, err.Error()
 		openaiError(c, http.StatusInternalServerError, "internal_error", "failed to select channels")
 		return
 	}
 	if len(cands) == 0 {
-		// 语义是"上游限流中"（所有 Key 冷却/禁用），回 429 而非 503
-		rec.Status, rec.Error = http.StatusTooManyRequests, "no available key (all cooling/disabled)"
-		h.writeRetryAfter(c, h.KeyCooldown)
-		openaiError(c, http.StatusTooManyRequests, "upstream_busy",
-			"upstream is rate limited, please retry later")
-		return
+		// 区分错误语义：配置问题（重试无意义）回 503 并给出可行动的信息；限流回 429
+		switch {
+		case selStats.Channels == 0:
+			rec.Status, rec.Error = http.StatusServiceUnavailable, "no enabled channel for model"
+			openaiError(c, http.StatusServiceUnavailable, "no_available_channel",
+				"no enabled channel serves this model, please contact the platform admin")
+			return
+		case selStats.KeyedChannels == 0:
+			rec.Status, rec.Error = http.StatusServiceUnavailable, "no usable upstream key (not configured or disabled)"
+			openaiError(c, http.StatusServiceUnavailable, "channel_key_missing",
+				"upstream key is not configured or disabled, please contact the platform admin")
+			return
+		default:
+			// 所有 Key 冷却中：语义是"上游限流中"，回 429 而非 503
+			rec.Status, rec.Error = http.StatusTooManyRequests, "no available key (all cooling)"
+			h.writeRetryAfter(c, h.KeyCooldown)
+			openaiError(c, http.StatusTooManyRequests, "upstream_busy",
+				"upstream is rate limited, please retry later")
+			return
+		}
 	}
 
 	// 流式请求注入 stream_options.include_usage（保证末块带 usage 用于计费）

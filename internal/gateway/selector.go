@@ -60,10 +60,18 @@ type candRow struct {
 	Priority          int
 }
 
+// SelectStats 渠道选择诊断信息：候选为空时用于区分错误语义（配置问题 vs 限流）
+type SelectStats struct {
+	Channels      int // 启用且 base_url/path 合法、配置了该模型的渠道数
+	KeyedChannels int // 其中配置过密钥的渠道数（池内有启用 Key，或单 Key 密文非空）
+	CoolingKeys   int // 因 429 冷却被跳过的 Key 数（含单 Key 兼容模式）
+}
+
 // SelectCandidates 查询模型的路由候选（渠道 × Key）：
 // 最高 priority 组内按 weight 加权随机（负载均衡），其余组按优先级顺序 appended 作为降级备用。
 // 渠道内：Key 池（channel_keys）过滤禁用与冷却后按权重洗牌；无池回退单 Key 兼容模式。
-func SelectCandidates(db *gorm.DB, cipher *crypto.Cipher, modelName string, cd coord.Coordinator) ([]Candidate, error) {
+func SelectCandidates(db *gorm.DB, cipher *crypto.Cipher, modelName string, cd coord.Coordinator) ([]Candidate, SelectStats, error) {
+	var stats SelectStats
 	var rows []candRow
 	err := db.Raw(`
 		SELECT c.id AS channel_id, c.name, c.base_url, c.path, c.upstream_key_enc,
@@ -73,7 +81,7 @@ func SelectCandidates(db *gorm.DB, cipher *crypto.Cipher, modelName string, cd c
 		WHERE a.model_name = ? AND c.status = 1
 		ORDER BY c.priority DESC`, modelName).Scan(&rows).Error
 	if err != nil {
-		return nil, err
+		return nil, stats, err
 	}
 	// base_url/path 校验
 	valid := rows[:0]
@@ -84,8 +92,9 @@ func SelectCandidates(db *gorm.DB, cipher *crypto.Cipher, modelName string, cd c
 		valid = append(valid, r)
 	}
 	rows = valid
+	stats.Channels = len(rows)
 	if len(rows) == 0 {
-		return nil, nil
+		return nil, stats, nil
 	}
 
 	// 各渠道的 Key 池（一次查全，避免 N+1）
@@ -97,10 +106,16 @@ func SelectCandidates(db *gorm.DB, cipher *crypto.Cipher, modelName string, cd c
 			chIDs = append(chIDs, r.ChannelID)
 		}
 		if err := db.Raw("SELECT channel_id, id, key_enc, weight FROM channel_keys WHERE status = 1 AND channel_id IN ? ORDER BY id", chIDs).Scan(&krs).Error; err != nil {
-			return nil, err
+			return nil, stats, err
 		}
 		for _, kr := range krs {
 			pools[kr.ChannelID] = append(pools[kr.ChannelID], kr)
+		}
+	}
+	// 配置过密钥的渠道数（池内有启用 Key，或 legacy 密文非空；池全禁用时池查询已过滤 → 不计入）
+	for _, r := range rows {
+		if len(pools[r.ChannelID]) > 0 || r.UpstreamKeyEnc != "" {
+			stats.KeyedChannels++
 		}
 	}
 
@@ -117,15 +132,18 @@ func SelectCandidates(db *gorm.DB, cipher *crypto.Cipher, modelName string, cd c
 			group = weightedShuffle(group) // 首组（最高优先级）做负载均衡
 		}
 		for _, r := range group {
-			cands = append(cands, channelCandidates(r, cipher, pools[r.ChannelID], cd)...)
+			cc, cooling := channelCandidates(r, cipher, pools[r.ChannelID], cd)
+			stats.CoolingKeys += cooling
+			cands = append(cands, cc...)
 		}
 		i = j
 	}
-	return cands, nil
+	return cands, stats, nil
 }
 
-// channelCandidates 单渠道展开为多个候选：优先 Key 池（过滤禁用/冷却 + 权重洗牌），无池回退单 Key
-func channelCandidates(r candRow, cipher *crypto.Cipher, pool []keyRow, cd coord.Coordinator) []Candidate {
+// channelCandidates 单渠道展开为多个候选：优先 Key 池（过滤禁用/冷却 + 权重洗牌），无池回退单 Key。
+// 第二返回值为因冷却被跳过的 Key 数。
+func channelCandidates(r candRow, cipher *crypto.Cipher, pool []keyRow, cd coord.Coordinator) ([]Candidate, int) {
 	upstreamModel := ""
 	if r.UpstreamModelName != nil {
 		upstreamModel = *r.UpstreamModelName
@@ -139,9 +157,11 @@ func channelCandidates(r candRow, cipher *crypto.Cipher, pool []keyRow, cd coord
 
 	if len(pool) > 0 {
 		usable := pool[:0:0]
+		cooling := 0
 		for _, kr := range pool {
 			if cd != nil && cd.IsCooling(fmt.Sprintf("ck:%d:%d", r.ChannelID, kr.ID)) {
-				continue // 冷却中的 Key 跳过
+				cooling++ // 冷却中的 Key 跳过
+				continue
 			}
 			key, err := cipher.Decrypt(kr.KeyEnc)
 			if err != nil || key == "" {
@@ -150,24 +170,24 @@ func channelCandidates(r candRow, cipher *crypto.Cipher, pool []keyRow, cd coord
 			usable = append(usable, keyRow{ID: kr.ID, KeyEnc: key, Weight: kr.Weight})
 		}
 		if len(usable) == 0 {
-			return nil // 池内全部冷却/解密失败 → 该渠道本轮不可用
+			return nil, cooling // 池内全部冷却/解密失败 → 该渠道本轮不可用
 		}
 		out := make([]Candidate, 0, len(usable))
 		for _, kr := range weightedShuffle(usable) {
 			out = append(out, mk(kr.ID, kr.KeyEnc, upstreamModel, kr.Weight))
 		}
-		return out
+		return out, cooling
 	}
 
 	// 单 Key 兼容模式
 	if cd != nil && cd.IsCooling(fmt.Sprintf("ck:%d:legacy", r.ChannelID)) {
-		return nil
+		return nil, 1
 	}
 	key, err := cipher.Decrypt(r.UpstreamKeyEnc)
 	if err != nil || key == "" {
-		return nil
+		return nil, 0
 	}
-	return []Candidate{mk(0, key, upstreamModel, r.Weight)}
+	return []Candidate{mk(0, key, upstreamModel, r.Weight)}, 0
 }
 
 // weightedShuffle 不放回加权随机抽取，得到一个打乱顺序的列表（权重<=0 按 1 计）

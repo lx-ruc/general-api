@@ -486,3 +486,56 @@ func TestSSEStreamReleasesSlot(t *testing.T) {
 		t.Fatalf("SSE 完成后名额应释放，got %d", w2.Code)
 	}
 }
+
+// 渠道在但没配 Key（无池、无 legacy 密文）→ 503 channel_key_missing，而非误报 429 限流
+func TestNoKeyReturnsChannelKeyMissing(t *testing.T) {
+	e := newTestEnv(t)
+	now := time.Now().Unix()
+	mustExec(t, e.f, `INSERT INTO channels (id,name,base_url,path,weight,priority,status,created_at,updated_at)
+		VALUES (1,'nokey','http://up.example','/v1/chat/completions',1,0,1,?,?)`, now, now)
+	mustExec(t, e.f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (1, 'm1')`)
+
+	w := e.post(chatBody("q", ""))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("无 Key 应回 503，got %d body=%s", w.Code, w.Body)
+	}
+	if !strings.Contains(w.Body.String(), "channel_key_missing") {
+		t.Fatalf("错误类型应为 channel_key_missing: %s", w.Body)
+	}
+	if strings.Contains(w.Body.String(), "upstream_busy") {
+		t.Fatalf("不应误报限流: %s", w.Body)
+	}
+}
+
+// Key 池全部禁用（status=0）→ 同样 503 channel_key_missing
+func TestAllKeysDisabledReturnsChannelKeyMissing(t *testing.T) {
+	e := newTestEnv(t)
+	now := time.Now().Unix()
+	mustExec(t, e.f, `INSERT INTO channels (id,name,base_url,path,weight,priority,status,created_at,updated_at)
+		VALUES (1,'disabled','http://up.example','/v1/chat/completions',1,0,1,?,?)`, now, now)
+	mustExec(t, e.f, `INSERT INTO channel_keys (channel_id,key_enc,weight,status,created_at,updated_at)
+		VALUES (1,'k1',1,0,?,?)`, now, now)
+	mustExec(t, e.f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (1, 'm1')`)
+
+	w := e.post(chatBody("q", ""))
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "channel_key_missing") {
+		t.Fatalf("Key 全禁用应回 503 channel_key_missing，got %d body=%s", w.Code, w.Body)
+	}
+}
+
+// 模型存在且已授权，但没有任何启用渠道提供 → 503 no_available_channel
+func TestNoChannelReturnsNoAvailableChannel(t *testing.T) {
+	e := newTestEnv(t)
+	now := time.Now().Unix()
+	mustExec(t, e.f, `INSERT INTO models (name, input_price, output_price, status, created_at, updated_at)
+		VALUES ('m2', 2000000, 8000000, 1, ?, ?)`, now, now)
+	mustExec(t, e.f, `INSERT INTO user_model_grants (user_id, model_name, created_at) VALUES (1, 'm2', ?)`, now)
+
+	w := e.post(`{"model":"m2","messages":[{"role":"user","content":"q"}]}`)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("无渠道应回 503，got %d body=%s", w.Code, w.Body)
+	}
+	if !strings.Contains(w.Body.String(), "no_available_channel") {
+		t.Fatalf("错误类型应为 no_available_channel: %s", w.Body)
+	}
+}
