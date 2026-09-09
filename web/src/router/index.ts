@@ -45,6 +45,24 @@ const router = createRouter({
   routes,
 })
 
+// 懒加载 chunk 在部署后失效（文件名带 hash，旧页面还引用旧 chunk）：
+// 导航静默失败表现为"点菜单没反应"。这里识别动态 import 失败并整页刷新到目标路由，
+// 用 sessionStorage 限时去重，避免真异常时刷新循环。
+const NAV_RELOAD_KEY = 'tg_nav_reload'
+router.onError((error, to) => {
+  const msg = String(error?.message || error)
+  const isChunkLoadFailure =
+    msg.includes('Failed to fetch dynamically imported module') ||
+    msg.includes('error loading dynamically imported module') ||
+    msg.includes('Importing a module script failed')
+  if (!isChunkLoadFailure || !to?.fullPath) return
+  const [lastPath, lastTs] = (sessionStorage.getItem(NAV_RELOAD_KEY) || '').split('|')
+  if (lastPath === to.fullPath && Date.now() - Number(lastTs) < 10_000) return
+  sessionStorage.setItem(NAV_RELOAD_KEY, `${to.fullPath}|${Date.now()}`)
+  window.location.hash = to.fullPath
+  window.location.reload()
+})
+
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
   if (to.path === '/login' || to.path === '/register') {
