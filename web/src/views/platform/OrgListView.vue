@@ -5,7 +5,7 @@ import { useRouter } from 'vue-router'
 import {
   apiListOrgs, apiCreateOrg, apiUpdateOrg, apiDeleteOrg, apiAddOrgQuota, type Org,
 } from '../../api/platform'
-import { fmtTime, fmtQuota, pointsToYuan } from '../../utils/format'
+import { fmtTime, fmtQuota } from '../../utils/format'
 
 const router = useRouter()
 const list = ref<Org[]>([])
@@ -103,7 +103,6 @@ async function removeOrg(org: Org) {
         <template #default="{ row }">
           <span class="num">{{ fmtQuota(row.quota_used) }}</span>
           <span class="dim"> / {{ fmtQuota(row.quota_limit) }}</span>
-          <span class="green num">　¥{{ pointsToYuan(row.quota_limit - row.quota_used) }} 可用</span>
         </template>
       </el-table-column>
       <el-table-column label="状态" width="100">

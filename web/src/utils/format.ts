@@ -6,7 +6,7 @@ export function fmtPoints(p: number | null | undefined): string {
   return p.toLocaleString('zh-CN')
 }
 
-// 额度/成本显示：以 token 为单位（≥1 百万时以「百万token」计）
+// 额度/成本显示：以 token 为单位（≥1 百万时以「M token」计，M=百万）
 // 说明：额度按 ¥1/百万token 折算为 token 预算（1 元 = 1,000,000 token），
 // 高价模型（如 ¥2/百万token 输入）按单价等比多扣
 export function fmtQuota(p: number | null | undefined): string {
@@ -14,7 +14,7 @@ export function fmtQuota(p: number | null | undefined): string {
   if (Math.abs(p) >= 1_000_000) {
     const m = p / 1_000_000
     const s = Number.isInteger(m) ? m.toString() : m.toFixed(2).replace(/\.?0+$/, '')
-    return `${s} 百万token`
+    return `${s}M token`
   }
   return `${p.toLocaleString('zh-CN')} token`
 }
