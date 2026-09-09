@@ -56,14 +56,16 @@ function lineSeries(name: string, data: number[], unit = '') {
   }
 }
 
-/** 两个单轴面板：请求趋势 / 成本趋势（token） */
+/** 三个单轴面板：请求趋势 / tokens 趋势 / 额度消耗趋势（token） */
 export function trendOptions(points: DayPoint[]) {
   const dates = points.map((p) => p.date.slice(5))
   const req = baseOption(dates)
   req.series = [lineSeries('请求数', points.map((p) => p.requests), ' 次')]
+  const tok = baseOption(dates)
+  tok.series = [lineSeries('tokens', points.map((p) => p.tokens), '')]
   const cost = baseOption(dates)
-  cost.series = [lineSeries('成本', points.map((p) => p.cost), ' token')]
-  return { reqOption: req, costOption: cost }
+  cost.series = [lineSeries('额度消耗', points.map((p) => p.cost), ' token')]
+  return { reqOption: req, tokensOption: tok, costOption: cost }
 }
 
 /**

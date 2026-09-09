@@ -15,6 +15,18 @@ onMounted(async () => {
   org.value = resp.org
 })
 
+// 调用成功率：成功请求 / 总请求（无请求时显示 —）
+function succRate(t: any): string {
+  if (!t.requests) return '—'
+  const pct = ((t.requests - t.errors) / t.requests) * 100
+  return `${Math.min(100, Math.floor(pct * 10) / 10)}%`
+}
+function succTone(t: any): 'green' | 'default' | 'danger' {
+  if (!t.requests) return 'default'
+  const pct = ((t.requests - t.errors) / t.requests) * 100
+  return pct >= 99 ? 'green' : pct >= 95 ? 'default' : 'danger'
+}
+
 const opts = computed(() => (data.value ? trendOptions(data.value.series) : null))
 
 // 接入引导：额度 / 子账号 / 调用 三步
@@ -74,9 +86,9 @@ const setupSteps = computed(() => {
 
     <StatRow :items="[
       { label: '今日请求', value: fmtNum(data.today.requests), sub: `累计 ${fmtNum(data.total.requests)}` },
-      { label: '今日 tokens', value: fmtNum(data.today.tokens), sub: `累计 ${fmtNum(data.total.tokens)}` },
-      { label: '今日额度消耗', value: fmtQuota(data.today.cost), tone: 'green' },
-      { label: '今日失败', value: fmtNum(data.today.errors), tone: data.today.errors > 0 ? 'danger' : 'default' },
+      { label: '今日 tokens', value: fmtNum(data.today.tokens) },
+      { label: '累计 tokens', value: fmtNum(data.total.tokens), tone: 'green' },
+      { label: '调用成功率', value: succRate(data.today), sub: `累计 ${succRate(data.total)}`, tone: succTone(data.today) },
     ]" />
 
     <el-row :gutter="16">
@@ -88,8 +100,8 @@ const setupSteps = computed(() => {
       </el-col>
       <el-col :xs="24" :md="12">
         <el-card shadow="never">
-          <template #header>近 7 日额度消耗<span class="unit">（token）</span></template>
-          <LineChart v-if="opts" :option="opts.costOption" />
+          <template #header>近 7 日 tokens</template>
+          <LineChart v-if="opts" :option="opts.tokensOption" />
         </el-card>
       </el-col>
     </el-row>
@@ -97,17 +109,17 @@ const setupSteps = computed(() => {
     <el-row :gutter="16">
       <el-col :xs="24" :md="12">
         <el-card shadow="never">
-          <template #header>子账号消耗 Top</template>
+          <template #header>子账号用量 Top</template>
           <LineChart v-if="data.by_user.length"
-            :option="barOption(data.by_user.map((u: any) => u.name), data.by_user.map((u: any) => u.cost))"
+            :option="barOption(data.by_user.map((u: any) => u.name), data.by_user.map((u: any) => u.tokens))"
             height="180px" />
           <div class="chart-gap"></div>
           <el-table :data="data.by_user" size="small">
             <el-table-column prop="name" label="用户名" />
             <el-table-column prop="requests" label="请求数" width="90" align="right" />
-            <el-table-column label="消耗" width="170" align="right">
+            <el-table-column label="tokens" width="170" align="right">
               <template #default="{ row }">
-                <span class="num green">{{ fmtTokenCompact(row.cost) }}</span> <span class="dim">token</span>
+                <span class="num green">{{ fmtTokenCompact(row.tokens) }}</span> <span class="dim">token</span>
               </template>
             </el-table-column>
           </el-table>
@@ -115,9 +127,9 @@ const setupSteps = computed(() => {
       </el-col>
       <el-col :xs="24" :md="12">
         <el-card shadow="never">
-          <template #header>模型消耗 Top</template>
+          <template #header>模型用量 Top</template>
           <LineChart v-if="data.by_model.length"
-            :option="barOption(data.by_model.map((m: any) => m.name || '未路由'), data.by_model.map((m: any) => m.cost))"
+            :option="barOption(data.by_model.map((m: any) => m.name || '未路由'), data.by_model.map((m: any) => m.tokens))"
             height="180px" />
           <div class="chart-gap"></div>
           <el-table :data="data.by_model" size="small">
@@ -127,9 +139,9 @@ const setupSteps = computed(() => {
               </template>
             </el-table-column>
             <el-table-column prop="requests" label="请求数" width="90" align="right" />
-            <el-table-column label="消耗" width="170" align="right">
+            <el-table-column label="tokens" width="170" align="right">
               <template #default="{ row }">
-                <span class="num green">{{ fmtTokenCompact(row.cost) }}</span> <span class="dim">token</span>
+                <span class="num green">{{ fmtTokenCompact(row.tokens) }}</span> <span class="dim">token</span>
               </template>
             </el-table-column>
           </el-table>

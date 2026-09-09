@@ -126,7 +126,7 @@ func StatsOverview(db *gorm.DB, scope Scope) (*Overview, error) {
 			       COALESCE(SUM(l.prompt_tokens + l.completion_tokens), 0) AS tokens,
 			       COALESCE(SUM(l.cost), 0) AS cost, COALESCE(SUM(l.vendor_cost), 0) AS vendor_cost
 			FROM usage_logs l JOIN orgs t ON t.id = l.org_id
-			WHERE %s GROUP BY t.id, t.name ORDER BY cost DESC, requests DESC LIMIT 10`, cond), args)
+			WHERE %s GROUP BY t.id, t.name ORDER BY tokens DESC, requests DESC LIMIT 10`, cond), args)
 		if err != nil {
 			return nil, err
 		}
@@ -138,7 +138,7 @@ func StatsOverview(db *gorm.DB, scope Scope) (*Overview, error) {
 			       COALESCE(SUM(l.prompt_tokens + l.completion_tokens), 0) AS tokens,
 			       COALESCE(SUM(l.cost), 0) AS cost, COALESCE(SUM(l.vendor_cost), 0) AS vendor_cost
 			FROM usage_logs l JOIN users t ON t.id = l.user_id
-			WHERE %s GROUP BY t.id, t.username ORDER BY cost DESC, requests DESC LIMIT 10`, cond2), args2)
+			WHERE %s GROUP BY t.id, t.username ORDER BY tokens DESC, requests DESC LIMIT 10`, cond2), args2)
 		if err != nil {
 			return nil, err
 		}
@@ -148,7 +148,7 @@ func StatsOverview(db *gorm.DB, scope Scope) (*Overview, error) {
 		       COALESCE(SUM(l.prompt_tokens + l.completion_tokens), 0) AS tokens,
 		       COALESCE(SUM(l.cost), 0) AS cost, COALESCE(SUM(l.vendor_cost), 0) AS vendor_cost
 		FROM usage_logs l
-		WHERE %s GROUP BY l.model_name ORDER BY cost DESC, requests DESC LIMIT 10`, cond), args)
+		WHERE %s GROUP BY l.model_name ORDER BY tokens DESC, requests DESC LIMIT 10`, cond), args)
 	if err != nil {
 		return nil, err
 	}

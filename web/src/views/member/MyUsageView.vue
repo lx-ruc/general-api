@@ -20,14 +20,27 @@ onMounted(async () => {
   stats.value = await apiMyStats()
   load()
 })
+
+// 调用成功率：成功请求 / 总请求（无请求时显示 —）
+function succRate(t: any): string {
+  if (!t.requests) return '—'
+  const pct = ((t.requests - t.errors) / t.requests) * 100
+  return `${Math.min(100, Math.floor(pct * 10) / 10)}%`
+}
+function succTone(t: any): 'green' | 'default' | 'danger' {
+  if (!t.requests) return 'default'
+  const pct = ((t.requests - t.errors) / t.requests) * 100
+  return pct >= 99 ? 'green' : pct >= 95 ? 'default' : 'danger'
+}
 </script>
 
 <template>
   <div v-if="stats" class="dash">
     <StatRow :items="[
       { label: '今日请求', value: fmtNum(stats.today.requests), sub: `累计 ${fmtNum(stats.total.requests)}` },
-      { label: '今日 tokens', value: fmtNum(stats.today.tokens), sub: `累计 ${fmtNum(stats.total.tokens)}` },
-      { label: '今日额度消耗', value: fmtQuota(stats.today.cost), tone: 'green' },
+      { label: '今日 tokens', value: fmtNum(stats.today.tokens) },
+      { label: '累计 tokens', value: fmtNum(stats.total.tokens), tone: 'green' },
+      { label: '调用成功率', value: succRate(stats.today), sub: `累计 ${succRate(stats.total)}`, tone: succTone(stats.today) },
     ]" />
 
     <el-row :gutter="16">
@@ -39,8 +52,8 @@ onMounted(async () => {
       </el-col>
       <el-col :xs="24" :md="12">
         <el-card shadow="never">
-          <template #header>近 7 日额度消耗<span class="unit">（token）</span></template>
-          <LineChart :option="trendOptions(stats.series).costOption" />
+          <template #header>近 7 日 tokens</template>
+          <LineChart :option="trendOptions(stats.series).tokensOption" />
         </el-card>
       </el-col>
     </el-row>
