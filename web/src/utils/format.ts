@@ -25,6 +25,22 @@ export function pointsToYuan(p: number | null | undefined, ppy = 1_000_000): str
   return (p / ppy).toFixed(4)
 }
 
+// token 数紧凑单位：<1k 原样；之后 k → M → G → T 封顶（至多 3 位有效数字）
+export function fmtTokenCompact(n: number | null | undefined): string {
+  if (n == null) return '-'
+  const abs = Math.abs(n)
+  if (abs < 1_000) return n.toLocaleString('zh-CN')
+  const units = ['k', 'M', 'G', 'T']
+  const exp = Math.min(Math.floor(Math.log10(abs) / 3), units.length) // 1=k … 4=T
+  const v = n / 10 ** (3 * exp)
+  const s = Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2)
+  // 四舍五入顶到 1000（如 999,999 → 1000k）时进一档
+  if (Math.abs(Number(s)) >= 1_000 && exp < units.length) {
+    return `${(Number(s) / 1_000).toString().replace(/\.?0+$/, '')}${units[exp]}`
+  }
+  return `${s.replace(/\.?0+$/, '')}${units[exp - 1]}`
+}
+
 // 单价 → 元/百万token
 export function fmtPrice(price: number, ppy = 1_000_000): string {
   return `¥${(price / ppy).toFixed(2)}`

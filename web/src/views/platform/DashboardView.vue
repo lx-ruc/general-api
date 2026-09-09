@@ -3,7 +3,7 @@ import { onMounted, ref } from 'vue'
 import { apiStatsOverview } from '../../api/platform'
 import StatRow from '../../components/StatRow.vue'
 import LineChart from '../../components/LineChart.vue'
-import { fmtNum, fmtQuota, pointsToYuan } from '../../utils/format'
+import { fmtNum, fmtQuota, fmtTokenCompact, pointsToYuan } from '../../utils/format'
 import { trendOptions, barOption } from '../../utils/chart'
 
 const data = ref<any>(null)
@@ -86,8 +86,10 @@ onMounted(async () => {
             <el-table-column prop="requests" label="请求数" width="90" align="right" />
             <el-table-column label="成本" width="170" align="right">
               <template #default="{ row }">
-                <span class="num green">{{ fmtQuota(row.cost) }}</span>
-                <span class="dim"> token · ¥{{ pointsToYuan(row.cost) }}</span>
+                <div class="cost-lines">
+                  <span><span class="num green">{{ fmtTokenCompact(row.cost) }}</span> <span class="dim">token</span></span>
+                  <span class="dim">¥{{ pointsToYuan(row.cost) }}</span>
+                </div>
               </template>
             </el-table-column>
           </el-table>
@@ -103,4 +105,6 @@ onMounted(async () => {
 .unit { font-size: 12px; color: var(--tg-muted); font-weight: 400; margin-left: 4px; }
 .green { color: var(--tg-green-ink); }
 .dim { color: var(--tg-muted); font-size: 12px; }
+/* Top 表成本列：token 一行、金额一行，避免横向折行 */
+.cost-lines { display: inline-flex; flex-direction: column; align-items: flex-end; line-height: 1.6; }
 </style>
