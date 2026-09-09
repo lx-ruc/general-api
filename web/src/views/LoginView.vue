@@ -63,8 +63,6 @@ async function submit() {
 
           <div class="form-links">
             <button type="button" class="link" @click="forgotVisible = true">忘记密码？</button>
-            <span class="sep">·</span>
-            <button type="button" class="link" @click="router.push('/register')">注册</button>
           </div>
         </form>
 

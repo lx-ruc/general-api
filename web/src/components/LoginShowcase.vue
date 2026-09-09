@@ -236,16 +236,6 @@ onBeforeUnmount(() => { clearInterval(tick); clearInterval(feed) })
     var(--tg-paper);
   color: var(--bd-ink);
 }
-/* 工程纸网格底纹 */
-.board::before {
-  content: '';
-  position: absolute; inset: 0; pointer-events: none;
-  background-image:
-    linear-gradient(rgba(27, 43, 36, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(27, 43, 36, 0.035) 1px, transparent 1px);
-  background-size: 30px 30px;
-  mask-image: radial-gradient(150% 130% at 28% -12%, #000 38%, transparent 88%);
-}
 
 .mod { position: relative; animation: mod-rise 0.55s cubic-bezier(0.2, 0.8, 0.3, 1) both; }
 .m1 { animation-delay: 0.05s; }
