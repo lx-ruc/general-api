@@ -130,7 +130,8 @@ async function removeOrg(org: Org) {
   </el-card>
 
   <el-dialog v-model="createVisible" title="新建客户" width="520px">
-    <el-form label-width="110px">
+    <!-- label 列要放得下「初始额度（token）」：EP 的 label 高度固定 32px，列宽不够会折行且第二行被裁 -->
+    <el-form label-width="140px">
       <el-form-item label="客户名称" required><el-input v-model="createForm.name" /></el-form-item>
       <el-form-item label="备注"><el-input v-model="createForm.remark" /></el-form-item>
       <el-form-item label="联系人"><el-input v-model="createForm.contact_name" placeholder="客户企业联系人" /></el-form-item>
