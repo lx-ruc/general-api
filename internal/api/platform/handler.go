@@ -1,11 +1,13 @@
 package platform
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -939,6 +941,66 @@ func (h *Handler) TestChannel(c *gin.Context) {
 	_ = h.DB.Exec("UPDATE channels SET last_test_at = ?, last_test_ok = ?, updated_at = ? WHERE id = ?",
 		time.Now().Unix(), b2i(okFlag), time.Now().Unix(), id).Error
 	httpx.OK(c, gin.H{"ok": okFlag, "status": statusCode, "latency_ms": latency, "error": errMsg, "key": keyDesc})
+}
+
+// UpstreamModels GET /api/platform/channels/:id/upstream-models：实时拉取上游模型列表，编辑渠道时供管理员挑选
+func (h *Handler) UpstreamModels(c *gin.Context) {
+	id, ok := httpx.PathID(c)
+	if !ok {
+		return
+	}
+	var ch model.Channel
+	if err := h.DB.Where("id = ?", id).First(&ch).Error; err != nil {
+		httpx.Fail(c, http.StatusNotFound, "渠道不存在")
+		return
+	}
+	// Key 选择与数据面/测试一致：池内第一把启用 Key → 回退 legacy 单 Key
+	key := ""
+	var poolKey model.ChannelKey
+	if h.DB.Where("channel_id = ? AND status = 1", id).Order("id").First(&poolKey).Error == nil {
+		key, _ = h.Cipher.Decrypt(poolKey.KeyEnc)
+	} else if ch.UpstreamKeyEnc != "" {
+		key, _ = h.Cipher.Decrypt(ch.UpstreamKeyEnc)
+	}
+	if key == "" {
+		httpx.Fail(c, http.StatusBadRequest, "渠道未配置上游密钥，无法查询模型列表")
+		return
+	}
+	// 模型列表路径由聊天路径推导（/v1/chat/completions → /v1/models）；非常规路径回退 /v1/models
+	modelsPath := "/v1/models"
+	if s, found := strings.CutSuffix(ch.Path, "/chat/completions"); found {
+		modelsPath = s + "/models"
+	}
+	req, _ := http.NewRequest(http.MethodGet, strings.TrimRight(ch.BaseURL, "/")+modelsPath, nil)
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := h.Client.Do(req)
+	if err != nil {
+		httpx.Fail(c, http.StatusBadGateway, "请求上游失败："+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		httpx.Fail(c, http.StatusBadGateway, fmt.Sprintf("上游返回 HTTP %d: %s", resp.StatusCode, truncateStr(string(data), 300)))
+		return
+	}
+	var out struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		httpx.Fail(c, http.StatusBadGateway, "解析上游响应失败："+truncateStr(string(data), 200))
+		return
+	}
+	names := make([]string, 0, len(out.Data))
+	for _, m := range out.Data {
+		if m.ID != "" {
+			names = append(names, m.ID)
+		}
+	}
+	sort.Strings(names)
+	httpx.OK(c, gin.H{"models": names, "count": len(names)})
 }
 
 // ---------------- 模型与定价 ----------------

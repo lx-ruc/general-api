@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   apiListChannels, apiCreateChannel, apiUpdateChannel, apiUpdateChannelStatus,
-  apiDeleteChannel, apiTestChannel, apiListModels, apiListChannelKeys,
+  apiDeleteChannel, apiTestChannel, apiListModels, apiListChannelKeys, apiFetchUpstreamModels,
   apiUpdateChannelKeyStatus, apiAddChannelKeys, apiDeleteChannelKey,
   type Channel, type ChannelKeyRow,
 } from '../../api/platform'
@@ -38,6 +38,7 @@ const form = reactive({
 
 function openCreate() {
   isEdit.value = false
+  upstreamModels.value = []
   Object.assign(form, {
     id: 0, name: '', vendor: '', base_url: '', path: '/v1/chat/completions',
     upstream_key: '', weight: 1, priority: 0, status: 1, remark: '', models: [],
@@ -47,6 +48,7 @@ function openCreate() {
 
 async function openEdit(ch: Channel) {
   isEdit.value = true
+  upstreamModels.value = []
   const detail = await apiListChannels() // 列表已含 models
   const full = (detail as Channel[]).find((x) => x.id === ch.id)
   Object.assign(form, {
@@ -66,6 +68,39 @@ function addModelRow() {
 }
 function removeModelRow(i: number) {
   form.models.splice(i, 1)
+}
+
+// 从上游实时拉取模型列表（仅编辑模式：需已保存的 base_url 与密钥）
+const upstreamModels = ref<string[]>([])
+const fetchingModels = ref(false)
+const selectOptions = computed(() => [...new Set([...allModels.value, ...upstreamModels.value])])
+
+async function fetchUpstream() {
+  if (!form.id) return
+  fetchingModels.value = true
+  try {
+    const r = await apiFetchUpstreamModels(form.id)
+    upstreamModels.value = r.models || []
+    if (upstreamModels.value.length === 0) {
+      ElMessage.warning('上游未返回任何模型')
+    } else {
+      ElMessage.success(`已拉取 ${upstreamModels.value.length} 个上游模型，点击模型名添加`)
+    }
+  } finally {
+    fetchingModels.value = false
+  }
+}
+
+function hasModelRow(name: string) {
+  return form.models.some((m) => m.model_name === name)
+}
+
+function addUpstreamModel(name: string) {
+  if (hasModelRow(name)) {
+    ElMessage.info('已在列表中')
+    return
+  }
+  form.models.push({ model_name: name, upstream_model_name: '' })
 }
 
 async function submit() {
@@ -257,13 +292,16 @@ async function removeKey(row: ChannelKeyRow) {
           <span v-else class="dim">未测试</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="300" fixed="right">
+      <el-table-column label="操作" width="320" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" :loading="testing === row.id" @click="test(row)">测试</el-button>
-          <el-button size="small" @click="openEdit(row)">编辑</el-button>
-          <el-button size="small" @click="openKeys(row)">Key 池</el-button>
-          <el-button size="small" @click="toggleStatus(row)">{{ row.status === 1 ? '停用' : '启用' }}</el-button>
-          <el-button size="small" type="danger" @click="remove(row)">删除</el-button>
+          <!-- 五颗按钮必须一行：nowrap + 收紧按钮间距 -->
+          <div class="ops">
+            <el-button size="small" :loading="testing === row.id" @click="test(row)">测试</el-button>
+            <el-button size="small" @click="openEdit(row)">编辑</el-button>
+            <el-button size="small" @click="openKeys(row)">Key 池</el-button>
+            <el-button size="small" @click="toggleStatus(row)">{{ row.status === 1 ? '停用' : '启用' }}</el-button>
+            <el-button size="small" type="danger" @click="remove(row)">删除</el-button>
+          </div>
         </template>
       </el-table-column>
     </el-table>
@@ -306,10 +344,19 @@ async function removeKey(row: ChannelKeyRow) {
       </el-form-item>
 
       <el-divider content-position="left">模型能力（该渠道可转发的模型）</el-divider>
+      <!-- 从上游实时拉取模型列表，点选即加一行（仅编辑模式：需已保存的密钥） -->
+      <div v-if="isEdit" class="up-row">
+        <el-button size="small" :loading="fetchingModels" @click="fetchUpstream">从上游获取模型</el-button>
+        <span v-if="upstreamModels.length" class="tip">已拉取 {{ upstreamModels.length }} 个，点击模型名添加；灰色的已在列表</span>
+      </div>
+      <div v-if="upstreamModels.length" class="up-models">
+        <code v-for="name in upstreamModels" :key="name" class="up-chip"
+          :class="{ added: hasModelRow(name) }" @click="addUpstreamModel(name)">{{ name }}</code>
+      </div>
       <div v-for="(m, i) in form.models" :key="i" class="model-row">
         <el-select v-model="m.model_name" filterable allow-create placeholder="模型名（对外）"
           style="width: 220px" :suffix-icon="undefined">
-          <el-option v-for="name in allModels" :key="name" :label="name" :value="name" />
+          <el-option v-for="name in selectOptions" :key="name" :label="name" :value="name" />
         </el-select>
         <el-input v-model="m.upstream_model_name" placeholder="上游模型名（留空=同名）" style="width: 220px; margin-left: 8px" />
         <el-button type="danger" :icon="'Delete'" circle size="small" style="margin-left: 8px" @click="removeModelRow(i)" />
@@ -339,7 +386,7 @@ async function removeKey(row: ChannelKeyRow) {
         <el-radio-button value="batch">批量新增</el-radio-button>
       </el-radio-group>
       <el-input v-if="addMode === 'single'" v-model="addKeyText" show-password
-        placeholder="sk-…" clearable />
+        autocomplete="new-password" placeholder="粘贴上游 API Key（不预填任何值）" clearable />
       <el-input v-else v-model="addKeyText" type="textarea" :rows="4"
         placeholder="每行一把 Key（逗号分隔也可以），下方权重对整批生效" />
       <div class="add-weight">
@@ -401,6 +448,9 @@ async function removeKey(row: ChannelKeyRow) {
 .add-actions { display: flex; justify-content: flex-end; }
 .keys-tip { margin-top: 10px; line-height: 1.7; }
 .model-row { display: flex; align-items: center; margin-bottom: 8px; }
+/* 操作列五颗按钮一行 */
+.ops { white-space: nowrap; }
+.ops :deep(.el-button + .el-button) { margin-left: 8px; }
 .dim { color: var(--tg-muted); font-size: 12px; }
 .key-ok { color: var(--tg-green-ink); font-size: 12px; }
 .key-miss { color: var(--tg-red); font-size: 12px; }
@@ -409,4 +459,18 @@ async function removeKey(row: ChannelKeyRow) {
   background: var(--tg-green-wash); border-radius: 4px;
   font-size: 11.5px; color: var(--tg-green-ink);
 }
+/* 从上游拉取的模型候选：可点选添加，已添加的置灰 */
+.up-row { margin-bottom: 8px; display: flex; align-items: center; gap: 10px; }
+.up-models {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  max-height: 132px; overflow-y: auto;
+  padding: 8px; margin-bottom: 10px;
+  border: 1px dashed var(--el-border-color-lighter); border-radius: 6px;
+}
+.up-chip {
+  cursor: pointer; padding: 2px 8px; border-radius: 4px;
+  background: var(--el-fill-color-light); font-size: 11.5px;
+}
+.up-chip:hover { background: var(--tg-green-wash); color: var(--tg-green-ink); }
+.up-chip.added { opacity: 0.45; cursor: default; }
 </style>

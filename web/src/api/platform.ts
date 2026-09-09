@@ -86,6 +86,9 @@ export const apiUpdateChannelStatus = (id: number, status: number) =>
   http.put<any, any>(`/api/platform/channels/${id}/status`, { status })
 export const apiDeleteChannel = (id: number) => http.delete<any, any>(`/api/platform/channels/${id}`)
 export const apiTestChannel = (id: number) => http.post<any, any>(`/api/platform/channels/${id}/test`)
+// 实时拉取上游模型列表（编辑渠道时供管理员挑选）
+export const apiFetchUpstreamModels = (id: number) =>
+  http.get<any, { models: string[]; count: number }>(`/api/platform/channels/${id}/upstream-models`)
 export const apiAddChannelKeys = (id: number, keys: string[], weight: number) =>
   http.post<any, any>(`/api/platform/channels/${id}/keys`, { keys, weight })
 export const apiDeleteChannelKey = (id: number, kid: number) =>
