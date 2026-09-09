@@ -114,6 +114,9 @@ function onKeydown(e: KeyboardEvent) {
           <span class="pg-opt-name">{{ m.display_name || m.name }}</span>
           <span class="pg-opt-model">{{ m.name }}</span>
         </el-option>
+        <template #empty>
+          <div class="pg-select-empty">暂无可体验的模型：模型需已启用、渠道可用，且（子账号/客户账号）已获授权</div>
+        </template>
       </el-select>
       <span v-if="currentModel()" class="pg-model-hint mono">{{ currentModel()!.name }}</span>
       <el-button size="small" :disabled="!messages.length" @click="clearChat">清空对话</el-button>
@@ -166,6 +169,7 @@ function onKeydown(e: KeyboardEvent) {
 <style scoped>
 .pg-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .pg-model-hint { font-size: 11.5px; color: var(--tg-muted); }
+.pg-select-empty { padding: 8px 12px; font-size: 12.5px; color: var(--tg-muted); line-height: 1.6; }
 .pg-opt-name { float: left; }
 .pg-opt-model { float: right; font-size: 11.5px; color: var(--tg-muted); font-family: ui-monospace, 'SF Mono', Menlo, monospace; }
 
