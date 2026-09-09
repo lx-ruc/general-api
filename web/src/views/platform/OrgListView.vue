@@ -138,7 +138,6 @@ async function removeOrg(org: Org) {
       <el-form-item label="联系电话"><el-input v-model="createForm.contact_phone" /></el-form-item>
       <el-form-item label="初始额度（token）">
         <el-input-number v-model="createForm.quota_amount" :min="0" :step="10000000" />
-        <span class="tip">= ¥{{ pointsToYuan(createForm.quota_amount) }}</span>
       </el-form-item>
       <el-divider content-position="left">首任客户管理员</el-divider>
       <el-form-item label="管理员用户名" required><el-input v-model="createForm.admin_username" /></el-form-item>
@@ -155,7 +154,7 @@ async function removeOrg(org: Org) {
     <el-form label-width="100px">
       <el-form-item label="token 数">
         <el-input-number v-model="quotaForm.amount" :step="10000000" />
-        <span class="tip">= ¥{{ pointsToYuan(quotaForm.amount) }}（负数为冲减回收，入对账单冲减段）</span>
+        <span class="tip">负数为冲减回收，入对账单冲减段</span>
       </el-form-item>
       <el-form-item label="事由备注"><el-input v-model="quotaForm.remark" /></el-form-item>
     </el-form>

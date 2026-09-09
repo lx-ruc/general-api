@@ -209,7 +209,7 @@ function remove(m: Member) {
       <el-form-item label="姓名"><el-input v-model="createForm.display_name" /></el-form-item>
       <el-form-item label="初始额度（token）">
         <el-input-number v-model="createForm.quota_amount" :min="0" :step="1000000" />
-        <span class="tip">= ¥{{ pointsToYuan(createForm.quota_amount) }}，0 = 不限额</span>
+        <span class="tip">0 = 不限额</span>
       </el-form-item>
     </el-form>
     <template #footer>
@@ -222,7 +222,7 @@ function remove(m: Member) {
     <el-form label-width="100px">
       <el-form-item label="追加token 数">
         <el-input-number v-model="quotaForm.amount" :step="1000000" />
-        <span class="tip">= ¥{{ pointsToYuan(quotaForm.amount) }}（负数为回收）</span>
+        <span class="tip">负数为回收</span>
       </el-form-item>
       <el-form-item label="单月上限（token）">
         <el-input-number v-model="quotaForm.monthly" :min="0" :step="1000000" />
