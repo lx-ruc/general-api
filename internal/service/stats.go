@@ -148,7 +148,7 @@ func StatsOverview(db *gorm.DB, scope Scope) (*Overview, error) {
 		       COALESCE(SUM(l.prompt_tokens + l.completion_tokens), 0) AS tokens,
 		       COALESCE(SUM(l.cost), 0) AS cost, COALESCE(SUM(l.vendor_cost), 0) AS vendor_cost
 		FROM usage_logs l
-		WHERE %s GROUP BY l.model_name ORDER BY tokens DESC, requests DESC LIMIT 10`, cond), args)
+		WHERE %s AND l.model_name != '' GROUP BY l.model_name ORDER BY tokens DESC, requests DESC LIMIT 10`, cond), args)
 	if err != nil {
 		return nil, err
 	}
