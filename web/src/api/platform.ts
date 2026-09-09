@@ -86,6 +86,10 @@ export const apiUpdateChannelStatus = (id: number, status: number) =>
   http.put<any, any>(`/api/platform/channels/${id}/status`, { status })
 export const apiDeleteChannel = (id: number) => http.delete<any, any>(`/api/platform/channels/${id}`)
 export const apiTestChannel = (id: number) => http.post<any, any>(`/api/platform/channels/${id}/test`)
+export const apiAddChannelKeys = (id: number, keys: string[], weight: number) =>
+  http.post<any, any>(`/api/platform/channels/${id}/keys`, { keys, weight })
+export const apiDeleteChannelKey = (id: number, kid: number) =>
+  http.delete<any, any>(`/api/platform/channels/${id}/keys/${kid}`)
 export const apiListChannelKeys = (id: number) =>
   http.get<any, ChannelKeyRow[]>(`/api/platform/channels/${id}/keys`)
 export const apiUpdateChannelKeyStatus = (id: number, kid: number, status: number) =>

@@ -4,7 +4,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   apiListChannels, apiCreateChannel, apiUpdateChannel, apiUpdateChannelStatus,
   apiDeleteChannel, apiTestChannel, apiListModels, apiListChannelKeys,
-  apiUpdateChannelKeyStatus, type Channel, type ChannelKeyRow,
+  apiUpdateChannelKeyStatus, apiAddChannelKeys, apiDeleteChannelKey,
+  type Channel, type ChannelKeyRow,
 } from '../../api/platform'
 import { fmtTime } from '../../utils/format'
 
@@ -151,6 +152,59 @@ async function toggleKey(row: ChannelKeyRow) {
     keyToggling.value = 0
   }
 }
+
+// 新增 Key（单个 / 批量共用一个输入：单个=单行密码框，批量=多行文本，均带统一权重）
+const addVisible = ref(false)
+const addMode = ref<'single' | 'batch'>('single')
+const addKeyText = ref('')
+const addWeight = ref(1)
+const adding = ref(false)
+const keyDeleting = ref(0)
+
+function toggleAdd() {
+  if (!addVisible.value) {
+    addMode.value = 'single'
+    addKeyText.value = ''
+    addWeight.value = 1
+  }
+  addVisible.value = !addVisible.value
+}
+
+async function submitAddKeys() {
+  if (!keysChannel.value) return
+  // Key 本身不含换行/逗号，两种分隔都接受
+  const keys = addKeyText.value.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean)
+  if (keys.length === 0) {
+    ElMessage.warning('请填写 Key')
+    return
+  }
+  adding.value = true
+  try {
+    await apiAddChannelKeys(keysChannel.value.id, keys, addWeight.value)
+    ElMessage.success(`已新增 ${keys.length} 把 Key`)
+    addVisible.value = false
+    keyList.value = await apiListChannelKeys(keysChannel.value.id)
+    load()
+  } finally {
+    adding.value = false
+  }
+}
+
+async function removeKey(row: ChannelKeyRow) {
+  if (!keysChannel.value) return
+  await ElMessageBox.confirm(
+    `删除 Key ${row.key_masked}？删除后不可恢复（只是暂时不用请选「禁用」）。`,
+    '提示', { type: 'warning' },
+  )
+  keyDeleting.value = row.id
+  try {
+    await apiDeleteChannelKey(keysChannel.value.id, row.id)
+    keyList.value = await apiListChannelKeys(keysChannel.value.id)
+    load()
+  } finally {
+    keyDeleting.value = 0
+  }
+}
 </script>
 
 <template>
@@ -226,10 +280,12 @@ async function toggleKey(row: ChannelKeyRow) {
         <el-input v-model="form.path" placeholder="/v1/chat/completions" />
       </el-form-item>
       <el-form-item label="上游密钥">
-        <el-input v-model="form.upstream_key" type="textarea" :rows="3"
-          :placeholder="isEdit
-            ? '留空表示不修改。每行一把 Key，可后缀 :权重，如 sk-xxx:3（整体替换现有 Key 池）'
-            : '每行一把 Key，可后缀 :权重，如 sk-xxx:3（多 Key 组成池自动调度）'" />
+        <!-- 密钥的日常增删在「Key 池」弹窗；这里只在新建时快捷填入首把（权重 1） -->
+        <el-input v-if="!isEdit" v-model="form.upstream_key" show-password
+          placeholder="首把密钥（可选，权重 1）；更多 Key 保存后在「Key 池」新增" />
+        <div v-else class="tip">
+          密钥在列表「Key 池」中管理：新增（单个 / 批量）、禁用、删除
+        </div>
       </el-form-item>
       <el-row>
         <el-col :span="12">
@@ -241,6 +297,7 @@ async function toggleKey(row: ChannelKeyRow) {
         <el-col :span="12">
           <el-form-item label="权重">
             <el-input-number v-model="form.weight" :min="1" />
+            <div class="tip">渠道之间的分流比例；每把 Key 自己的权重在「Key 池」里单独设置</div>
           </el-form-item>
         </el-col>
       </el-row>
@@ -265,10 +322,38 @@ async function toggleKey(row: ChannelKeyRow) {
     </template>
   </el-dialog>
 
-  <el-dialog v-model="keysVisible" :title="`Key 池 — ${keysChannel?.name || ''}`" width="680px">
-    <el-alert v-if="keyList.length === 0 && !keysLoading" type="info" :closable="false"
-      title="该渠道无池内 Key（使用编辑表单多行录入），或使用 legacy 单 Key" />
-    <el-table v-else :data="keyList" v-loading="keysLoading" size="small">
+  <el-dialog v-model="keysVisible" :title="`Key 池 — ${keysChannel?.name || ''}`" width="720px">
+    <el-alert v-if="keyList.length === 0 && !keysLoading && !addVisible" type="info" :closable="false"
+      :title="keysChannel?.has_key
+        ? '该渠道还在用旧版单密钥（未入池）。新增 Key 后自动并入 Key 池统一管理。'
+        : '该渠道还没有 Key。点击下方「新增 Key」添加第一把。'" />
+
+    <div class="keys-toolbar">
+      <el-button type="primary" size="small" @click="toggleAdd">新增 Key</el-button>
+    </div>
+
+    <!-- 新增面板：单个（单行可显示明文）/ 批量（多行或逗号分隔），统一权重 -->
+    <div v-if="addVisible" class="add-panel">
+      <el-radio-group v-model="addMode" size="small">
+        <el-radio-button value="single">单个新增</el-radio-button>
+        <el-radio-button value="batch">批量新增</el-radio-button>
+      </el-radio-group>
+      <el-input v-if="addMode === 'single'" v-model="addKeyText" show-password
+        placeholder="sk-…" clearable />
+      <el-input v-else v-model="addKeyText" type="textarea" :rows="4"
+        placeholder="每行一把 Key（逗号分隔也可以），下方权重对整批生效" />
+      <div class="add-weight">
+        <span class="add-label">权重</span>
+        <el-input-number v-model="addWeight" :min="1" size="small" />
+        <span class="tip">默认 1（等概率）；配额大的账号调高，多分担请求</span>
+      </div>
+      <div class="add-actions">
+        <el-button size="small" @click="addVisible = false">取消</el-button>
+        <el-button size="small" type="primary" :loading="adding" @click="submitAddKeys">添加到池</el-button>
+      </div>
+    </div>
+
+    <el-table v-if="keyList.length > 0" :data="keyList" v-loading="keysLoading" size="small">
       <el-table-column prop="id" label="#" width="60" />
       <el-table-column prop="key_masked" label="Key（打码）" min-width="170">
         <template #default="{ row }"><code>{{ row.key_masked }}</code></template>
@@ -281,17 +366,22 @@ async function toggleKey(row: ChannelKeyRow) {
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="remark" label="备注" min-width="150" show-overflow-tooltip />
-      <el-table-column label="操作" width="90">
+      <el-table-column prop="remark" label="备注" min-width="140" show-overflow-tooltip />
+      <el-table-column label="操作" width="150">
         <template #default="{ row }">
           <el-button size="small" :loading="keyToggling === row.id" @click="toggleKey(row)">
             {{ row.status === 1 ? '禁用' : '启用' }}
           </el-button>
+          <el-button size="small" type="danger" :loading="keyDeleting === row.id" @click="removeKey(row)">
+            删除
+          </el-button>
         </template>
       </el-table-column>
     </el-table>
-    <div class="tip" style="margin-top: 8px">
-      上游 401/403 会自动禁用对应 Key（备注注明原因），此处可手动恢复；429 触发的冷却到期自动恢复。
+
+    <div class="tip keys-tip">
+      权重 = 同渠道内各把 Key 分摊请求的比例（3:1 即平均每 4 次请求各担 3 次与 1 次），与渠道间的优先级/权重无关；
+      上游 401/403 自动禁用对应 Key（可在此恢复），429 冷却到期自动恢复。
     </div>
   </el-dialog>
 </template>
@@ -299,6 +389,17 @@ async function toggleKey(row: ChannelKeyRow) {
 <style scoped>
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .tip { font-size: 12px; color: #909399; }
+/* Key 池弹窗：顶部操作条 / 新增面板 / 底部说明 */
+.keys-toolbar { margin-bottom: 10px; }
+.add-panel {
+  display: flex; flex-direction: column; gap: 10px;
+  border: 1px solid var(--el-border-color-lighter); border-radius: 6px;
+  padding: 14px; margin-bottom: 12px; background: var(--el-fill-color-blank);
+}
+.add-weight { display: flex; align-items: center; gap: 8px; }
+.add-label { font-size: 13px; }
+.add-actions { display: flex; justify-content: flex-end; }
+.keys-tip { margin-top: 10px; line-height: 1.7; }
 .model-row { display: flex; align-items: center; margin-bottom: 8px; }
 .dim { color: var(--tg-muted); font-size: 12px; }
 .key-ok { color: var(--tg-green-ink); font-size: 12px; }

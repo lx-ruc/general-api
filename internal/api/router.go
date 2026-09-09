@@ -136,6 +136,8 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		plat.DELETE("/channels/:id", ph.DeleteChannel)
 		plat.POST("/channels/:id/test", ph.TestChannel)
 		plat.GET("/channels/:id/keys", ph.ListChannelKeys)
+		plat.POST("/channels/:id/keys", ph.AddChannelKeys)
+		plat.DELETE("/channels/:id/keys/:kid", ph.DeleteChannelKey)
 		plat.PUT("/channels/:id/keys/:kid/status", ph.UpdateChannelKeyStatus)
 
 		plat.GET("/models", ph.ListModels)

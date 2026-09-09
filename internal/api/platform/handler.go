@@ -801,6 +801,84 @@ func (h *Handler) UpdateChannelKeyStatus(c *gin.Context) {
 	httpx.OK(c, gin.H{"message": "已更新"})
 }
 
+// AddChannelKeys POST /api/platform/channels/:id/keys：向 Key 池追加（单把或批量，不覆盖现有）
+// weight 对整批生效（<=0 按 1）；追加入池即置空 legacy 单 Key（池成为唯一密钥来源）
+func (h *Handler) AddChannelKeys(c *gin.Context) {
+	id, ok := httpx.PathID(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Keys   []string `json:"keys" binding:"required,min=1"`
+		Weight int      `json:"weight"`
+	}
+	if !httpx.BindJSON(c, &req) {
+		return
+	}
+	weight := req.Weight
+	if weight <= 0 {
+		weight = 1
+	}
+	// 明文去重（仅限本次提交内；池内既有密文因 AES-GCM nonce 随机不可比对）
+	seen := map[string]bool{}
+	rows := make([]model.ChannelKey, 0, len(req.Keys))
+	now := time.Now().Unix()
+	for _, k := range req.Keys {
+		k = strings.TrimSpace(k)
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		enc, err := h.Cipher.Encrypt(k)
+		if err != nil {
+			httpx.Fail(c, http.StatusInternalServerError, "密钥加密失败")
+			return
+		}
+		rows = append(rows, model.ChannelKey{
+			ChannelID: id, KeyEnc: enc, Weight: weight, Status: 1, CreatedAt: now, UpdatedAt: now,
+		})
+	}
+	if len(rows) == 0 {
+		httpx.Fail(c, http.StatusBadRequest, "没有可新增的 Key")
+		return
+	}
+	var cnt int64
+	if err := h.DB.Model(&model.Channel{}).Where("id = ?", id).Count(&cnt).Error; err != nil || cnt == 0 {
+		httpx.Fail(c, http.StatusNotFound, "渠道不存在")
+		return
+	}
+	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&rows).Error; err != nil {
+			return err
+		}
+		return tx.Exec("UPDATE channels SET upstream_key_enc = '', updated_at = ? WHERE id = ?", now, id).Error
+	})
+	if err != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "保存失败")
+		return
+	}
+	httpx.OK(c, gin.H{"added": len(rows)})
+}
+
+// DeleteChannelKey DELETE /api/platform/channels/:id/keys/:kid：从池中彻底移除（禁用可恢复，删除不可）
+func (h *Handler) DeleteChannelKey(c *gin.Context) {
+	id, ok := httpx.PathID(c)
+	if !ok {
+		return
+	}
+	kid, err := strconv.ParseInt(c.Param("kid"), 10, 64)
+	if err != nil || kid <= 0 {
+		httpx.Fail(c, http.StatusBadRequest, "invalid key id")
+		return
+	}
+	res := h.DB.Exec("DELETE FROM channel_keys WHERE id = ? AND channel_id = ?", kid, id)
+	if res.Error != nil || res.RowsAffected == 0 {
+		httpx.Fail(c, http.StatusNotFound, "Key 不存在")
+		return
+	}
+	httpx.OK(c, gin.H{"message": "已删除"})
+}
+
 // TestChannel POST /api/platform/channels/:id/test：实发一次 max_tokens=1 请求测连通
 func (h *Handler) TestChannel(c *gin.Context) {
 	id, ok := httpx.PathID(c)
