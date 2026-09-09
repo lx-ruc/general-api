@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiMyModels, apiMyKeys } from '../../api/member'
+import { copyText } from '../../utils/clipboard'
 
 const models = ref<any[]>([])
 const keys = ref<any[]>([])
@@ -62,8 +63,10 @@ const resp = await client.chat.completions.create({
 });
 console.log(resp.choices[0].message.content);`)
 
-function copy(text: string) {
-  navigator.clipboard.writeText(text).then(() => ElMessage.success('已复制'))
+async function copy(text: string) {
+  const ok = await copyText(text)
+  if (ok) ElMessage.success('已复制')
+  else ElMessage.warning('复制失败，请手动选择复制')
 }
 </script>
 

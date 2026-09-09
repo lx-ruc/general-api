@@ -3,6 +3,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiMyKeys, apiCreateKey, apiDeleteKey, apiMyCostCenters, apiAssignKeyCenter, type MyKey, type MyCostCenter } from '../../api/member'
 import { fmtTime } from '../../utils/format'
+import { copyText } from '../../utils/clipboard'
 
 const list = ref<MyKey[]>([])
 const centers = ref<MyCostCenter[]>([])
@@ -57,12 +58,9 @@ async function reassign(k: MyKey, centerID: number | null) {
 }
 
 async function copyKey() {
-  try {
-    await navigator.clipboard.writeText(newKey.value)
-    ElMessage.success('已复制到剪贴板')
-  } catch {
-    ElMessage.warning('复制失败，请手动选择复制')
-  }
+  const ok = await copyText(newKey.value)
+  if (ok) ElMessage.success('已复制到剪贴板')
+  else ElMessage.warning('复制失败，请手动选择复制')
 }
 
 async function remove(k: MyKey) {

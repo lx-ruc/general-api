@@ -1,17 +1,18 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
+import { copyText } from '../../utils/clipboard'
 
 // 文档代码块：语言标签 + 一键复制（样式见 docs.css 的 .doc-code 系列）
 const props = defineProps<{ code: string; lang?: string }>()
 const copied = ref(false)
 
 async function copy(): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(props.code)
+  const ok = await copyText(props.code)
+  if (ok) {
     copied.value = true
     setTimeout(() => (copied.value = false), 1500)
-  } catch {
+  } else {
     ElMessage.warning('复制失败，请手动选择复制')
   }
 }
