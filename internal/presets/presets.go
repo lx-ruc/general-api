@@ -84,7 +84,7 @@ func Seed(db *gorm.DB) error {
 		}
 		for _, m := range p.Models {
 			if err := db.Exec(`INSERT INTO models (name, display_name, vendor, input_price, output_price, status, remark, created_at, updated_at)
-				VALUES (?, ?, ?, 0, 0, 1, '预置模型，请配置单价（元/百万token）', ?, ?)
+				VALUES (?, ?, ?, 0, 0, 1, '预置模型，请配置单价（元/M token）', ?, ?)
 				ON CONFLICT(name) DO NOTHING`, m.Name, m.DisplayName, p.Vendor, now, now).Error; err != nil {
 				return err
 			}

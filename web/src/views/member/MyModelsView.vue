@@ -58,10 +58,10 @@ const usedPct = computed(() => {
         <el-table-column prop="display_name" label="说明" min-width="160" />
         <el-table-column prop="vendor" label="厂商" width="100" />
         <el-table-column label="输入单价" width="130" align="right">
-          <template #default="{ row }"><span class="num">{{ fmtPrice(row.input_price) }}</span> <span class="dim">/百万token</span></template>
+          <template #default="{ row }"><span class="num">{{ fmtPrice(row.input_price) }}</span> <span class="dim">/M token</span></template>
         </el-table-column>
         <el-table-column label="输出单价" width="130" align="right">
-          <template #default="{ row }"><span class="num">{{ fmtPrice(row.output_price) }}</span> <span class="dim">/百万token</span></template>
+          <template #default="{ row }"><span class="num">{{ fmtPrice(row.output_price) }}</span> <span class="dim">/M token</span></template>
         </el-table-column>
       </el-table>
       <p class="billing-note">

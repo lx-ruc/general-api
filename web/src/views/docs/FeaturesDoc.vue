@@ -21,7 +21,7 @@
       <h2>计量计费</h2>
       <ul>
         <li><strong>计费公式</strong>：<code>单次成本 = ceil((输入tokens × 输入单价 + 输出tokens × 输出单价) / 1M)</code>，
-          全整数运算无浮点误差。单价以「点数 / 百万 token」存储，默认 <code>1 元 = 1,000,000 点</code>。</li>
+          全整数运算无浮点误差。单价以「点数 / M token」存储，默认 <code>1 元 = 1,000,000 点</code>。</li>
         <li><strong>双层记账</strong>：每次调用在同一个结算事务里累加子账号 <code>quota_used</code> 与客户
           <code>quota_used</code>，两级都是硬上限；结算在响应发出后无条件执行，超扣幅度封顶在单请求成本内。</li>
         <li><strong>流式保证计费</strong>：流式请求自动注入 <code>stream_options.include_usage</code>，

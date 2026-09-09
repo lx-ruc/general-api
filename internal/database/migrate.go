@@ -65,6 +65,11 @@ func Migrate(db *gorm.DB) error {
 			}
 		}
 	}
+	// 文案修正（幂等）：预置模型备注的计价单位「元/百万token」统一为「元/M token」
+	if err := db.Exec(`UPDATE models SET remark = replace(remark, '元/百万token', '元/M token')
+		WHERE remark LIKE '%元/百万token%'`).Error; err != nil {
+		return fmt.Errorf("fix models remark: %w", err)
+	}
 	return nil
 }
 

@@ -48,7 +48,7 @@ print(resp.choices[0].message.content)`)
         </li>
         <li>
           <span class="st">模型定价</span>
-          <span class="sd">【模型定价】按厂商价目设置输入 / 输出单价（点数 / 百万 token，
+          <span class="sd">【模型定价】按厂商价目设置输入 / 输出单价（点数 / M token，
             默认 1 元 = 1,000,000 点，即 ¥2/M 的模型填 2,000,000）。</span>
         </li>
         <li>

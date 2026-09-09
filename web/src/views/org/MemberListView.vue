@@ -254,7 +254,7 @@ function remove(m: Member) {
     <el-checkbox-group v-model="grantedModels">
       <el-checkbox v-for="m in availableModels" :key="m.name" :value="m.name" class="grant-item">
         <code>{{ m.name }}</code>
-        <span class="grant-price">{{ fmtPrice(m.input_price) }} 入 / {{ fmtPrice(m.output_price) }} 出 · 百万token</span>
+        <span class="grant-price">{{ fmtPrice(m.input_price) }} 入 / {{ fmtPrice(m.output_price) }} 出 · M token</span>
       </el-checkbox>
     </el-checkbox-group>
     <template #footer>

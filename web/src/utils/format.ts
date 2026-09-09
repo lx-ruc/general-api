@@ -41,7 +41,7 @@ export function fmtTokenCompact(n: number | null | undefined): string {
   return `${s.replace(/\.?0+$/, '')}${units[exp - 1]}`
 }
 
-// 单价 → 元/百万token
+// 单价 → 元/M token
 export function fmtPrice(price: number, ppy = 1_000_000): string {
   return `¥${(price / ppy).toFixed(2)}`
 }
