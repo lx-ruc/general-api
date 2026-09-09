@@ -253,7 +253,7 @@ async function removeKey(row: ChannelKeyRow) {
 
     <el-table :data="list" v-loading="loading"
       empty-text="还没有渠道。新建渠道（base_url + 上游密钥 + 模型列表）即可开始转发，预置的 DeepSeek/智谱/通义填入密钥后启用。">
-      <el-table-column prop="name" label="渠道" min-width="140" />
+      <el-table-column prop="name" label="渠道" width="140" />
       <el-table-column prop="vendor" label="厂商" width="90" />
       <el-table-column label="模型" min-width="160">
         <template #default="{ row }">
