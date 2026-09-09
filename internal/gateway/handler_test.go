@@ -539,3 +539,24 @@ func TestNoChannelReturnsNoAvailableChannel(t *testing.T) {
 		t.Fatalf("错误类型应为 no_available_channel: %s", w.Body)
 	}
 }
+
+// 全部 Key 因 401 被上游拒绝并自动禁用 → 503 channel_key_invalid（指向平台管理员配置，而非笼统 502）
+func TestAllKeys401ReturnsChannelKeyInvalid(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"invalid api key"}}`))
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch401", up.URL, []string{"k1", "k2"}, 1)
+
+	w := e.post(chatBody("q", ""))
+	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "channel_key_invalid") {
+		t.Fatalf("全 Key 401 应回 503 channel_key_invalid，got %d body=%s", w.Code, w.Body)
+	}
+	var disabled int64
+	_ = e.f.db.Raw(`SELECT COUNT(*) FROM channel_keys WHERE status = 0`).Scan(&disabled).Error
+	if disabled != 2 {
+		t.Fatalf("两把 Key 均应被自动禁用，got %d", disabled)
+	}
+}

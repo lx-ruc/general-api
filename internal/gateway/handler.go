@@ -297,6 +297,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	// 闭包内 defer release，从结构上避免 defer-in-loop 泄漏。
 	var lastErr string
 	onlyRateLimited := true // 全部失败均因 429/排队超时 → 最终回 429 而非 502
+	authOnly := true        // 全部失败均因 401/403（Key 失效自动禁用）→ 回 503 而非 502
 	tryCandidate := func(cand Candidate) attemptResult {
 		// 渠道并发闸门（有界等待）。超时换渠道：同渠道其他 Key 面对同一个满闸门，重试无意义
 		qStart := time.Now()
@@ -306,6 +307,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				h.Metrics.QueueTimeouts.Inc()
 			}
 			lastErr = fmt.Sprintf("queue wait timeout on channel %s", cand.ChannelName)
+			onlyRateLimited, authOnly = false, false
 			return attemptNextChannel
 		}
 		if h.Metrics != nil {
@@ -321,12 +323,14 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		upBody, merr := json.Marshal(bm)
 		if merr != nil {
 			lastErr = merr.Error()
+			onlyRateLimited, authOnly = false, false
 			return attemptNextKey
 		}
 		req, rerr := http.NewRequestWithContext(c.Request.Context(), http.MethodPost,
 			cand.URL(), bytes.NewReader(upBody))
 		if rerr != nil {
 			lastErr = rerr.Error()
+			onlyRateLimited, authOnly = false, false
 			return attemptNextKey
 		}
 		req.Header.Set("Content-Type", "application/json")
@@ -339,7 +343,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		resp, derr := h.Client.Do(req)
 		if derr != nil {
 			lastErr = derr.Error()
-			onlyRateLimited = false
+			onlyRateLimited, authOnly = false, false
 			h.noteChannelFailure(cand)
 			return attemptNextChannel // 网络失败 → 跳过该渠道（尚未向客户端写出任何字节）
 		}
@@ -365,6 +369,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			h.Coord.SetCooldown(cand.KeyScope(), cd)
 			lastErr = fmt.Sprintf("upstream %s returned 429 (key %d cooling %s)",
 				cand.ChannelName, cand.KeyID, cd)
+			authOnly = false
 			return attemptNextKey
 
 		case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
@@ -379,7 +384,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		case resp.StatusCode >= 500:
 			// 5xx：渠道级故障，熔断计数并跳过该渠道全部剩余 Key（同 endpoint 换 Key 无意义）
 			drain()
-			onlyRateLimited = false
+			onlyRateLimited, authOnly = false, false
 			lastErr = fmt.Sprintf("upstream %s returned %d", cand.ChannelName, resp.StatusCode)
 			h.noteChannelFailure(cand)
 			return attemptNextChannel
@@ -422,7 +427,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		data, rerr2 := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
 		_ = resp.Body.Close()
 		if rerr2 != nil {
-			onlyRateLimited = false
+			onlyRateLimited, authOnly = false, false
 			lastErr = rerr2.Error()
 			h.noteChannelFailure(cand)
 			return attemptNextChannel // 尚未向客户端写出字节，可换渠道
@@ -473,18 +478,25 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		}
 	}
 
-	// 全部候选耗尽：仅剩限流类失败时回 429（OpenAI SDK 对 429 有专门退避），否则 502
+	// 全部候选耗尽：按失败原因分类回错（429 限流 / 503 密钥失效 / 502 其他上游故障）
 	rec.Error = "all channels failed: " + lastErr
-	if onlyRateLimited {
+	switch {
+	case onlyRateLimited:
+		// 仅剩限流类失败 → 429（OpenAI SDK 对 429 有专门退避）
 		rec.Status = http.StatusTooManyRequests
 		h.writeRetryAfter(c, h.KeyCooldown)
 		openaiError(c, http.StatusTooManyRequests, "upstream_busy",
 			"upstream is rate limited, please retry later")
-		return
+	case authOnly:
+		// 全部 Key 因 401/403 被上游拒绝并自动禁用 → 503，明确指向平台管理员配置问题
+		rec.Status = http.StatusServiceUnavailable
+		openaiError(c, http.StatusServiceUnavailable, "channel_key_invalid",
+			"upstream rejected all keys (401/403); the invalid keys are auto-disabled, please contact the platform admin")
+	default:
+		rec.Status = http.StatusBadGateway
+		openaiError(c, http.StatusBadGateway, "upstream_error",
+			"all upstream channels failed: "+truncateStr(lastErr, 200))
 	}
-	rec.Status = http.StatusBadGateway
-	openaiError(c, http.StatusBadGateway, "upstream_error",
-		"all upstream channels failed: "+truncateStr(lastErr, 200))
 }
 
 // attemptResult 单个候选尝试后的流转动作
