@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, computed } from 'vue'
 import { apiStatsOverview } from '../../api/platform'
 import StatRow from '../../components/StatRow.vue'
 import LineChart from '../../components/LineChart.vue'
@@ -10,6 +10,18 @@ const data = ref<any>(null)
 
 onMounted(async () => {
   data.value = await apiStatsOverview()
+})
+
+// 卡片口径切换：今日 / 累计
+const mode = ref<'today' | 'total'>('today')
+const cards = computed(() => {
+  if (!data.value) return []
+  const t = mode.value === 'today' ? data.value.today : data.value.total
+  return [
+    { label: mode.value === 'today' ? '今日请求' : '累计请求', value: fmtNum(t.requests) },
+    { label: mode.value === 'today' ? '今日 tokens' : '累计 tokens', value: fmtNum(t.tokens), tone: 'green' },
+    { label: '调用成功率', value: succRate(t), tone: succTone(t) },
+  ]
 })
 
 // 调用成功率：成功请求 / 总请求（无请求时显示 —）
@@ -27,12 +39,14 @@ function succTone(t: any): 'green' | 'default' | 'danger' {
 
 <template>
   <div v-if="data" class="dash">
-    <StatRow :items="[
-      { label: '今日请求', value: fmtNum(data.today.requests), sub: `累计 ${fmtNum(data.total.requests)}` },
-      { label: '今日 tokens', value: fmtNum(data.today.tokens) },
-      { label: '累计 tokens', value: fmtNum(data.total.tokens), tone: 'green' },
-      { label: '调用成功率', value: succRate(data.today), sub: `累计 ${succRate(data.total)}`, tone: succTone(data.today) },
-    ]" />
+    <div class="statbar">
+      <span class="statbar-title">用量概览</span>
+      <el-radio-group v-model="mode" size="small">
+        <el-radio-button value="today">今日</el-radio-button>
+        <el-radio-button value="total">累计</el-radio-button>
+      </el-radio-group>
+    </div>
+    <StatRow :items="cards" />
 
     <el-row :gutter="16" class="charts">
       <el-col :xs="24" :md="12">
@@ -96,6 +110,8 @@ function succTone(t: any): 'green' | 'default' | 'danger' {
 
 <style scoped>
 .dash { display: flex; flex-direction: column; gap: 16px; }
+.statbar { display: flex; justify-content: space-between; align-items: center; }
+.statbar-title { font-size: 13px; font-weight: 600; color: var(--tg-graphite); }
 .chart-gap { height: 12px; }
 .unit { font-size: 12px; color: var(--tg-muted); font-weight: 400; margin-left: 4px; }
 .green { color: var(--tg-green-ink); }

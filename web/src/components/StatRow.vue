@@ -31,7 +31,7 @@ defineProps<{ items: StatItem[] }>()
   border-radius: 8px;
   padding: 18px 6px;
 }
-.stat { flex: 1; padding: 2px 20px; min-width: 0; }
+.stat { flex: 1; padding: 2px 20px; min-width: 0; display: flex; flex-direction: column; justify-content: center; }
 .stat.divider { border-left: 1px solid var(--tg-line); }
 
 .stat-label { font-size: 12px; color: var(--tg-graphite); margin-bottom: 8px; }

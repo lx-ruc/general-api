@@ -29,6 +29,18 @@ function succTone(t: any): 'green' | 'default' | 'danger' {
 
 const opts = computed(() => (data.value ? trendOptions(data.value.series) : null))
 
+// 卡片口径切换：今日 / 累计
+const mode = ref<'today' | 'total'>('today')
+const cards = computed(() => {
+  if (!data.value) return []
+  const t = mode.value === 'today' ? data.value.today : data.value.total
+  return [
+    { label: mode.value === 'today' ? '今日请求' : '累计请求', value: fmtNum(t.requests) },
+    { label: mode.value === 'today' ? '今日 tokens' : '累计 tokens', value: fmtNum(t.tokens), tone: 'green' },
+    { label: '调用成功率', value: succRate(t), tone: succTone(t) },
+  ]
+})
+
 // 接入引导：额度 / 子账号 / 调用 三步
 const setupSteps = computed(() => {
   if (!org.value || !data.value) return []
@@ -84,12 +96,14 @@ const setupSteps = computed(() => {
       </div>
     </el-card>
 
-    <StatRow :items="[
-      { label: '今日请求', value: fmtNum(data.today.requests), sub: `累计 ${fmtNum(data.total.requests)}` },
-      { label: '今日 tokens', value: fmtNum(data.today.tokens) },
-      { label: '累计 tokens', value: fmtNum(data.total.tokens), tone: 'green' },
-      { label: '调用成功率', value: succRate(data.today), sub: `累计 ${succRate(data.total)}`, tone: succTone(data.today) },
-    ]" />
+    <div class="statbar">
+      <span class="statbar-title">用量概览</span>
+      <el-radio-group v-model="mode" size="small">
+        <el-radio-button value="today">今日</el-radio-button>
+        <el-radio-button value="total">累计</el-radio-button>
+      </el-radio-group>
+    </div>
+    <StatRow :items="cards" />
 
     <el-row :gutter="16">
       <el-col :xs="24" :md="12">
@@ -153,6 +167,8 @@ const setupSteps = computed(() => {
 
 <style scoped>
 .dash { display: flex; flex-direction: column; gap: 16px; }
+.statbar { display: flex; justify-content: space-between; align-items: center; }
+.statbar-title { font-size: 13px; font-weight: 600; color: var(--tg-graphite); }
 .setup-row { display: flex; gap: 32px; flex-wrap: wrap; }
 .setup-step { display: flex; gap: 10px; align-items: flex-start; }
 .setup-check {
