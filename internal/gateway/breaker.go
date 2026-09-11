@@ -40,17 +40,20 @@ func (b *Breaker) RecordFailure(channelID int64) (shouldDisable bool) {
 	return n >= b.threshold
 }
 
-// Disable 执行禁用（写库 + 日志）；供达到阈值时调用
+// Disable 执行禁用（写库 + 日志）；供达到阈值时调用。
+// auto_disabled_at 标记"系统禁用"：自动探测恢复（prober.go）只认这个标记，
+// 管理员手动禁用的渠道（标记为 0）永远不会被自动重新启用。
 func (h *Handler) DisableChannel(channelID int64, name string) {
-	res := h.DB.Exec("UPDATE channels SET status = 0, remark = ?, updated_at = ? WHERE id = ? AND status = 1",
-		"熔断：连续失败自动禁用（"+time.Now().Format("2006-01-02 15:04")+"），修复后请手动启用并测试",
+	res := h.DB.Exec("UPDATE channels SET status = 0, auto_disabled_at = ?, remark = ?, updated_at = ? WHERE id = ? AND status = 1",
+		time.Now().Unix(),
+		"熔断：连续失败自动禁用（"+time.Now().Format("2006-01-02 15:04")+"），将自动探测恢复；也可手动启用",
 		time.Now().Unix(), channelID)
 	if res.Error != nil {
 		slog.Warn("熔断禁用写库失败", "channel", name, "err", res.Error)
 		return
 	}
 	if res.RowsAffected > 0 {
-		slog.Warn("渠道熔断：连续失败已自动禁用", "channel_id", channelID, "channel", name,
+		slog.Warn("渠道熔断：连续失败已自动禁用（将定期探测自动恢复）", "channel_id", channelID, "channel", name,
 			"threshold", h.Breaker.threshold)
 		if h.Metrics != nil {
 			h.Metrics.ChannelDisabled.Inc()

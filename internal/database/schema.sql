@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS channels (
   weight           INTEGER NOT NULL DEFAULT 1,
   priority         INTEGER NOT NULL DEFAULT 0,
   status           INTEGER NOT NULL DEFAULT 1,
+  auto_disabled_at INTEGER NOT NULL DEFAULT 0,  -- >0=系统熔断禁用时间（自动探测恢复）；0=未禁用或人工禁用
   last_test_at     INTEGER,
   last_test_ok     INTEGER NOT NULL DEFAULT 0,
   remark           TEXT    NOT NULL DEFAULT '',

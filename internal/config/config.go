@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -62,6 +63,13 @@ type Gateway struct {
 	CacheTTL              Duration `yaml:"cache_ttl"`               // 精确缓存 TTL；0=关闭
 	CacheMaxItems         int      `yaml:"cache_max_items"`         // 内存 LRU 条数上限（redis 模式仅约束写入侧频率）
 	CacheIsolateOrg       bool     `yaml:"cache_isolate_org"`       // true=缓存按客户隔离（默认全局共享）
+	// ---- 上游调度强化（对标 new-api 调研的四项改进）----
+	KeyCooldownScope    string    `yaml:"key_cooldown_scope"`     // 429 冷却粒度：channel=同渠道全部 Key 一起冷却（默认，适配厂商按账户限速）；key=仅当前 Key
+	MaxCandidates       int       `yaml:"max_candidates"`         // 单请求最多尝试的候选数（渠道×Key）；0=不限
+	AutoProbeInterval   Duration  `yaml:"auto_probe_interval"`    // 熔断渠道自动探测间隔，成功即自动启用；0=关闭。人工禁用的渠道永不探测
+	RetryKeyCodes       []string  `yaml:"retry_key_codes"`        // 命中即冷却 Key 并同渠道换下一把；支持 429/5xx/500-504 写法
+	DisableKeyCodes     []string  `yaml:"disable_key_codes"`      // 命中即禁用 Key 并换渠道（Key 失效类错误）
+	RetryChannelCodes   []string  `yaml:"retry_channel_codes"`    // 命中即熔断计数并跳过该渠道（渠道级故障）
 }
 
 // Redis 协调器（key 冷却/并发闸门/缓存 全局共享）；addr 为空 = 全部回退进程内存（单机/无依赖部署）
@@ -119,6 +127,14 @@ func defaultConfig() *Config {
 			QueueWaitTimeout:         Duration{10 * time.Second},
 			KeyCooldown:              Duration{60 * time.Second},
 			CacheMaxItems:            1000,
+			// 429 冷却粒度默认 channel：主流厂商（如智谱）限额按账户不按 Key，
+			// 同账户多 Key 逐个试错只会白白浪费请求；key 池跨账户混布时才需要改回 key
+			KeyCooldownScope:   "channel",
+			MaxCandidates:      0,
+			AutoProbeInterval:  Duration{5 * time.Minute},
+			RetryKeyCodes:      []string{"429"},
+			DisableKeyCodes:    []string{"401", "403"},
+			RetryChannelCodes:  []string{"5xx"},
 		},
 		Log:         Log{Level: "info"},
 		Billing:     Billing{Timezone: "Asia/Shanghai"},
@@ -149,6 +165,10 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Server.Addr == "" {
 		cfg.Server.Addr = ":8080"
+	}
+	// 冷却粒度只认 channel/key 两个值，其余（含空）回退默认 channel
+	if cfg.Gateway.KeyCooldownScope != "key" {
+		cfg.Gateway.KeyCooldownScope = "channel"
 	}
 	return cfg, nil
 }
@@ -202,6 +222,17 @@ func applyEnv(cfg *Config) {
 	setDuration("TG_CACHE_TTL", &cfg.Gateway.CacheTTL)
 	setInt("TG_CACHE_MAX_ITEMS", &cfg.Gateway.CacheMaxItems)
 	setBool("TG_CACHE_ISOLATE_ORG", &cfg.Gateway.CacheIsolateOrg)
+	setStr("TG_KEY_COOLDOWN_SCOPE", &cfg.Gateway.KeyCooldownScope)
+	setInt("TG_MAX_CANDIDATES", &cfg.Gateway.MaxCandidates)
+	setDuration("TG_AUTO_PROBE_INTERVAL", &cfg.Gateway.AutoProbeInterval)
+	setStrList := func(key string, dst *[]string) {
+		if v := os.Getenv(key); v != "" {
+			*dst = strings.Split(v, ",")
+		}
+	}
+	setStrList("TG_RETRY_KEY_CODES", &cfg.Gateway.RetryKeyCodes)
+	setStrList("TG_DISABLE_KEY_CODES", &cfg.Gateway.DisableKeyCodes)
+	setStrList("TG_RETRY_CHANNEL_CODES", &cfg.Gateway.RetryChannelCodes)
 	setStr("TG_REDIS_ADDR", &cfg.Redis.Addr)
 	setStr("TG_BILLING_TIMEZONE", &cfg.Billing.Timezone)
 	setStr("TG_REDIS_PASSWORD", &cfg.Redis.Password)

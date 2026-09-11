@@ -69,6 +69,8 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 	// ---- 数据面 /v1（API key 鉴权 + per-key 限流）----
 	keyLimiter := middleware.NewRateLimiter(cfg.Gateway.PerKeyRPM, 10)
 	gw := gateway.NewHandler(db, cipher, cfg, keyLimiter, m, coordinator)
+	// 熔断渠道自动恢复：定期探测系统禁用的渠道，成功即自动启用（人工禁用不探测）
+	go gateway.AutoProbeLoop(cfg.Gateway.AutoProbeInterval.Duration, gw)
 	v1 := r.Group("/v1", middleware.APIKeyAuth(db))
 	{
 		v1.POST("/chat/completions", gw.ChatCompletions)
@@ -108,7 +110,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 	authed.POST("/playground/chat", pg.Chat)
 
 	// 系统管理员
-	ph := platform.NewHandler(db, cipher, gw.Client)
+	ph := platform.NewHandler(db, cipher, gw.Client, gw.Breaker)
 	plat := authed.Group("/platform", middleware.RequireRole(model.RolePlatformAdmin))
 	{
 		plat.GET("/orgs", ph.ListOrgs)

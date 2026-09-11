@@ -46,7 +46,7 @@ func newPlatformEnv(t *testing.T) (*gin.Engine, *gorm.DB, string) {
 	engine := gin.New()
 	pg := engine.Group("/api/platform", middleware.JWTAuth(secret, db))
 	cipher, _ := crypto.NewCipher("")
-	h := NewHandler(db, cipher, &http.Client{})
+	h := NewHandler(db, cipher, &http.Client{}, nil)
 	pg.POST("/orgs", h.CreateOrg)
 	return engine, db, token
 }
@@ -84,7 +84,7 @@ func TestVendorBillDiff(t *testing.T) {
 	// 复用脚手架库：补挂对账路由
 	pg := engine.Routes()
 	_ = pg
-	h := NewHandler(db, nil, nil)
+	h := NewHandler(db, nil, nil, nil)
 	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
 	g.GET("/vendor-bills", h.ListVendorBills)
 	g.PUT("/vendor-bills", h.UpsertVendorBill)

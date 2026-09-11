@@ -32,6 +32,16 @@ gateway:
   cache_ttl: 0s                # 精确缓存（相同请求直接回缓存，不耗上游）；0=关闭
   cache_max_items: 1000        # 内存 LRU 条数上限
   cache_isolate_org: false     # true=缓存按公司隔离（默认全局共享）
+  # ---- 上游调度强化（ENV 均可覆盖，TG_ 前缀）----
+  key_cooldown_scope: channel  # 429 冷却粒度：channel=同渠道全部 Key 一起冷却（默认；主流厂商如智谱
+                               # 限额按账户不按 Key，逐把试错纯浪费）；key=仅当前 Key（池内 Key 跨账户混布时用）
+  max_candidates: 0            # 单请求最多尝试的候选数（渠道×Key），防止极端配置打爆上游；0=不限
+  auto_probe_interval: 5m      # 熔断禁用的渠道每隔该时长用一次 max_tokens=1 请求探测，成功即自动启用
+                               # （并邮件通知平台管理员）；管理员手动禁用的渠道永远不会被自动启用。0=关闭
+  retry_key_codes: [429]       # 命中 → 冷却 Key + 同渠道换下一把 Key；支持 "429"/"5xx"/"500-504" 写法
+  disable_key_codes: [401,403] # 命中 → 禁用该 Key + 换渠道（Key 失效类错误，可在 Key 池管理手动恢复）
+  retry_channel_codes: [5xx]   # 命中 → 熔断计数 + 跳过该渠道全部 Key（渠道级故障换 Key 无意义）
+                               # 分类优先级：换 Key > 禁 Key > 换渠道；均未命中的 4xx 直接透传客户端
 
 redis:                     # Key 冷却/并发闸门/缓存 的全局协调；addr 留空 = 进程内存（单机部署零依赖）
   addr: ""                 # 如 redis:6379；ENV: TG_REDIS_ADDR

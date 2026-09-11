@@ -17,6 +17,7 @@ import (
 
 	"token-gateway/internal/auth"
 	"token-gateway/internal/crypto"
+	"token-gateway/internal/gateway"
 	"token-gateway/internal/httpx"
 	"token-gateway/internal/middleware"
 	"token-gateway/internal/model"
@@ -24,13 +25,14 @@ import (
 )
 
 type Handler struct {
-	DB     *gorm.DB
-	Cipher *crypto.Cipher
-	Client *http.Client
+	DB      *gorm.DB
+	Cipher  *crypto.Cipher
+	Client  *http.Client
+	Breaker *gateway.Breaker // 手动启用渠道时清零熔断连续失败计数
 }
 
-func NewHandler(db *gorm.DB, cipher *crypto.Cipher, client *http.Client) *Handler {
-	return &Handler{DB: db, Cipher: cipher, Client: client}
+func NewHandler(db *gorm.DB, cipher *crypto.Cipher, client *http.Client, breaker *gateway.Breaker) *Handler {
+	return &Handler{DB: db, Cipher: cipher, Client: client, Breaker: breaker}
 }
 
 // ---------------- 客户管理 ----------------
@@ -694,8 +696,15 @@ func (h *Handler) UpdateChannelStatus(c *gin.Context) {
 		httpx.Fail(c, http.StatusBadRequest, "status 只能为 0 或 1")
 		return
 	}
-	res := h.DB.Exec("UPDATE channels SET status = ?, updated_at = ? WHERE id = ?",
+	// 人工启停均清除"系统熔断"标记：手动禁用表达管理员意图，永不被自动探测重新启用；
+	// 手动启用则清零熔断连续失败计数，避免恢复后一次失败即再次熔断
+	res := h.DB.Exec("UPDATE channels SET status = ?, auto_disabled_at = 0, updated_at = ? WHERE id = ?",
 		*req.Status, time.Now().Unix(), id)
+	if res.Error == nil && res.RowsAffected > 0 {
+		if *req.Status == 1 && h.Breaker != nil {
+			h.Breaker.RecordSuccess(id)
+		}
+	}
 	if res.Error != nil || res.RowsAffected == 0 {
 		httpx.Fail(c, http.StatusNotFound, "渠道不存在")
 		return

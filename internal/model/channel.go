@@ -11,6 +11,7 @@ type Channel struct {
 	Weight         int    `json:"weight"`
 	Priority       int    `json:"priority"` // 大者优先，同优先级按 weight 加权
 	Status         int    `json:"status"`
+	AutoDisabledAt int64  `json:"auto_disabled_at"` // >0=系统熔断禁用时间戳（自动探测恢复）；0=未禁用或人工禁用
 	LastTestAt     *int64 `json:"last_test_at"`
 	LastTestOk     int    `json:"last_test_ok"`
 	Remark         string `json:"remark"`

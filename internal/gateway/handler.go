@@ -48,6 +48,13 @@ type Handler struct {
 	KeyCooldown      time.Duration // 429 后 Key 冷却时长
 	CacheTTL         time.Duration // 精确缓存 TTL（0=关）
 	CacheIsolateOrg  bool          // 缓存按组织隔离
+
+	// ---- 上游调度强化 ----
+	KeyCooldownScope  string // channel=429 时同渠道全部 Key 一起冷却（厂商按账户限速）；key=仅当前 Key
+	MaxCandidates     int    // 单请求最多尝试候选数（渠道×Key）；0=不限
+	RetryKeyCodes     map[int]bool // 命中 → 冷却 Key + 同渠道换下一把（默认 429）
+	DisableKeyCodes   map[int]bool // 命中 → 禁用 Key + 换渠道（默认 401/403）
+	RetryChannelCodes map[int]bool // 命中 → 熔断计数 + 跳过渠道（默认 5xx）
 }
 
 func NewHandler(db *gorm.DB, cipher *crypto.Cipher, cfg *config.Config,
@@ -69,6 +76,11 @@ func NewHandler(db *gorm.DB, cipher *crypto.Cipher, cfg *config.Config,
 		KeyCooldown:      cfg.Gateway.KeyCooldown.Duration,
 		CacheTTL:         cfg.Gateway.CacheTTL.Duration,
 		CacheIsolateOrg:  cfg.Gateway.CacheIsolateOrg,
+		KeyCooldownScope: cfg.Gateway.KeyCooldownScope,
+		MaxCandidates:    cfg.Gateway.MaxCandidates,
+		RetryKeyCodes:    parseCodeSet(cfg.Gateway.RetryKeyCodes),
+		DisableKeyCodes:  parseCodeSet(cfg.Gateway.DisableKeyCodes),
+		RetryChannelCodes: parseCodeSet(cfg.Gateway.RetryChannelCodes),
 	}
 }
 
@@ -355,25 +367,25 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		}
 
 		switch {
-		case resp.StatusCode == http.StatusTooManyRequests:
-			// 429：Key 冷却（Retry-After 优先）→ 同渠道下一把 Key
+		case codeMatch(h.RetryKeyCodes, resp.StatusCode):
+			// 429（默认）：Key 冷却（Retry-After 优先）→ 同渠道下一把 Key；
+			// channel 粒度时同渠道全部 Key 一起冷却（厂商限额按账户，逐个试错纯浪费）
 			drain()
 			if h.Metrics != nil {
 				h.Metrics.Upstream429.Inc()
-				h.Metrics.KeyCooldown.Inc()
 			}
 			cd := parseRetryAfter(resp.Header.Get("Retry-After"))
 			if cd <= 0 {
 				cd = h.KeyCooldown
 			}
-			h.Coord.SetCooldown(cand.KeyScope(), cd)
-			lastErr = fmt.Sprintf("upstream %s returned 429 (key %d cooling %s)",
-				cand.ChannelName, cand.KeyID, cd)
+			h.coolKeys(cands, cand, cd)
+			lastErr = fmt.Sprintf("upstream %s returned %d (key %d cooling %s)",
+				cand.ChannelName, resp.StatusCode, cand.KeyID, cd)
 			authOnly = false
 			return attemptNextKey
 
-		case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
-			// 401/403：Key 失效 → 禁用该 Key → 同渠道下一把 Key（主 Key 报错自动切备用；
+		case codeMatch(h.DisableKeyCodes, resp.StatusCode):
+			// 401/403（默认）：Key 失效 → 禁用该 Key → 同渠道下一把 Key（主 Key 报错自动切备用；
 			// 候选列表只前进不回看，被禁 Key 不会在本请求内重复选中）
 			drain()
 			onlyRateLimited = false
@@ -381,8 +393,8 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			lastErr = fmt.Sprintf("upstream %s key %d returned %d", cand.ChannelName, cand.KeyID, resp.StatusCode)
 			return attemptNextKey
 
-		case resp.StatusCode >= 500:
-			// 5xx：渠道级故障，熔断计数并跳过该渠道全部剩余 Key（同 endpoint 换 Key 无意义）
+		case codeMatch(h.RetryChannelCodes, resp.StatusCode):
+			// 5xx（默认）：渠道级故障，熔断计数并跳过该渠道全部剩余 Key（同 endpoint 换 Key 无意义）
 			drain()
 			onlyRateLimited, authOnly = false, false
 			lastErr = fmt.Sprintf("upstream %s returned %d", cand.ChannelName, resp.StatusCode)
@@ -462,11 +474,23 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		return attemptDone
 	}
 
+	tried := 0
 	for i := 0; i < len(cands); i++ {
 		if c.Request.Context().Err() != nil {
 			rec.Status, rec.Error = 499, "client disconnected"
 			return
 		}
+		// 选择后可能已被置入冷却（本请求的渠道级冷却、或并发请求的 429）：尝试前再过滤一次
+		if h.Coord.IsCooling(cands[i].KeyScope()) {
+			continue
+		}
+		// 重试预算熔线：单请求最多尝试 N 个候选（渠道×Key），防止极端配置下打爆上游。
+		// 触发时不改写失败分类标志，按已积累的失败原因回 429/503/502
+		if h.MaxCandidates > 0 && tried >= h.MaxCandidates {
+			lastErr = fmt.Sprintf("candidate budget (%d) exhausted, last: %s", h.MaxCandidates, lastErr)
+			break
+		}
+		tried++
 		switch tryCandidate(cands[i]) {
 		case attemptDone:
 			return
@@ -562,6 +586,31 @@ func clampRetryAfter(secs int) time.Duration {
 		return 0
 	}
 	return time.Duration(secs) * time.Second
+}
+
+// coolKeys 429 后设置冷却：key 粒度只冷却当前 Key；channel 粒度把候选中同渠道的全部
+// Key 一起冷却——主流厂商（智谱等）限额按账户不按 Key，同账户其余 Key 立刻重试只会
+// 再吃一次 429（实测 3 Key 池逐个试错浪费 147 次探测）。
+func (h *Handler) coolKeys(cands []Candidate, cur Candidate, d time.Duration) {
+	h.Coord.SetCooldown(cur.KeyScope(), d)
+	n := 1
+	if h.KeyCooldownScope == "channel" {
+		for _, c := range cands {
+			if c.ChannelID == cur.ChannelID && c.KeyID != cur.KeyID {
+				h.Coord.SetCooldown(c.KeyScope(), d)
+				n++
+			}
+		}
+	}
+	if h.Metrics != nil {
+		for i := 0; i < n; i++ {
+			h.Metrics.KeyCooldown.Inc()
+		}
+	}
+	if n > 1 {
+		slog.Info("429 触发渠道级冷却（厂商限额按账户）",
+			"channel_id", cur.ChannelID, "channel", cur.ChannelName, "keys_cooled", n, "cooldown", d.String())
+	}
 }
 
 // disableKey 401/403 后禁用 Key：池内 Key 异步置 status=0（可在 Key 池管理手动恢复）；

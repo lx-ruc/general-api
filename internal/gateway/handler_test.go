@@ -85,6 +85,10 @@ func newTestEnv(t *testing.T) *testEnv {
 		ChannelBreakerThreshold:  0, // 测试中关闭熔断，避免跨用例干扰
 		QueueWaitTimeout:         config.Duration{Duration: 2 * time.Second},
 		KeyCooldown:              config.Duration{Duration: time.Minute},
+		KeyCooldownScope:         "channel", // 与生产默认一致（config.Load 归一化后的值）
+		RetryKeyCodes:            []string{"429"},
+		DisableKeyCodes:          []string{"401", "403"},
+		RetryChannelCodes:        []string{"5xx"},
 	}
 	cipher, _ := crypto.NewCipher("")
 	cd := coord.NewMem(1000)
