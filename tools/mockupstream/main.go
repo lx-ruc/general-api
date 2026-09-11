@@ -22,10 +22,11 @@ import (
 )
 
 var (
-	addr    = flag.String("addr", ":9100", "监听地址")
-	rpm     = flag.Int("rpm", 120, "每把 key 每分钟允许的请求数；0=不限")
-	latency = flag.Int("latency", 300, "基础响应延迟（毫秒）")
-	jitter  = flag.Int("jitter", 150, "延迟抖动幅度（毫秒，±）")
+	addr       = flag.String("addr", ":9100", "监听地址")
+	rpm        = flag.Int("rpm", 120, "每把 key 每分钟允许的请求数；0=不限")
+	latency    = flag.Int("latency", 300, "基础响应延迟（毫秒）")
+	jitter     = flag.Int("jitter", 150, "延迟抖动幅度（毫秒，±）")
+	streamHold = flag.Int("stream_hold", 0, "流式响应总时长（毫秒），用于压测并发长连接；0=默认三块")
 )
 
 // keyWindow 按 key 维护 60s 滑动窗口的请求时间戳（RPM 判额）
@@ -181,10 +182,18 @@ func writeStream(w http.ResponseWriter, model string) {
 		fmt.Fprintf(w, "data: %s\n\n", b)
 		fl.Flush()
 	}
-	chunk(map[string]any{"role": "assistant", "content": "mock "}, nil, nil)
-	time.Sleep(60 * time.Millisecond)
-	chunk(map[string]any{"content": "流式回复"}, nil, nil)
-	time.Sleep(60 * time.Millisecond)
+	if *streamHold > 0 {
+		// 压测模式：每 500ms 一块，撑满 stream_hold 毫秒，模拟真实长流
+		for i := 0; i < *streamHold/500; i++ {
+			chunk(map[string]any{"content": "…"}, nil, nil)
+			time.Sleep(500 * time.Millisecond)
+		}
+	} else {
+		chunk(map[string]any{"role": "assistant", "content": "mock "}, nil, nil)
+		time.Sleep(60 * time.Millisecond)
+		chunk(map[string]any{"content": "流式回复"}, nil, nil)
+		time.Sleep(60 * time.Millisecond)
+	}
 	chunk(map[string]any{}, "stop", fakeUsage())
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	fl.Flush()

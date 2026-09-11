@@ -8,6 +8,8 @@ WorkingDirectory=/opt/token-gateway
 ExecStart=/opt/token-gateway/token-gateway -config /opt/token-gateway/config.yaml
 Restart=always
 RestartSec=3
+# 高并发必备：每条 SSE 流占 2 个 fd（客户端 + 上游），1000 并发至少 8192，留足余量
+LimitNOFILE=65535
 # 安全加固
 NoNewPrivileges=true
 ProtectSystem=full
