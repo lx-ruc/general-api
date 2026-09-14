@@ -98,6 +98,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	engine := gin.New()
 	v1 := engine.Group("/v1", middleware.APIKeyAuth(f.db))
 	v1.POST("/chat/completions", h.ChatCompletions)
+	v1.POST("/embeddings", h.Embeddings)
 	return &testEnv{f: f, h: h, cd: cd, m: m, engine: engine, apiKey: apiKey, userID: 1, orgID: 1}
 }
 
@@ -121,6 +122,16 @@ func (e *testEnv) seedUpstreamChannel(t *testing.T, id int64, name, upstreamURL 
 
 func (e *testEnv) post(body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+e.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	e.engine.ServeHTTP(w, req)
+	return w
+}
+
+// postEmbed 打 /v1/embeddings
+func (e *testEnv) postEmbed(body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/v1/embeddings", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+e.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()

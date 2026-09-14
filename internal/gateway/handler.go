@@ -121,9 +121,32 @@ func truncateStr(s string, n int) string {
 	return s[:n] + "..."
 }
 
-// ChatCompletions POST /v1/chat/completions 编排入口：
-// 限流 → 解析 body → 模型/授权/额度校验 → 渠道选择 → 转发（流式/非流式）→ 结算
+// relaySpec 端点差异参数化：chat 与 embeddings 共用同一条编排链路
+// （限流→解析→授权→预检→缓存→选渠道→闸门→转发→分类→结算），chat 行为零变化
+type relaySpec struct {
+	cacheFields []string // 参与精确缓存 key 的字段白名单（固定顺序）
+	allowStream bool     // 是否支持流式（embeddings 不支持）
+	fixedPath   string   // 非空 → 出站路径最后一段替换为该值（如 /embeddings）
+	require     []string // 除 model 外的必填请求体字段
+}
+
+// ChatCompletions POST /v1/chat/completions
 func (h *Handler) ChatCompletions(c *gin.Context) {
+	h.relay(c, relaySpec{cacheFields: chatCacheFields, allowStream: true})
+}
+
+// Embeddings POST /v1/embeddings：向量接口（RAG/知识库场景）；
+// 计费走 CalcCost 的 completion=0 退化路径（纯输入计费）
+func (h *Handler) Embeddings(c *gin.Context) {
+	h.relay(c, relaySpec{
+		cacheFields: embeddingsCacheFields,
+		fixedPath:   "/embeddings",
+		require:     []string{"input"},
+	})
+}
+
+// relay 共享中继编排：限流 → 解析 body → 模型/授权/额度校验 → 渠道选择 → 转发（流式/非流式）→ 结算
+func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 	start := time.Now()
 	ki := middleware.GetKeyInfo(c)
 
@@ -185,7 +208,17 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	}
 	rec.ModelName = modelName
 
-	stream := rawBool(bodyMap["stream"])
+	// 端点必填字段（embeddings: input）
+	for _, f := range spec.require {
+		if _, ok := bodyMap[f]; !ok {
+			rec.Status, rec.Error = http.StatusBadRequest, "missing "+f
+			openaiError(c, http.StatusBadRequest, "invalid_request_error",
+				fmt.Sprintf("missing required parameter: %s", f))
+			return
+		}
+	}
+
+	stream := rawBool(bodyMap["stream"]) && spec.allowStream
 	if stream {
 		rec.IsStream = 1
 	}
@@ -234,7 +267,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	// 精确缓存查询（授权/预检之后、选渠道之前）：命中直接回，不触发上游调用与扣费
 	cacheKey := ""
 	if h.CacheTTL > 0 && !stream {
-		cacheKey = h.cacheKey(bodyMap, ki.OrgID)
+		cacheKey = h.cacheKey(bodyMap, ki.OrgID, spec.cacheFields)
 		if data, ok := h.Coord.CacheGet(cacheKey); ok {
 			if h.Metrics != nil {
 				h.Metrics.CacheHits.Inc()
@@ -339,7 +372,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			return attemptNextKey
 		}
 		req, rerr := http.NewRequestWithContext(c.Request.Context(), http.MethodPost,
-			cand.URL(), bytes.NewReader(upBody))
+			endpointURL(cand.BaseURL, cand.Path, spec.fixedPath), bytes.NewReader(upBody))
 		if rerr != nil {
 			lastErr = rerr.Error()
 			onlyRateLimited, authOnly = false, false
@@ -412,6 +445,12 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		c.Writer.Header().Set("X-Tg-Channel-Id", strconv.FormatInt(cand.ChannelID, 10))
 		ct := resp.Header.Get("Content-Type")
 
+		// 模型映射：响应中的上游名改写回外部名（含 SSE 每块），映射对客户不可见
+		var modelSwap [2]string
+		if cand.UpstreamModel != "" && cand.UpstreamModel != modelName {
+			modelSwap = [2]string{cand.UpstreamModel, modelName}
+		}
+
 		if stream {
 			if ct == "" {
 				ct = "text/event-stream"
@@ -423,7 +462,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			c.Writer.Header().Set("Cache-Control", "no-cache")
 			c.Writer.Header().Set("X-Accel-Buffering", "no")
 			c.Writer.WriteHeader(resp.StatusCode)
-			usage, perr := pipeSSE(c.Writer, c.Request.Context(), resp.Body)
+			usage, perr := pipeSSE(c.Writer, c.Request.Context(), resp.Body, modelSwap)
 			_ = resp.Body.Close()
 			if h.Metrics != nil {
 				h.Metrics.ActiveStreams.Dec()
@@ -447,6 +486,8 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		if ct == "" {
 			ct = "application/json"
 		}
+		// 模型映射：缓存与客户端拿到的都是外部名（缓存回放不泄漏上游名）
+		data = rewriteModel(data, modelSwap)
 		// 2xx 且非流式、体积受限 → 写精确缓存
 		if resp.StatusCode < 300 && cacheKey != "" && len(data) <= 1<<20 {
 			h.Coord.CacheSet(cacheKey, data, h.CacheTTL)
@@ -532,20 +573,23 @@ const (
 	attemptNextChannel                      // 跳过该渠道全部剩余 Key
 )
 
-// cacheFields 参与精确缓存 key 的请求字段白名单（固定顺序迭代，绝不 range map）
-var cacheFields = []string{
+// chatCacheFields chat 端点参与精确缓存 key 的请求字段白名单（固定顺序迭代，绝不 range map）
+var chatCacheFields = []string{
 	"model", "messages", "temperature", "top_p", "seed",
 	"presence_penalty", "frequency_penalty", "max_tokens", "stop",
 	"response_format", "tools", "tool_choice",
 }
 
+// embeddingsCacheFields embeddings 端点缓存白名单（input 数组顺序不同 = 不同请求，不命中）
+var embeddingsCacheFields = []string{"model", "input", "encoding_format", "dimensions"}
+
 // cacheKey 精确缓存 key：白名单字段按固定顺序拼接原始 JSON 后取 SHA-256（model 为对外名）
-func (h *Handler) cacheKey(bm map[string]json.RawMessage, orgID int64) string {
+func (h *Handler) cacheKey(bm map[string]json.RawMessage, orgID int64, fields []string) string {
 	var sb strings.Builder
 	if h.CacheIsolateOrg {
 		fmt.Fprintf(&sb, "org:%d:", orgID)
 	}
-	for _, f := range cacheFields {
+	for _, f := range fields {
 		if raw, ok := bm[f]; ok {
 			sb.WriteString(f)
 			sb.WriteByte(0)
@@ -555,6 +599,33 @@ func (h *Handler) cacheKey(bm map[string]json.RawMessage, orgID int64) string {
 	}
 	sum := sha256.Sum256([]byte(sb.String()))
 	return hex.EncodeToString(sum[:])
+}
+
+// endpointURL 出站完整地址 = base_url + path；fixed 非空时改写端点段：
+// OpenAI 兼容约定 chat={base}/chat/completions、embeddings={base}/embeddings，
+// 故 /chat/completions 后缀整体替换（/v1/chat/completions → /v1/embeddings）；
+// 自定义 path 退化为替换最后一段
+func endpointURL(baseURL, path, fixed string) string {
+	if fixed != "" {
+		if strings.HasSuffix(path, "/chat/completions") {
+			path = strings.TrimSuffix(path, "/chat/completions") + fixed
+		} else if idx := strings.LastIndex(path, "/"); idx >= 0 {
+			path = path[:idx] + fixed
+		} else {
+			path = fixed
+		}
+	}
+	return strings.TrimRight(baseURL, "/") + path
+}
+
+// rewriteModel 把响应体中 "model":"<上游名>" 字面量替换回外部名；映射未启用时原样返回（零开销）
+func rewriteModel(data []byte, swap [2]string) []byte {
+	if swap[0] == "" {
+		return data
+	}
+	return bytes.ReplaceAll(data,
+		[]byte(`"model":"`+swap[0]+`"`),
+		[]byte(`"model":"`+swap[1]+`"`))
 }
 
 // writeRetryAfter 输出 Retry-After 响应头（至少 1 秒，向上取整）

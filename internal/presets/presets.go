@@ -42,6 +42,7 @@ var Presets = []ChannelPreset{
 			{Name: "glm-5.3", DisplayName: "智谱 GLM-5.3"},
 			{Name: "glm-5.3-flash", DisplayName: "智谱 GLM-5.3-Flash"},
 			{Name: "glm-4-flash", DisplayName: "智谱 GLM-4-Flash（免费）"},
+			{Name: "embedding-3", DisplayName: "智谱 Embedding-3（向量）"},
 		},
 	},
 	{
@@ -53,6 +54,7 @@ var Presets = []ChannelPreset{
 			{Name: "qwen3.8-flash", DisplayName: "通义千问 3.8 Flash"},
 			{Name: "qwen3.7-plus", DisplayName: "通义千问 3.7 Plus"},
 			{Name: "qwen-plus", DisplayName: "通义千问 Plus（稳定别名）"},
+			{Name: "text-embedding-v4", DisplayName: "通义文本向量 v4"},
 		},
 	},
 	{

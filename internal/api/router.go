@@ -74,6 +74,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 	v1 := r.Group("/v1", middleware.APIKeyAuth(db))
 	{
 		v1.POST("/chat/completions", gw.ChatCompletions)
+		v1.POST("/embeddings", gw.Embeddings)
 		v1.GET("/models", gw.ListModels)
 	}
 

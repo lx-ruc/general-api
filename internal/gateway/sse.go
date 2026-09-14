@@ -12,8 +12,9 @@ import (
 
 // pipeSSE 流式转发：按 SSE 事件（空行分隔）逐块写客户端并立即 flush，
 // 同时轻量解析每个 data: 载荷中的 usage 字段（正常只出现在最后一个 chunk）。
+// modelSwap 非空时把事件里的 "model":"<上游名>" 字面量改写回外部名（映射对客户不可见）。
 // 客户端断开（ctx 取消 / 写失败）即停止读取并关闭上游。
-func pipeSSE(w io.Writer, ctx context.Context, body io.Reader) (usage *Usage, err error) {
+func pipeSSE(w io.Writer, ctx context.Context, body io.Reader, modelSwap [2]string) (usage *Usage, err error) {
 	flusher, _ := w.(http.Flusher)
 	reader := bufio.NewReaderSize(body, 32*1024)
 	var event bytes.Buffer
@@ -22,7 +23,13 @@ func pipeSSE(w io.Writer, ctx context.Context, body io.Reader) (usage *Usage, er
 		if event.Len() == 0 {
 			return nil
 		}
-		if _, err := w.Write(event.Bytes()); err != nil {
+		var out []byte = event.Bytes()
+		if modelSwap[0] != "" {
+			out = bytes.ReplaceAll(out,
+				[]byte(`"model":"`+modelSwap[0]+`"`),
+				[]byte(`"model":"`+modelSwap[1]+`"`))
+		}
+		if _, err := w.Write(out); err != nil {
 			return err
 		}
 		if flusher != nil {
