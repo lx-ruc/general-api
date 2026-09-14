@@ -13,3 +13,4 @@ backups/
 
 # 测试密钥文档（含真实 key，勿提交）
 API-KEYS.md
+.DS_Store
