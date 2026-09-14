@@ -163,8 +163,13 @@ func probeChannel(h *Handler, channelID int64) (ok bool, latencyMs int64, errMsg
 		return false, 0, "channel not found: " + err.Error()
 	}
 	var ab model.ChannelAbility
-	if err := h.DB.Where("channel_id = ?", channelID).Order("model_name").First(&ab).Error; err != nil || ab.ModelName == "" {
-		return false, 0, "渠道未配置模型，无法探测"
+	// 优先挑 chat 模型探测：embedding 模型不吃 messages，用 chat 请求探测必然 400，
+	// 会把健康渠道误判为故障（体检误杀）。渠道全是 embedding 模型时改发 embeddings 请求
+	if err := h.DB.Where("channel_id = ? AND model_name NOT LIKE '%embedding%'", channelID).
+		Order("model_name").First(&ab).Error; err != nil {
+		if err2 := h.DB.Where("channel_id = ?", channelID).Order("model_name").First(&ab).Error; err2 != nil || ab.ModelName == "" {
+			return false, 0, "渠道未配置模型，无法探测"
+		}
 	}
 	key := ""
 	var poolKey model.ChannelKey
@@ -180,8 +185,13 @@ func probeChannel(h *Handler, channelID int64) (ok bool, latencyMs int64, errMsg
 	if ab.UpstreamModelName != nil && *ab.UpstreamModelName != "" {
 		upModel = *ab.UpstreamModelName
 	}
-	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":1,"stream":false}`, upModel)
-	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(ch.BaseURL, "/")+ch.Path, strings.NewReader(body))
+	var body string
+	if isEmbeddingModel(ab.ModelName) {
+		body = fmt.Sprintf(`{"model":%q,"input":"ping"}`, upModel)
+	} else {
+		body = fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":1,"stream":false}`, upModel)
+	}
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(ch.BaseURL, "/")+probePath(ch.Path, isEmbeddingModel(ab.ModelName)), strings.NewReader(body))
 	if err != nil {
 		return false, 0, err.Error()
 	}
@@ -201,4 +211,17 @@ func probeChannel(h *Handler, channelID int64) (ok bool, latencyMs int64, errMsg
 		return true, latency, ""
 	}
 	return false, latency, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncateStr(string(data), 300))
+}
+
+// isEmbeddingModel 按 openai 生态惯例：embedding 系模型名都含 "embedding"
+func isEmbeddingModel(name string) bool {
+	return strings.Contains(strings.ToLower(name), "embedding")
+}
+
+// probePath embedding 探测时把 chat 路径换成 /embeddings（复用数据面的派生规则）
+func probePath(path string, embed bool) string {
+	if !embed {
+		return path
+	}
+	return endpointURL("", path, "/embeddings")
 }
