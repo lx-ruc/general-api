@@ -101,7 +101,11 @@ curl http://<host>:8080/v1/chat/completions \
 
 openai SDK：`base_url="http://<host>:8080/v1"`，`api_key="sk-..."`。支持 `stream: true`。
 
-错误码：`403 model_not_allowed`（未授权模型）、`429 insufficient_quota`（个人/客户额度耗尽）、`429 rate_limit_error`（默认 60 RPM/密钥）。
+错误码：`403 model_not_allowed`（未授权模型）、`429 insufficient_quota`（个人/客户额度耗尽）、`429 rate_limit_error`（默认 60 RPM/密钥，`per_key_rpm`/`per_key_burst` 可调）。
+
+## 存量数据治理
+
+- **调用日志归档**：usage_logs 主库只保留最近 N 个完整自然月（含当月，`billing.usage_retention_months`，0=不归档默认），更早的按月导出 gzip JSONL（`usage_archive_dir`）后分批删除；导出后行数校验一致才删、重跑幂等（已有完整归档的月份直接清库）、启动自愈 + 每日 03:37（账期时区）自动执行——主库体积可控，长尾查询不拖慢
 
 ## 架构
 

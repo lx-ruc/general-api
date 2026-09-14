@@ -67,7 +67,11 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 	coordinator := newCoordinator(cfg, m)
 
 	// ---- 数据面 /v1（API key 鉴权 + per-key 限流）----
-	keyLimiter := middleware.NewRateLimiter(cfg.Gateway.PerKeyRPM, 10)
+	keyBurst := cfg.Gateway.PerKeyBurst
+	if keyBurst <= 0 {
+		keyBurst = cfg.Gateway.PerKeyRPM // 未配置时突发桶=速率（稳态语义）
+	}
+	keyLimiter := middleware.NewRateLimiter(cfg.Gateway.PerKeyRPM, keyBurst)
 	gw := gateway.NewHandler(db, cipher, cfg, keyLimiter, m, coordinator)
 	// 熔断渠道自动恢复：定期探测系统禁用的渠道，成功即自动启用（人工禁用不探测）
 	go gateway.AutoProbeLoop(cfg.Gateway.AutoProbeInterval.Duration, gw)
@@ -86,6 +90,8 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 	service.SetBillingTimezone(cfg.Billing.Timezone)
 	// 月末余额快照（次月 1 日 00:05 账期时区；启动自愈补跑；settings CAS 多实例唯一）
 	go service.RunBalanceSnapshotter(db, cfg.Billing.Timezone)
+	// usage_logs 按月归档（billing.usage_retention_months>0 才启用；导出校验后再删，幂等）
+	go service.RunUsageArchiver(db, cfg.Billing.UsageRetentionMonths, cfg.Billing.UsageArchiveDir, cfg.Billing.Timezone)
 	verif := service.NewVerification(db, &cfg.Smtp)
 	authH := &AuthHandler{DB: db, Secret: cfg.Security.JWTSecret, TTL: cfg.Security.JWTTTL.Duration, Verif: verif}
 	tokenH := &AccessTokenHandler{DB: db}

@@ -6,9 +6,10 @@ export default defineConfig({
   plugins: [vue()],
   server: {
     port: 5173,
+    // 本机 8080/8090 常被 llama-server / mihomo 占用，联调网关跑在 :9091（见 config.yaml）
     proxy: {
-      '/api': 'http://localhost:8080',
-      '/v1': 'http://localhost:8080',
+      '/api': 'http://localhost:9091',
+      '/v1': 'http://localhost:9091',
     },
   },
   build: {

@@ -54,6 +54,7 @@ type Security struct {
 type Gateway struct {
 	MaxBodyMB                int      `yaml:"max_body_mb"`
 	PerKeyRPM                int      `yaml:"per_key_rpm"`
+	PerKeyBurst              int      `yaml:"per_key_burst"` // 每 key 限流突发桶容量；0=跟随 per_key_rpm（压测齐射场景可调大）
 	UpstreamFirstByteTimeout Duration `yaml:"upstream_first_byte_timeout"`
 	ChannelBreakerThreshold  int      `yaml:"channel_breaker_threshold"` // 渠道连续失败自动禁用阈值；0=关闭
 	// 高并发三件套（见 internal/coord）：并发闸门 + Key 冷却 + 精确缓存
@@ -99,6 +100,11 @@ type Log struct {
 // Billing 账单口径：月边界时区（IANA 名，如 Asia/Shanghai）
 type Billing struct {
 	Timezone string `yaml:"timezone"` // ENV: TG_BILLING_TIMEZONE
+
+	// usage_logs 归档：主库只留最近 N 个自然月（含当月），更早的按月导出
+	// gzip JSONL 后从库内删除（调用日志页查不到早于归档线的月份）
+	UsageRetentionMonths int    `yaml:"usage_retention_months"` // 0=不归档（默认）
+	UsageArchiveDir      string `yaml:"usage_archive_dir"`      // 归档文件目录
 }
 
 type Config struct {
@@ -142,7 +148,11 @@ func defaultConfig() *Config {
 			ChannelProbeFailThreshold:  3,
 		},
 		Log:         Log{Level: "info"},
-		Billing:     Billing{Timezone: "Asia/Shanghai"},
+		Billing:     Billing{
+			Timezone:           "Asia/Shanghai",
+			UsageRetentionMonths: 0,
+			UsageArchiveDir:      "data/usage_archives",
+		},
 		SeedPresets: true,
 	}
 }
@@ -242,6 +252,9 @@ func applyEnv(cfg *Config) {
 	setStrList("TG_RETRY_CHANNEL_CODES", &cfg.Gateway.RetryChannelCodes)
 	setStr("TG_REDIS_ADDR", &cfg.Redis.Addr)
 	setStr("TG_BILLING_TIMEZONE", &cfg.Billing.Timezone)
+	setInt("TG_USAGE_RETENTION_MONTHS", &cfg.Billing.UsageRetentionMonths)
+	setStr("TG_USAGE_ARCHIVE_DIR", &cfg.Billing.UsageArchiveDir)
+	setInt("TG_PER_KEY_BURST", &cfg.Gateway.PerKeyBurst)
 	setStr("TG_REDIS_PASSWORD", &cfg.Redis.Password)
 	setInt("TG_REDIS_DB", &cfg.Redis.DB)
 	switch os.Getenv("TG_SEED_PRESETS") {

@@ -24,6 +24,7 @@ security:
 gateway:
   max_body_mb: 10             # ENV: TG_MAX_BODY_MB
   per_key_rpm: 60           # 每个 API key 每分钟请求数上限；ENV: TG_PER_KEY_RPM
+  per_key_burst: 0          # 每 key 突发桶容量（压测 t=0 齐射场景调大）；0=跟随 per_key_rpm。ENV: TG_PER_KEY_BURST
   upstream_first_byte_timeout: 60s  # ENV: TG_UPSTREAM_FIRST_BYTE_TIMEOUT
   # ---- 高并发三件套（见 internal/coord）----
   channel_max_concurrency: 0   # 每渠道最大并发上游请求数；超出排队等待；0=不限
@@ -63,6 +64,10 @@ smtp:                       # 注册验证码邮件；host 留空 = 不发邮件
 billing:                    # 月度对账单口径
   timezone: "Asia/Shanghai" # 账期月边界与日分桶时区（IANA 名）；ENV: TG_BILLING_TIMEZONE。
                             # 月末余额快照在次月 1 日 00:05（此时区）自动写入，漏跑会在重启时自愈补上
+  usage_retention_months: 0 # usage_logs 主库保留的完整自然月数（含当月），更早的按月导出
+                            # gzip JSONL 到 usage_archive_dir 后删除（调用日志页查不到早于归档线的月份）；
+                            # 0=不归档（默认）。ENV: TG_USAGE_RETENTION_MONTHS
+  usage_archive_dir: "data/usage_archives"  # 归档目录。ENV: TG_USAGE_ARCHIVE_DIR
 
 log:
   level: info
