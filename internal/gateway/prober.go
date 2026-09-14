@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"gorm.io/gorm"
+
 	"token-gateway/internal/model"
 	"token-gateway/internal/service"
 )
@@ -165,11 +167,9 @@ func probeChannel(h *Handler, channelID int64) (ok bool, latencyMs int64, errMsg
 	var ab model.ChannelAbility
 	// 优先挑 chat 模型探测：embedding 模型不吃 messages，用 chat 请求探测必然 400，
 	// 会把健康渠道误判为故障（体检误杀）。渠道全是 embedding 模型时改发 embeddings 请求
-	if err := h.DB.Where("channel_id = ? AND model_name NOT LIKE '%embedding%'", channelID).
-		Order("model_name").First(&ab).Error; err != nil {
-		if err2 := h.DB.Where("channel_id = ?", channelID).Order("model_name").First(&ab).Error; err2 != nil || ab.ModelName == "" {
-			return false, 0, "渠道未配置模型，无法探测"
-		}
+	ab, isEmbed, err := PickProbeAbility(h.DB, channelID)
+	if err != nil {
+		return false, 0, "渠道未配置模型，无法探测"
 	}
 	key := ""
 	var poolKey model.ChannelKey
@@ -186,12 +186,12 @@ func probeChannel(h *Handler, channelID int64) (ok bool, latencyMs int64, errMsg
 		upModel = *ab.UpstreamModelName
 	}
 	var body string
-	if isEmbeddingModel(ab.ModelName) {
+	if isEmbed {
 		body = fmt.Sprintf(`{"model":%q,"input":"ping"}`, upModel)
 	} else {
 		body = fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":1,"stream":false}`, upModel)
 	}
-	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(ch.BaseURL, "/")+probePath(ch.Path, isEmbeddingModel(ab.ModelName)), strings.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(ch.BaseURL, "/")+probePath(ch.Path, isEmbed), strings.NewReader(body))
 	if err != nil {
 		return false, 0, err.Error()
 	}
@@ -224,4 +224,18 @@ func probePath(path string, embed bool) string {
 		return path
 	}
 	return endpointURL("", path, "/embeddings")
+}
+
+// PickProbeAbility 选探测用模型（管理台「渠道测试」与体检/自动恢复共用）：
+// 优先挑非 embedding 的 chat 模型（embedding 模型不吃 messages，用 chat 请求
+// 探测必然 400，会把健康渠道误判为故障）；返回 (能力, 是否按 embeddings 协议探测)
+func PickProbeAbility(db *gorm.DB, channelID int64) (model.ChannelAbility, bool, error) {
+	var ab model.ChannelAbility
+	if err := db.Where("channel_id = ? AND model_name NOT LIKE '%embedding%'", channelID).
+		Order("model_name").First(&ab).Error; err != nil {
+		if err2 := db.Where("channel_id = ?", channelID).Order("model_name").First(&ab).Error; err2 != nil || ab.ModelName == "" {
+			return ab, false, fmt.Errorf("渠道未配置模型")
+		}
+	}
+	return ab, isEmbeddingModel(ab.ModelName), nil
 }

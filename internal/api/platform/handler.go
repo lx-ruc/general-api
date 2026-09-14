@@ -902,7 +902,9 @@ func (h *Handler) TestChannel(c *gin.Context) {
 		return
 	}
 	var ab model.ChannelAbility
-	if err := h.DB.Where("channel_id = ?", id).Order("model_name").First(&ab).Error; err != nil || ab.ModelName == "" {
+	// 选模与体检/自动恢复共用：优先 chat 模型；纯 embedding 渠道改发 embeddings 请求
+	ab, isEmbed, perr := gateway.PickProbeAbility(h.DB, id)
+	if perr != nil {
 		httpx.Fail(c, http.StatusBadRequest, "渠道未配置模型，无法测试")
 		return
 	}
@@ -924,8 +926,22 @@ func (h *Handler) TestChannel(c *gin.Context) {
 	if ab.UpstreamModelName != nil && *ab.UpstreamModelName != "" {
 		upModel = *ab.UpstreamModelName
 	}
-	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":1,"stream":false}`, upModel)
-	url := strings.TrimRight(ch.BaseURL, "/") + ch.Path
+	var body, path string
+	if isEmbed {
+		body = fmt.Sprintf(`{"model":%q,"input":"ping"}`, upModel)
+		// embeddings 路径由聊天路径派生（与数据面 relaySpec 同规则）
+		if s, found := strings.CutSuffix(ch.Path, "/chat/completions"); found {
+			path = s + "/embeddings"
+		} else if idx := strings.LastIndex(ch.Path, "/"); idx >= 0 {
+			path = ch.Path[:idx] + "/embeddings"
+		} else {
+			path = "/embeddings"
+		}
+	} else {
+		body = fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":1,"stream":false}`, upModel)
+		path = ch.Path
+	}
+	url := strings.TrimRight(ch.BaseURL, "/") + path
 	req, _ := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+key)
