@@ -25,3 +25,15 @@ func HashAPIKey(key string) string {
 	sum := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(sum[:])
 }
+
+// GenerateAccessToken 生成管理面访问令牌：tgp_ + 48 个十六进制字符（192-bit 随机）。
+// 同 GenerateAPIKey 模式：明文仅创建时显示一次，落库 SHA-256
+func GenerateAccessToken() (plain, prefix, hash string, err error) {
+	b := make([]byte, 24)
+	if _, err = rand.Read(b); err != nil {
+		return "", "", "", fmt.Errorf("rand: %w", err)
+	}
+	plain = "tgp_" + hex.EncodeToString(b)
+	prefix = plain[:12] + "…"
+	return plain, prefix, HashAPIKey(plain), nil
+}

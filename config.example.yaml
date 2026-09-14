@@ -42,6 +42,11 @@ gateway:
   disable_key_codes: [401,403] # 命中 → 禁用该 Key + 换渠道（Key 失效类错误，可在 Key 池管理手动恢复）
   retry_channel_codes: [5xx]   # 命中 → 熔断计数 + 跳过该渠道全部 Key（渠道级故障换 Key 无意义）
                                # 分类优先级：换 Key > 禁 Key > 换渠道；均未命中的 4xx 直接透传客户端
+  # ---- 运维自主化（ENV 均可覆盖，TG_ 前缀）----
+  channel_test_interval: 0m     # 定时渠道体检：周期探活启用中的渠道（建议 30m）；0=关闭。
+                                # 连续失败达阈值自动禁用（写系统标记，恢复后可被自动探测拉起）+ 邮件告警
+                                # ——低流量哑渠道的故障不再依赖业务流量触发熔断才被发现
+  channel_probe_fail_threshold: 3  # 体检连续失败多少次自动禁用渠道
 
 redis:                     # Key 冷却/并发闸门/缓存 的全局协调；addr 留空 = 进程内存（单机部署零依赖）
   addr: ""                 # 如 redis:6379；ENV: TG_REDIS_ADDR

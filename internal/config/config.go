@@ -70,6 +70,9 @@ type Gateway struct {
 	RetryKeyCodes       []string  `yaml:"retry_key_codes"`        // 命中即冷却 Key 并同渠道换下一把；支持 429/5xx/500-504 写法
 	DisableKeyCodes     []string  `yaml:"disable_key_codes"`      // 命中即禁用 Key 并换渠道（Key 失效类错误）
 	RetryChannelCodes   []string  `yaml:"retry_channel_codes"`    // 命中即熔断计数并跳过该渠道（渠道级故障）
+	// ---- 运维自主化 ----
+	ChannelTestInterval     Duration `yaml:"channel_test_interval"`     // 定时渠道体检间隔；0=关闭（建议 30m，低流量渠道故障不再依赖业务流量暴露）
+	ChannelProbeFailThreshold int    `yaml:"channel_probe_fail_threshold"` // 体检连续失败多少次自动禁用渠道；默认 3
 }
 
 // Redis 协调器（key 冷却/并发闸门/缓存 全局共享）；addr 为空 = 全部回退进程内存（单机/无依赖部署）
@@ -135,6 +138,8 @@ func defaultConfig() *Config {
 			RetryKeyCodes:      []string{"429"},
 			DisableKeyCodes:    []string{"401", "403"},
 			RetryChannelCodes:  []string{"5xx"},
+			ChannelTestInterval:        Duration{0},
+			ChannelProbeFailThreshold:  3,
 		},
 		Log:         Log{Level: "info"},
 		Billing:     Billing{Timezone: "Asia/Shanghai"},
@@ -225,6 +230,8 @@ func applyEnv(cfg *Config) {
 	setStr("TG_KEY_COOLDOWN_SCOPE", &cfg.Gateway.KeyCooldownScope)
 	setInt("TG_MAX_CANDIDATES", &cfg.Gateway.MaxCandidates)
 	setDuration("TG_AUTO_PROBE_INTERVAL", &cfg.Gateway.AutoProbeInterval)
+	setDuration("TG_CHANNEL_TEST_INTERVAL", &cfg.Gateway.ChannelTestInterval)
+	setInt("TG_CHANNEL_PROBE_FAIL_THRESHOLD", &cfg.Gateway.ChannelProbeFailThreshold)
 	setStrList := func(key string, dst *[]string) {
 		if v := os.Getenv(key); v != "" {
 			*dst = strings.Split(v, ",")

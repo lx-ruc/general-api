@@ -13,8 +13,8 @@ import (
 // 迁移表顺序（满足外键依赖）
 var migrateTables = []string{
 	"orgs", "users", "channels", "channel_keys", "models", "channel_abilities",
-	"user_model_grants", "cost_centers", "api_keys", "usage_logs", "quota_grants",
-	"quota_requests", "period_balances", "vendor_bills", "settings",
+	"user_model_grants", "cost_centers", "api_keys", "access_tokens", "usage_logs",
+	"quota_grants", "quota_requests", "period_balances", "vendor_bills", "settings",
 }
 
 // MigrateFromSQLite 把一个 SQLite 库的全部业务数据搬到当前库（通常为 postgres）。

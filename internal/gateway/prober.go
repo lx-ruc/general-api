@@ -32,6 +32,89 @@ func AutoProbeLoop(interval time.Duration, h *Handler) {
 	}
 }
 
+// ---- 定时渠道体检（健康侧信号源）----
+// 与自动恢复（拉起禁用渠道）互补：体检对【启用中】的渠道周期发探活请求，
+// 连续 failThreshold 次失败自动置 status=0 并写 auto_disabled_at——交给
+// AutoProbeLoop 在上游恢复后自动拉起，形成「发现 → 自愈」闭环。
+// 低流量渠道的故障不再依赖业务流量触发熔断才被发现（哑渠道静默留存问题）。
+
+// ChannelTestLoop 定时体检入口；间隔<=0 不启动。多实例各节点独立体检（幂等，重复探活无害）。
+// failures 为跨轮连续失败计数（本节点内存持有）。
+func ChannelTestLoop(interval time.Duration, failThreshold int, h *Handler) {
+	if interval <= 0 {
+		return
+	}
+	if failThreshold <= 0 {
+		failThreshold = 3
+	}
+	slog.Info("定时渠道体检已启用", "interval", interval.String(), "fail_threshold", failThreshold)
+	failures := map[int64]int{}
+	for {
+		time.Sleep(interval)
+		if n, err := ChannelTestOnce(h, failThreshold, failures); err != nil {
+			slog.Warn("定时渠道体检执行失败", "err", err)
+		} else if n > 0 {
+			slog.Warn("定时渠道体检：本轮自动禁用渠道数", "disabled", n)
+		}
+	}
+}
+
+// ChannelTestOnce 体检一轮全部启用渠道，返回本轮自动禁用的渠道数
+func ChannelTestOnce(h *Handler, failThreshold int, failures map[int64]int) (int, error) {
+	if failThreshold <= 0 {
+		failThreshold = 3
+	}
+	var chans []model.Channel
+	if err := h.DB.Where("status = 1").Find(&chans).Error; err != nil {
+		return 0, err
+	}
+	disabled := 0
+	for _, ch := range chans {
+		ok, _, errStr := probeChannel(h, ch.ID)
+		now := time.Now().Unix()
+		if h.Metrics != nil {
+			if ok {
+				h.Metrics.ChannelProbeResult.With("ok").Inc()
+			} else {
+				h.Metrics.ChannelProbeResult.With("fail").Inc()
+			}
+		}
+		if ok {
+			delete(failures, ch.ID) // 成功一次即清零连续失败计数
+			_ = h.DB.Exec("UPDATE channels SET last_test_at = ?, last_test_ok = 1, updated_at = ? WHERE id = ?",
+				now, now, ch.ID).Error
+			continue
+		}
+		failures[ch.ID]++
+		_ = h.DB.Exec("UPDATE channels SET last_test_at = ?, last_test_ok = 0, updated_at = ? WHERE id = ?",
+			now, now, ch.ID).Error
+		if failures[ch.ID] < failThreshold {
+			slog.Warn("定时渠道体检失败", "channel_id", ch.ID, "channel", ch.Name,
+				"consecutive", failures[ch.ID], "threshold", failThreshold, "err", truncateStr(errStr, 200))
+			continue
+		}
+		// 达阈值：自动禁用并写系统标记（AutoProbeLoop 探测恢复）+ 邮件告警
+		res := h.DB.Exec(`UPDATE channels
+			SET status = 0, auto_disabled_at = ?, remark = ?, updated_at = ?
+			WHERE id = ? AND status = 1`, now,
+			fmt.Sprintf("定时体检：连续 %d 次探活失败（%s），已自动禁用；恢复后将自动探测拉起",
+				failThreshold, truncateStr(errStr, 100)),
+			now, ch.ID)
+		if res.Error != nil || res.RowsAffected == 0 {
+			continue
+		}
+		disabled++
+		delete(failures, ch.ID)
+		slog.Warn("定时体检达阈值，渠道已自动禁用", "channel_id", ch.ID, "channel", ch.Name,
+			"err", truncateStr(errStr, 200))
+		service.NotifyPlatformAdmins(h.DB,
+			fmt.Sprintf("渠道「%s」体检连续失败已自动禁用", ch.Name),
+			fmt.Sprintf("启用中的渠道「%s」（#%d）连续 %d 次定时体检失败：%s\n渠道已自动禁用，探测成功后将自动恢复；也可到管理台手动处理。\n时间：%s\n—— token 中转站",
+				ch.Name, ch.ID, failThreshold, truncateStr(errStr, 300), time.Now().Format("2006-01-02 15:04:05")))
+	}
+	return disabled, nil
+}
+
 // AutoProbeOnce 探测一轮：所有"系统熔断禁用"（status=0 且 auto_disabled_at>0）的渠道；
 // 返回本轮成功恢复的渠道数。探测逻辑与平台管理台的渠道测试一致（Key 选择、请求体）。
 func AutoProbeOnce(h *Handler) (int, error) {

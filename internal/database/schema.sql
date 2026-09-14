@@ -261,3 +261,17 @@ CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS access_tokens (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id     INTEGER NOT NULL,
+  name        TEXT    NOT NULL DEFAULT '',
+  token_hash  TEXT    NOT NULL UNIQUE,
+  prefix      TEXT    NOT NULL DEFAULT '',
+  status      INTEGER NOT NULL DEFAULT 1,
+  expires_at  INTEGER NOT NULL DEFAULT 0,
+  last_used_at INTEGER NOT NULL DEFAULT 0,
+  created_at  INTEGER NOT NULL DEFAULT 0,
+  updated_at  INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_access_tokens_user ON access_tokens(user_id);

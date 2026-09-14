@@ -1,10 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '../stores/auth'
-import { roleNames } from '../utils/format'
-import { apiChangePassword } from '../api/auth'
+import { fmtTime, roleNames } from '../utils/format'
+import {
+  apiChangePassword,
+  apiCreateAccessToken,
+  apiListAccessTokens,
+  apiRevokeAccessToken,
+  type AccessToken,
+} from '../api/auth'
 import { apiOrgRequests } from '../api/org'
 import PlaygroundDialog from '../components/PlaygroundDialog.vue'
 
@@ -101,6 +107,53 @@ async function submitPassword() {
   pwdForm.value = { old_password: '', new_password: '', confirm: '' }
   ElMessageBox.alert('密码已修改', '成功')
 }
+
+// 访问令牌（仅平台/客户管理员）：程序化对接管理 API 用，权限与登录账号一致
+const isAdmin = computed(() =>
+  auth.user?.role === 'platform_admin' || auth.user?.role === 'org_admin')
+const tokenVisible = ref(false)
+const tokens = ref<AccessToken[]>([])
+const tokenForm = ref({ name: '', expires_days: 0 })
+const freshToken = ref('') // 新建令牌明文，仅显示一次
+
+async function openTokens() {
+  tokenVisible.value = true
+  freshToken.value = ''
+  await loadTokens()
+}
+
+async function loadTokens() {
+  try {
+    tokens.value = await apiListAccessTokens()
+  } catch { /* 拉取失败提示由拦截器统一处理 */ }
+}
+
+async function createToken() {
+  if (!tokenForm.value.name.trim()) return
+  const r = await apiCreateAccessToken(tokenForm.value.name.trim(), tokenForm.value.expires_days)
+  freshToken.value = r.token
+  tokenForm.value = { name: '', expires_days: 0 }
+  await loadTokens()
+}
+
+async function copyFreshToken() {
+  try {
+    await navigator.clipboard.writeText(freshToken.value)
+    ElMessage.success('已复制')
+  } catch {
+    ElMessage.warning('复制失败，请手动选择复制')
+  }
+}
+
+async function revokeToken(row: AccessToken) {
+  try {
+    await ElMessageBox.confirm(
+      `确定吊销「${row.name}」？吊销后立即失效，不可恢复。`, '吊销令牌', { type: 'warning' })
+  } catch { return }
+  await apiRevokeAccessToken(row.id)
+  ElMessage.success('已吊销')
+  await loadTokens()
+}
 </script>
 
 <template>
@@ -166,6 +219,7 @@ async function submitPassword() {
           <template #dropdown>
             <el-dropdown-menu>
               <el-dropdown-item @click="pwdVisible = true">修改密码</el-dropdown-item>
+              <el-dropdown-item v-if="isAdmin" @click="openTokens">访问令牌</el-dropdown-item>
               <el-dropdown-item divided @click="handleLogout">退出登录</el-dropdown-item>
             </el-dropdown-menu>
           </template>
@@ -195,6 +249,47 @@ async function submitPassword() {
       <el-button @click="pwdVisible = false">取消</el-button>
       <el-button type="primary" @click="submitPassword">确定</el-button>
     </template>
+  </el-dialog>
+
+  <!-- 访问令牌：程序化对接管理 API（权限 = 登录账号） -->
+  <el-dialog v-model="tokenVisible" title="访问令牌" width="680px">
+    <el-alert v-if="freshToken" type="warning" :closable="false" class="fresh-token">
+      <p>令牌明文仅此一次显示，请立即复制保存：</p>
+      <div class="fresh-row">
+        <code class="fresh-code">{{ freshToken }}</code>
+        <el-button size="small" type="primary" @click="copyFreshToken">复制</el-button>
+      </div>
+    </el-alert>
+
+    <div class="token-create">
+      <el-input v-model="tokenForm.name" placeholder="备注名（如：CI 集成）" maxlength="64" style="width: 220px" />
+      <el-input-number v-model="tokenForm.expires_days" :min="0" :step="30" controls-position="right" style="width: 130px" />
+      <span class="hint">天（0 = 永不过期）</span>
+      <el-button type="primary" :disabled="!tokenForm.name.trim()" @click="createToken">新建令牌</el-button>
+    </div>
+
+    <el-table :data="tokens" size="small">
+      <el-table-column prop="name" label="名称" min-width="120" />
+      <el-table-column prop="prefix" label="前缀" width="130" />
+      <el-table-column label="状态" width="80">
+        <template #default="{ row }">
+          <el-tag :type="row.status === 1 ? 'success' : 'info'" size="small">
+            {{ row.status === 1 ? '有效' : '已吊销' }}
+          </el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="最近使用" width="150">
+        <template #default="{ row }">{{ fmtTime(row.last_used_at || null) }}</template>
+      </el-table-column>
+      <el-table-column label="过期时间" width="150">
+        <template #default="{ row }">{{ row.expires_at ? fmtTime(row.expires_at) : '永不' }}</template>
+      </el-table-column>
+      <el-table-column label="操作" width="80">
+        <template #default="{ row }">
+          <el-button v-if="row.status === 1" link type="danger" size="small" @click="revokeToken(row)">吊销</el-button>
+        </template>
+      </el-table-column>
+    </el-table>
   </el-dialog>
 
   <!-- 在线体验：选模型流式试聊 -->
@@ -326,4 +421,20 @@ async function submitPassword() {
   flex: 1; overflow-y: auto; padding: 20px 24px 32px;
   background: var(--tg-paper);
 }
+
+/* ---------- 访问令牌 ---------- */
+.fresh-token { margin-bottom: 14px; }
+.fresh-token p { margin: 0 0 8px; font-size: 12.5px; }
+.fresh-row { display: flex; align-items: center; gap: 8px; }
+.fresh-code {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 12px; padding: 4px 8px; border-radius: 4px;
+  background: var(--tg-paper); border: 1px solid var(--tg-line);
+  word-break: break-all;
+}
+.token-create {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 14px; flex-wrap: wrap;
+}
+.token-create .hint { font-size: 12px; color: var(--tg-muted); }
 </style>

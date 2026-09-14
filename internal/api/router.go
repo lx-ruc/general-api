@@ -71,6 +71,8 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 	gw := gateway.NewHandler(db, cipher, cfg, keyLimiter, m, coordinator)
 	// 熔断渠道自动恢复：定期探测系统禁用的渠道，成功即自动启用（人工禁用不探测）
 	go gateway.AutoProbeLoop(cfg.Gateway.AutoProbeInterval.Duration, gw)
+	// 定时渠道体检：周期探活启用中的渠道，连续失败自动禁用（低流量哑渠道故障主动发现）
+	go gateway.ChannelTestLoop(cfg.Gateway.ChannelTestInterval.Duration, cfg.Gateway.ChannelProbeFailThreshold, gw)
 	v1 := r.Group("/v1", middleware.APIKeyAuth(db))
 	{
 		v1.POST("/chat/completions", gw.ChatCompletions)
@@ -86,6 +88,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 	go service.RunBalanceSnapshotter(db, cfg.Billing.Timezone)
 	verif := service.NewVerification(db, &cfg.Smtp)
 	authH := &AuthHandler{DB: db, Secret: cfg.Security.JWTSecret, TTL: cfg.Security.JWTTTL.Duration, Verif: verif}
+	tokenH := &AccessTokenHandler{DB: db}
 	loginLimiter := middleware.NewRateLimiter(5, 5)
 	codeLimiter := middleware.NewRateLimiter(3, 3)
 	apiGrp := r.Group("/api")
@@ -103,6 +106,13 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 	{
 		authed.GET("/me", authH.Me)
 		authed.PUT("/me/password", authH.ChangePassword)
+		// 管理面访问令牌：仅平台/客户管理员（程序化对接管理 API 用）
+		tk := authed.Group("/me/tokens", middleware.RequireRole(model.RolePlatformAdmin, model.RoleOrgAdmin))
+		{
+			tk.GET("", tokenH.List)
+			tk.POST("", tokenH.Create)
+			tk.DELETE("/:id", tokenH.Revoke)
+		}
 	}
 
 	// 在线体验（三角色通用）：注入合成身份复用数据面编排，JWT 保证身份

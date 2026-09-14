@@ -1,8 +1,10 @@
 package middleware
 
 import (
+	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -16,8 +18,11 @@ const (
 	ctxOrgID = "jwt_org_id"
 )
 
-// JWTAuth 解析管理台 Bearer token，并回库校验账号状态与角色
-// （JWT 本身无状态，不回库则禁用/删除账号后存量 token 在 TTL 内仍有效，违反"状态即时生效"）
+// JWTAuth 管理面鉴权（双轨）：
+//   - 网页登录 JWT：无状态解析 + 回库校验账号状态与角色
+//     （不回库则禁用/删除账号后存量 token 在 TTL 内仍有效，违反"状态即时生效"）
+//   - 访问令牌 tgp_ 前缀：SHA-256 查表载入属主 → 走完全相同的 RBAC / org 隔离链路，
+//     吊销（status=0）/过期即时 401；权限 = 属主用户权限
 func JWTAuth(secret string, db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tokenStr := bearerToken(c)
@@ -25,20 +30,33 @@ func JWTAuth(secret string, db *gorm.DB) gin.HandlerFunc {
 			abortUnauthorized(c, "missing authorization token")
 			return
 		}
-		claims, err := auth.ParseToken(secret, tokenStr)
-		if err != nil {
-			abortUnauthorized(c, "invalid or expired token")
-			return
+		var uid int64
+		var jwtOrgID *int64
+		if strings.HasPrefix(tokenStr, "tgp_") {
+			u, err := authByAccessToken(db, tokenStr)
+			if err != nil {
+				abortUnauthorized(c, err.Error())
+				return
+			}
+			uid = u
+		} else {
+			claims, err := auth.ParseToken(secret, tokenStr)
+			if err != nil {
+				abortUnauthorized(c, "invalid or expired token")
+				return
+			}
+			uid, jwtOrgID = claims.UID, claims.OrgID
 		}
 		var row struct {
 			Status   int
 			Role     string
+			OrgID    *int64
 			OrgState *int // LEFT JOIN：系统管理员无组织为 NULL
 		}
 		if err := db.Raw(`
-			SELECT u.status, u.role, o.status AS org_state
+			SELECT u.status, u.role, u.org_id, o.status AS org_state
 			FROM users u LEFT JOIN orgs o ON o.id = u.org_id
-			WHERE u.id = ?`, claims.UID).Scan(&row).Error; err != nil || row.Role == "" {
+			WHERE u.id = ?`, uid).Scan(&row).Error; err != nil || row.Role == "" {
 			abortUnauthorized(c, "account not found or deleted")
 			return
 		}
@@ -51,11 +69,37 @@ func JWTAuth(secret string, db *gorm.DB) gin.HandlerFunc {
 			abortUnauthorized(c, "organization is disabled")
 			return
 		}
-		c.Set(ctxUID, claims.UID)
+		c.Set(ctxUID, uid)
 		c.Set(ctxRole, row.Role) // 以库内角色为准，角色变更即时生效
-		c.Set(ctxOrgID, claims.OrgID)
+		// org 归属：令牌轨取库内值（账号调动即时生效）；JWT 轨沿用签发时值（兼容既有语义）
+		if jwtOrgID != nil {
+			c.Set(ctxOrgID, jwtOrgID)
+		} else if row.OrgID != nil && *row.OrgID != 0 {
+			c.Set(ctxOrgID, row.OrgID)
+		}
 		c.Next()
 	}
+}
+
+// authByAccessToken 访问令牌查表：SHA-256 命中、未吊销、未过期 → 属主 uid；
+// last_used_at 节流更新（>60s 才写，避免高频调用写放大）
+func authByAccessToken(db *gorm.DB, token string) (int64, error) {
+	var row struct {
+		ID        int64
+		UserID    int64
+		ExpiresAt int64
+	}
+	if err := db.Raw(`SELECT id, user_id, expires_at FROM access_tokens
+		WHERE token_hash = ? AND status = 1`, auth.HashAPIKey(token)).Scan(&row).Error; err != nil || row.ID == 0 {
+		return 0, errors.New("invalid access token")
+	}
+	if row.ExpiresAt > 0 && row.ExpiresAt < time.Now().Unix() {
+		return 0, errors.New("access token expired")
+	}
+	go db.Exec(`UPDATE access_tokens SET last_used_at = ?
+		WHERE id = ? AND (last_used_at = 0 OR last_used_at < ?)`,
+		time.Now().Unix(), row.ID, time.Now().Unix()-60)
+	return row.UserID, nil
 }
 
 func bearerToken(c *gin.Context) string {

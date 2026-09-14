@@ -95,6 +95,8 @@ type Metrics struct {
 	AlertTriggers *counterVec
 	// 预算告警检查被 60s 节流跳过的次数
 	AlertThrottled Counter
+	// 定时渠道体检结果（result=ok/fail）
+	ChannelProbeResult *counterVec
 }
 
 func New() *Metrics {
@@ -105,6 +107,7 @@ func New() *Metrics {
 		QueueWait: NewHistogram("tg_gateway_queue_wait_seconds", "渠道闸门排队等待时长（秒）",
 			[]float64{0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10}),
 		AlertTriggers: &counterVec{name: "tg_alert_triggers_total", help: "预算告警档位触发次数（按主体）"},
+		ChannelProbeResult: &counterVec{name: "tg_channel_probe_result_total", help: "定时渠道体检结果（ok/fail）"},
 	}
 }
 
@@ -129,6 +132,7 @@ func (m *Metrics) Handler() http.HandlerFunc {
 		writeSimple(&b, "tg_gateway_cache_hits_total", "精确缓存命中次数", "counter", fmt.Sprint(m.CacheHits.Value()))
 		writeSimple(&b, "tg_coord_redis_errors_total", "协调器 Redis 故障次数（fail-open）", "counter", fmt.Sprint(m.CoordRedisErrors.Value()))
 		writeVec(&b, m.AlertTriggers, "subject")
+		writeVec(&b, m.ChannelProbeResult, "result")
 		writeSimple(&b, "tg_alert_throttled_total", "预算告警检查被节流跳过次数（60s/主体）", "counter", fmt.Sprint(m.AlertThrottled.Value()))
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		_, _ = w.Write([]byte(b.String()))
