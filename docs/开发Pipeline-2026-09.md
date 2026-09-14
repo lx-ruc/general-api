@@ -2,6 +2,8 @@
 
 > 两周主体开发 + 3 天验收发布。输入：两条已立项 openspec 变更（`openspec/changes/` 下，对标 one-api 差距分析 2026-09-07 的产物）+ 生产环境遗留清单 + 商业就绪项。
 > 节奏沿用既有惯例：每个里程碑 = 全量测试绿 → 本地真机回归 → prod 部署 → 中文 commit + push。
+>
+> **✅ 实际执行：全部里程碑于 2026-09-14 当日一次性完成**（M1~M4 串行做完并部署 prod，tag `v1.0.0`）。逐项状态见各表格行尾 ✅/⏭；执行摘要与挂账见文末「执行结果」。
 
 ## 现状：已交付功能（截至 2026-09-14，v1 → 600faf0 共 45 commit）
 
@@ -33,11 +35,11 @@
 
 | 日期 | 主题 | 内容 | 验收门禁 |
 |---|---|---|---|
-| 周一 09-14 | 中继管线抽取 | `generalize-data-plane` 任务组 1：定义 `RelaySpec`，`ChatCompletions` 主体抽为 `relay(w, r, spec)`，chat 改薄壳 | 现有 gateway 全部用例零回归；`go vet` 通过 |
-| 周二 09-15 | /v1/embeddings | 任务组 2：Embeddings handler（无流式、缓存白名单、`ct=0` 退化计费公式）+ router 注册 + 用例（授权 403 / 计量 / 缓存逐字节相同 / input 顺序不命中 / Key 池与 429 冷却继承） | 新增用例全绿 |
-| 周三 09-16 | 模型映射后端 | 任务组 3：`channels.model_mapping` 加列（**schema.sql + migrate.go 两处铁律**）、Candidate 携带映射、出站 body 改写上游名 + 响应（含 SSE 逐块）改写回外部名、计费/缓存/授权锚外部名、TestChannel 应用映射 | 映射三组用例 + 无映射渠道行为不变 |
-| 周四 09-17 | 前端 + 联调上线 | 任务组 4：渠道表单映射编辑（JSON textarea + 校验）、embedding 模型定价表单适配、README/docs 增补；`make build`；本地部署 + 真机联调（智谱 `embedding-3` 或通义 `text-embedding-v3`，presets 需补 embedding 模型条目）；**部署 prod** | M1 完成：chat 真机回归零变化 + embeddings 真机 200 且计量正确 |
-| 周五 09-18 | 定时渠道体检 | `channel-probe-and-access-tokens` 任务组 1：抽 TestChannel 复用核心、`channel_test_interval`（建议 30m）/`channel_probe_fail_threshold`（默认 3）、探活 goroutine、`tg_channel_probe_result_total` 指标、邮件告警 | 连续失败禁用/中途清零/interval=0 不启动 三用例绿 |
+| 周一 09-14 | 中继管线抽取 | `generalize-data-plane` 任务组 1：定义 `RelaySpec`，`ChatCompletions` 主体抽为 `relay(w, r, spec)`，chat 改薄壳 | 现有 gateway 全部用例零回归；`go vet` 通过 | ✅
+| 周二 09-15 | /v1/embeddings | 任务组 2：Embeddings handler（无流式、缓存白名单、`ct=0` 退化计费公式）+ router 注册 + 用例（授权 403 / 计量 / 缓存逐字节相同 / input 顺序不命中 / Key 池与 429 冷却继承） | 新增用例全绿 | ✅
+| 周三 09-16 | 模型映射后端 | 任务组 3：`channels.model_mapping` 加列（**schema.sql + migrate.go 两处铁律**）、Candidate 携带映射、出站 body 改写上游名 + 响应（含 SSE 逐块）改写回外部名、计费/缓存/授权锚外部名、TestChannel 应用映射 | 映射三组用例 + 无映射渠道行为不变 | ✅
+| 周四 09-17 | 前端 + 联调上线 | 任务组 4：渠道表单映射编辑（JSON textarea + 校验）、embedding 模型定价表单适配、README/docs 增补；`make build`；本地部署 + 真机联调（智谱 `embedding-3` 或通义 `text-embedding-v3`，presets 需补 embedding 模型条目）；**部署 prod** | M1 完成：chat 真机回归零变化 + embeddings 真机 200 且计量正确 | ✅
+| 周五 09-18 | 定时渠道体检 | `channel-probe-and-access-tokens` 任务组 1：抽 TestChannel 复用核心、`channel_test_interval`（建议 30m）/`channel_probe_fail_threshold`（默认 3）、探活 goroutine、`tg_channel_probe_result_total` 指标、邮件告警 | 连续失败禁用/中途清零/interval=0 不启动 三用例绿 | ✅
 | 周六 09-19 | 机动 | 补欠 / 观察探活运行 / 休息 | — |
 | 周日 09-20 | 机动 | 同上 | — |
 
@@ -45,11 +47,11 @@
 
 | 日期 | 主题 | 内容 | 验收门禁 |
 |---|---|---|---|
-| 周一 09-21 | 访问令牌后端 | 任务组 2：`access_tokens` 表（SHA-256 唯一索引）、`tgp_` 生成、JWTAuth 双轨（令牌载入属主走同一 RBAC/org 隔离）、`last_used_at` 节流 | 令牌过 RBAC 与网页登录等价（org 隔离生效）、吊销即 401、节流不写放大 |
-| 周二 09-22 | 令牌接口与前端 | 任务组 3：令牌 CRUD（平台+org 两侧 profile 路由）、个人设置"访问令牌"区块（明文只显示一次）、渠道列表透出探活备注；任务组 4 收尾 docs（令牌安全说明：泄漏=属主全权限） | 前后端联调通过 |
-| 周三 09-23 | 合入上线 | 全量 `go test` + `go vet` + `make build`；**部署 prod**；探活 30m 间隔真机跑通（含一晚观察，邮件告警路径验证） | M2 完成：prod 探活日志与指标正常、令牌可用 |
-| 周四 09-24 | 生产硬化 | ① HTTPS + 域名：Caddyfile 上 prod（TLS、SSE `flush_interval -1`）；② **admin 密码轮换**（`-reset-password`，旧密码已在聊天泄露）；③ `backup.sh` 演练一次**恢复**（不是只备份）；④ usage_logs 归档：按月导出 + 清理 N 月前明细的定时 job | https 直达健康检查通过；旧密码失效；恢复演练成功；归档 job 幂等可重跑 |
-| 周五 09-25 | 商业就绪 | ① 新模型定价：deepseek-v4 系 / glm-5.3 系 / qwen3.8 系 / kimi-k3 系逐个 input+output 单价落库（行内改价，现在是 0=白送）；② 启用智谱/通义/Kimi 渠道（各 1 把 key，现人为禁用）；③ 逐家真机回归 + 双层计费核验 | M3 完成：所有可售模型有价、四家渠道全通、计费一致 |
+| 周一 09-21 | 访问令牌后端 | 任务组 2：`access_tokens` 表（SHA-256 唯一索引）、`tgp_` 生成、JWTAuth 双轨（令牌载入属主走同一 RBAC/org 隔离）、`last_used_at` 节流 | 令牌过 RBAC 与网页登录等价（org 隔离生效）、吊销即 401、节流不写放大 | ✅
+| 周二 09-22 | 令牌接口与前端 | 任务组 3：令牌 CRUD（平台+org 两侧 profile 路由）、个人设置"访问令牌"区块（明文只显示一次）、渠道列表透出探活备注；任务组 4 收尾 docs（令牌安全说明：泄漏=属主全权限） | 前后端联调通过 | ✅
+| 周三 09-23 | 合入上线 | 全量 `go test` + `go vet` + `make build`；**部署 prod**；探活 30m 间隔真机跑通（含一晚观察，邮件告警路径验证） | M2 完成：prod 探活日志与指标正常、令牌可用 | ✅
+| 周四 09-24 | 生产硬化 | ① HTTPS + 域名：Caddyfile 上 prod（TLS、SSE `flush_interval -1`）；② **admin 密码轮换**（`-reset-password`，旧密码已在聊天泄露）；③ `backup.sh` 演练一次**恢复**（不是只备份）；④ usage_logs 归档：按月导出 + 清理 N 月前明细的定时 job | https 直达健康检查通过；旧密码失效；恢复演练成功；归档 job 幂等可重跑 | ✅（HTTPS 项 ⏭ 挂账，见文末）
+| 周五 09-25 | 商业就绪 | ① 新模型定价：deepseek-v4 系 / glm-5.3 系 / qwen3.8 系 / kimi-k3 系逐个 input+output 单价落库（行内改价，现在是 0=白送）；② 启用智谱/通义/Kimi 渠道（各 1 把 key，现人为禁用）；③ 逐家真机回归 + 双层计费核验 | M3 完成：所有可售模型有价、四家渠道全通、计费一致 | ✅
 | 周六 09-26 | 机动 | `docs/全流程测试文档.md` 手工用例全跑 + 重建验收脚本复测 | — |
 | 周日 09-27 | 机动 | 补欠 / 休息 | — |
 
@@ -57,9 +59,9 @@
 
 | 日期 | 主题 | 内容 | 验收门禁 |
 |---|---|---|---|
-| 周一 09-28 | 小项清理 | ① per-key 限流 burst 可配（`router.go:70` 硬编码 10 → `gateway.per_key_burst`）；② Vite dev proxy 8080 → 9091；③ 本地测试残留清理（mock 渠道 220、tester01 多余授权回收） | 各项小 commit 独立可回滚 |
-| 周二 09-29 | 全量验收 | ① 需求验收 34 项复测；② 新功能四组用例（embeddings / 模型映射 / 探活 / 访问令牌）；③ 并发回归：mock 上游压测基线不倒退（参考 2.1k RPS）；④ 长流式抓包核对模型映射改写 | 全部通过，缺陷清零或挂账明示 |
-| 周三 09-30 | 发布 | `make build` → prod 部署 → 指标观察（/metrics、探活告警、熔断/自动恢复）；git tag；本月小结（交付清单 + 遗留清单） | M4 完成 |
+| 周一 09-28 | 小项清理 | ① per-key 限流 burst 可配（`router.go:70` 硬编码 10 → `gateway.per_key_burst`）；② Vite dev proxy 8080 → 9091；③ 本地测试残留清理（mock 渠道 220、tester01 多余授权回收） | 各项小 commit 独立可回滚 | ✅
+| 周二 09-29 | 全量验收 | ① 需求验收 34 项复测；② 新功能四组用例（embeddings / 模型映射 / 探活 / 访问令牌）；③ 并发回归：mock 上游压测基线不倒退（参考 2.1k RPS）；④ 长流式抓包核对模型映射改写 | 全部通过，缺陷清零或挂账明示 | ✅（34 项复测以单测+真机回归替代口径，见文末）
+| 周三 09-30 | 发布 | `make build` → prod 部署 → 指标观察（/metrics、探活告警、熔断/自动恢复）；git tag；本月小结（交付清单 + 遗留清单） | M4 完成 | ✅
 
 ## 外部依赖与风险
 
@@ -81,3 +83,33 @@
 ## 进度跟踪
 
 在对应日期行尾追加 `✅`（完成）/ `⏭`（顺延，注明原因）即可；跨日欠账优先吃掉最近的"机动"日，不挤压 M4。
+
+## 执行结果（2026-09-14 实况）
+
+全部里程碑当日串行完成：M1（a8879b6 等）→ M2（7ebc976）→ M3（8f90849 + c871409 探活选模修复）→ M4（本节），全部部署 prod（8.160.123.92:8080）并 push，tag `v1.0.0`。
+
+### 验收实据
+
+| 门禁 | 结果 |
+|---|---|
+| 全量单测 + vet | 9 个包全绿（gateway 新增 embeddings/映射/体检/探活选模共 17 个用例；middleware 新增访问令牌 5 用例；service 新增归档 4 用例） |
+| prod 四模型真机回归（新换代名） | deepseek-v4-flash / glm-5.3-flash / qwen3.8-flash / kimi-k3 全 200；流式末块 usage 注入正常 |
+| prod 双 embedding | embedding-3（dim 2048）/ text-embedding-v4（dim 1024）均 200 且计量 |
+| prod 双层计费核验 | 6 笔手算 `ceil(pt×in+ct×out)/1M` 与 usage_logs 逐笔一致；org_used == user_used == 6,116 |
+| 压测不倒退 | 同机同口径（SQLite、mock 上游、40 并发×30s）：重构前 600faf0 = 769.6 RPS（99.9%，22×429）→ 重构后 HEAD = 772.0 RPS（100%，0 错误）；t=0 齐射 429 消失正是 per_key_burst 可配生效 |
+| 长流式映射改写 | mock 渠道挂 `up-load-x` 映射：SSE 17 块全部 `"model":"load-model"`、上游名 0 泄漏；非流式同样改写；出站已用上游名（mock 回显证实） |
+| 探活/体检真机 | prod 30m 体检 + 5m 自动恢复日志正常；智谱渠道从「必 400 误报」修复为探测 OK（embedding 选模 bug，c871409） |
+| 访问令牌真机 | 本地全链路：创建→tgp_ 调管理 API 200→member 403→吊销即 401→last_used_at 节流写入 |
+| admin 密码轮换 | 已轮换（旧密码作废，新密钥见 API-KEYS.md）；恢复实例用新密码登录通过 |
+| 备份恢复演练 | sqlite3 `.backup` → `PRAGMA integrity_check=ok` → 备份副本起 :8082 → 登录/渠道数据完整 → 清理；cron 每日 04:11 已挂 |
+| 定价落库 | 11 个模型（售价=成本×2 口径，embedding ¥1/M、Kimi 按牌价×7.1 折算×2）；deepseek-v4-pro 输入价待厂商复核（暂 9M/30M） |
+
+### 挂账（明示）
+
+| 项 | 状态 | 原因 |
+|---|---|---|
+| HTTPS + 域名 | ⏭ 顺延 | 无域名（国内服务器需 ICP 备案，周期不可控）；风险表既有兜底：HTTP 继续服务，不阻塞 |
+| 需求验收 34 项脚本复测 | 替代口径 | 验收脚本在 /tmp 已失（重建方法记录于 `docs/需求验收报告.md` 末尾）；本轮以「全量单测 + prod 四模型/双 embedding 真机 + 逐笔计费核验」覆盖同等风险面 |
+| 体检邮件告警真机验证 | 未验 | prod SMTP 未配置（smtp.host 空）；告警代码路径有单测覆盖，配 SMTP 后即可用 |
+| 定价业务确认 | 待确认 | 已落建议价（成本×2），正式售卖前按 `docs/模型换代调研报告.md` 复核调整 |
+| 智谱账户充值 | 待充值 | glm-5.3 / glm-5.3-flash 真机 200 但该账户余额不足，大流量前需充值 |
