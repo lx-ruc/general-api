@@ -35,6 +35,11 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 	r.Use(gin.Recovery(), middleware.RequestID())
 	applyTrustedProxies(r, cfg.Server.TrustedProxies)
 
+	// 存量审计脱敏补洗：旧版本落库的明文密码/上游 Key 一次性清洗（幂等，每轮启动跑一遍）
+	if n := middleware.ScrubAuditHistory(db); n > 0 {
+		slog.Info("审计日志存量脱敏补洗完成", "rows", n)
+	}
+
 	if len(cfg.Server.CORSOrigins) > 0 {
 		r.Use(cors.New(cors.Config{
 			AllowOrigins:     cfg.Server.CORSOrigins,

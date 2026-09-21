@@ -66,3 +66,28 @@ func nilIfZero(id int64) *int64 {
 	}
 	return &id
 }
+
+// ScrubAuditHistory 启动时补洗存量审计明细：旧版本落库未脱敏的密码/上游 Key
+// 用同一规则补脱敏（幂等——已脱敏的 "***" 再洗不变），返回补洗行数。
+// 审计只记管理面写操作，量级小，全量扫一遍在启动期可接受。
+func ScrubAuditHistory(db *gorm.DB) int64 {
+	type row struct {
+		ID     int64  `gorm:"column:id"`
+		Detail string `gorm:"column:detail"`
+	}
+	var rows []row
+	if err := db.Raw(`SELECT id, detail FROM audit_logs WHERE detail != ''`).Scan(&rows).Error; err != nil {
+		return 0
+	}
+	var n int64
+	for _, r := range rows {
+		masked := pwdRe.ReplaceAllString(r.Detail, `${1}"***"`)
+		if masked == r.Detail {
+			continue
+		}
+		if err := db.Exec("UPDATE audit_logs SET detail = ? WHERE id = ?", masked, r.ID).Error; err == nil {
+			n++
+		}
+	}
+	return n
+}
