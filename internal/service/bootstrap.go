@@ -9,6 +9,7 @@ import (
 
 	"token-gateway/internal/auth"
 	"token-gateway/internal/config"
+	"token-gateway/internal/database"
 	"token-gateway/internal/model"
 )
 
@@ -29,8 +30,19 @@ func ResetUserPassword(db *gorm.DB, username, newPassword string) error {
 		hash, time.Now().Unix(), username).Error
 }
 
-// BootstrapAdmin 首次启动（users 表为空）时创建系统管理员
+// bootstrapLockKey 自举管理员的 PG 咨询锁键（与 database.migrateLockKey 同源思路，键值错开）
+const bootstrapLockKey = 74274157702
+
+// BootstrapAdmin 首次启动（users 表为空）时创建系统管理员。
+// PG 多实例并发首启时两者都可能看到空表——咨询锁串行化 check-then-insert，
+// 后来者见到前者建好的管理员直接跳过（否则撞 users_username_key 唯一约束启动失败）。
 func BootstrapAdmin(db *gorm.DB, cfg *config.Config) error {
+	return database.WithAdvisoryLock(db, bootstrapLockKey, func(tx *gorm.DB) error {
+		return bootstrapAdminTx(tx, cfg)
+	})
+}
+
+func bootstrapAdminTx(db *gorm.DB, cfg *config.Config) error {
 	var cnt int64
 	if err := db.Model(&model.User{}).Count(&cnt).Error; err != nil {
 		return err
