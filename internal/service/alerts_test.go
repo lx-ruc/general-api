@@ -35,6 +35,7 @@ func newAlertTestDB(t *testing.T) (*dbFixture, *metrics.Metrics, *int64) {
 	t.Cleanup(func() { sendAlertMailFn = sendAlertMail })
 
 	alertLastCheck = sync.Map{}
+	alertRecheckPending = sync.Map{}
 	return &dbFixture{t: t, db: gdb}, m, sentinel
 }
 
@@ -371,5 +372,54 @@ func TestAlertBracketOverflow(t *testing.T) {
 	}
 	if lv := bracket(limit, limit, levels); lv != 3 {
 		t.Fatalf("100%% 应达最高档，got %d", lv)
+	}
+}
+
+// 回归：跨阈值的那次结算若被 60s 节流窗口吞掉（前一笔低水位结算刚查过），
+// 必须挂起窗口到期兜底复查——否则「突发越限后流量静默」（大批量任务跑完即停，
+// 恰是预算告警最典型的目标场景）会因 60s 内没有下一次结算而永久丢失告警。
+func TestThrottledCrossingAlertsOnDeferredRecheck(t *testing.T) {
+	f, m, sent := newAlertTestDB(t)
+	const oid = int64(9)
+	f.insertOrg(oid, 1000, 850, "[80]") // 85% 已越限，档位仍 0（此前未检查过）
+
+	// 前一笔低水位结算刚占用节流窗口
+	alertLastCheck.Store("org:9", time.Now())
+
+	type call struct {
+		d  time.Duration
+		fn func()
+	}
+	var got []call
+	alertRecheckAfter = func(d time.Duration, fn func()) *time.Timer {
+		got = append(got, call{d, fn})
+		return nil
+	}
+	t.Cleanup(func() { alertRecheckAfter = time.AfterFunc })
+
+	checkAlert(f.db, m, "org", oid) // 被节流 → 应挂起兜底复查
+	checkAlert(f.db, m, "org", oid) // 窗口内再来仍节流 → 去重，不重复挂起
+
+	if len(got) != 1 {
+		t.Fatalf("窗口内应恰好挂起 1 个兜底复查，got %d", len(got))
+	}
+	if got[0].d > alertThrottleSeconds*time.Second {
+		t.Fatalf("兜底复查应在窗口到期触发，延迟 %v", got[0].d)
+	}
+	if lv := f.orgLevel(oid); lv != 0 {
+		t.Fatalf("节流期间不应升档，got %d", lv)
+	}
+	if got := atomic.LoadInt64(sent); got != 0 {
+		t.Fatalf("节流期间不应发信，got %d", got)
+	}
+
+	// 窗口到期（把窗口起点拨回 61s 前），兜底复查补上：升档 + 发信
+	alertLastCheck.Store("org:9", time.Now().Add(-61*time.Second))
+	got[0].fn()
+	if lv := f.orgLevel(oid); lv != 1 {
+		t.Fatalf("兜底复查应把档位升到 1，got %d", lv)
+	}
+	if got := atomic.LoadInt64(sent); got != 1 {
+		t.Fatalf("兜底复查应发信一次，got %d", got)
 	}
 }

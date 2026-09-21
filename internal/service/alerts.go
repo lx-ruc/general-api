@@ -23,6 +23,12 @@ const alertThrottleSeconds = 60
 
 var alertLastCheck sync.Map // "org:1"/"user:2" → time.Time
 
+// alertRecheckPending "org:1"/"user:2" → struct{}：窗口内已挂起到期兜底复查（防重复挂起）
+var alertRecheckPending sync.Map
+
+// alertRecheckAfter 兜底复查调度器（包级可替换：测试注入捕获定时器）
+var alertRecheckAfter = time.AfterFunc
+
 // siteBaseURL 告警邮件直达链接前缀（config server.site_url；空 = 不带链接）
 var siteBaseURL string
 
@@ -54,18 +60,33 @@ func alertTable(kind string) string {
 	return "users"
 }
 
-func throttlePass(key string, m *metrics.Metrics) bool {
+// throttleWindow 60s 窗口节流；返回是否放行与窗口到期时刻（被节流时非零，
+// 供调用方挂起兜底复查——节流只该削峰减读，不能把档位越限检查整个吞掉）
+func throttleWindow(key string, m *metrics.Metrics) (bool, time.Time) {
 	now := time.Now()
 	if v, ok := alertLastCheck.Load(key); ok {
 		if t, _ := v.(time.Time); now.Sub(t) < alertThrottleSeconds*time.Second {
 			if m != nil {
 				m.AlertThrottled.Inc()
 			}
-			return false
+			return false, t.Add(alertThrottleSeconds * time.Second)
 		}
 	}
 	alertLastCheck.Store(key, now)
-	return true
+	return true, time.Time{}
+}
+
+// scheduleAlertRecheck 被节流 ≠ 不检查：突发消费跨过阈值后流量静默的场景
+// （大批量任务跑完即停——恰是最该告警的时刻），若无兜底复查，告警会随
+// 「60s 内没有下一次结算」而永久丢失。窗口到期自动补查一次；并发去重只挂一个。
+func scheduleAlertRecheck(at time.Time, db *gorm.DB, m *metrics.Metrics, kind string, id int64, key string) {
+	if _, dup := alertRecheckPending.LoadOrStore(key, struct{}{}); dup {
+		return
+	}
+	alertRecheckAfter(time.Until(at), func() {
+		alertRecheckPending.Delete(key)
+		checkAlert(db, m, kind, id)
+	})
 }
 
 // parseLevels 解析 alert_levels JSON（升序去重，剔除 ≤0；空/非法 → nil = 关）
@@ -117,7 +138,8 @@ var sendAlertMailFn = sendAlertMail
 
 func checkAlert(db *gorm.DB, m *metrics.Metrics, kind string, id int64) {
 	key := kind + ":" + fmt.Sprint(id)
-	if !throttlePass(key, m) {
+	if pass, dueAt := throttleWindow(key, m); !pass {
+		scheduleAlertRecheck(dueAt, db, m, kind, id, key)
 		return
 	}
 
