@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/bits"
 	"net"
 	"net/http"
 	"strconv"
@@ -99,13 +101,62 @@ func NewHTTPClient(firstByteTimeout time.Duration) *http.Client {
 	}
 }
 
-// CalcCost 全整数计费：cost = ceil((pt×ip + ct×op) / 1M)，向上取整避免零成本刷量
-func CalcCost(promptTokens, completionTokens, inputPrice, outputPrice int64) int64 {
-	total := promptTokens*inputPrice + completionTokens*outputPrice
-	if total <= 0 {
+// 计费域钳制：tokens 与单价均来自外部不可信输入（上游 usage / 管理台定价），
+// 负值按 0 计；tokens 封顶 1e10（真实请求的量级上限），单笔成本封顶 1e15 点
+// （=10 亿元/M token 价 × 1e10 tokens，远超真实账单；防下游 quota_used 累加回绕）。
+const (
+	maxUsageTokens = int64(10_000_000_000)
+	maxUsagePoints = int64(1_000_000_000_000_000)
+)
+
+func clampTokens(n int64) int64 {
+	if n < 0 {
 		return 0
 	}
-	return (total + 999_999) / 1_000_000
+	if n > maxUsageTokens {
+		return maxUsageTokens
+	}
+	return n
+}
+
+func clampPrice(p int64) int64 {
+	if p < 0 {
+		return 0
+	}
+	return p
+}
+
+// CalcCost 全整数计费：cost = ceil((pt×ip + ct×op) / 1M)，向上取整避免零成本刷量。
+// 输入先钳制到安全域，再以 128 位精确乘除——裸 int64 乘法在 tokens×价格上
+// 可回绕为负（免费放行）或任意值（错误计费），ceil 的 +999_999 也可回绕出负成本。
+func CalcCost(promptTokens, completionTokens, inputPrice, outputPrice int64) int64 {
+	pt, ct := clampTokens(promptTokens), clampTokens(completionTokens)
+	ip, op := clampPrice(inputPrice), clampPrice(outputPrice)
+	hi, lo := mulAdd128(pt, ip, ct, op)
+	if hi >= 1_000_000 { // 商超出 64 位，必然远超单笔天花板
+		return maxUsagePoints
+	}
+	q, r := bits.Div64(hi, lo, 1_000_000)
+	if q > uint64(maxUsagePoints) || q == uint64(maxUsagePoints) && r > 0 {
+		return maxUsagePoints
+	}
+	if r > 0 {
+		q++
+	}
+	return int64(q)
+}
+
+// mulAdd128 计算 pt×ip + ct×op 的 128 位结果（高位，低位），全程无回绕
+func mulAdd128(pt, ip, ct, op int64) (hi, lo uint64) {
+	hi1, lo1 := bits.Mul64(uint64(pt), uint64(ip))
+	hi2, lo2 := bits.Mul64(uint64(ct), uint64(op))
+	lo = lo1 + lo2
+	carry := uint64(0)
+	if lo < lo1 { // lo1+lo2 进位
+		carry = 1
+	}
+	hi = hi1 + hi2 + carry
+	return
 }
 
 func openaiError(c *gin.Context, status int, errType, msg string) {
@@ -206,7 +257,8 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		openaiError(c, http.StatusBadRequest, "invalid_request_error", "missing required parameter: model")
 		return
 	}
-	rec.ModelName = modelName
+	// 模型名是客户端可控文本：计量入库前截断，防止恶意超长名撑爆 usage_logs
+	rec.ModelName = truncateStr(modelName, 190)
 
 	// 端点必填字段（embeddings: input）
 	for _, f := range spec.require {
@@ -226,7 +278,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 	// 模型存在且启用
 	var m model.Model
 	if err := h.DB.Where("name = ?", modelName).First(&m).Error; err != nil {
-		rec.Status, rec.Error = http.StatusNotFound, "model not found: "+modelName
+		rec.Status, rec.Error = http.StatusNotFound, "model not found: "+truncateStr(modelName, 100)
 		openaiError(c, http.StatusNotFound, "invalid_request_error",
 			fmt.Sprintf("model %q does not exist or is not available", modelName))
 		return
@@ -237,7 +289,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		var cnt int64
 		if err := h.DB.Model(&model.UserModelGrant{}).
 			Where("user_id = ? AND model_name = ?", ki.UserID, modelName).Count(&cnt).Error; err != nil || cnt == 0 {
-			rec.Status, rec.Error = http.StatusForbidden, "model not allowed: "+modelName
+			rec.Status, rec.Error = http.StatusForbidden, "model not allowed: "+truncateStr(modelName, 100)
 			openaiError(c, http.StatusForbidden, "model_not_allowed",
 				fmt.Sprintf("you are not allowed to use model %q, please contact your company admin", modelName))
 			return
@@ -344,9 +396,16 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 	onlyRateLimited := true // 全部失败均因 429/排队超时 → 最终回 429 而非 502
 	authOnly := true        // 全部失败均因 401/403（Key 失效自动禁用）→ 回 503 而非 502
 	tryCandidate := func(cand Candidate) attemptResult {
-		// 渠道并发闸门（有界等待）。超时换渠道：同渠道其他 Key 面对同一个满闸门，重试无意义
+		// 渠道并发闸门（有界等待）。超时换渠道：同渠道其他 Key 面对同一个满闸门，重试无意义。
+		// 等待上限 QueueWaitTimeout：<=0 时退化为仅随客户端断开取消（不无限等）
 		qStart := time.Now()
-		release, ok := h.Coord.AcquireSlot(c.Request.Context(), cand.SlotScope(), h.MaxConcurrency)
+		qCtx := c.Request.Context()
+		if h.QueueWaitTimeout > 0 {
+			var qCancel context.CancelFunc
+			qCtx, qCancel = context.WithTimeout(qCtx, h.QueueWaitTimeout)
+			defer qCancel() // 计时器随本次尝试结束释放
+		}
+		release, ok := h.Coord.AcquireSlot(qCtx, cand.SlotScope(), h.MaxConcurrency)
 		if !ok {
 			if h.Metrics != nil {
 				h.Metrics.QueueTimeouts.Inc()
@@ -387,6 +446,11 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 
 		resp, derr := h.Client.Do(req)
 		if derr != nil {
+			if c.Request.Context().Err() != nil {
+				// 客户端已断开导致的取消：不是渠道的错，不计熔断，也不再换渠道重试
+				rec.Status, rec.Error = 499, "client disconnected"
+				return attemptDone
+			}
 			lastErr = derr.Error()
 			onlyRateLimited, authOnly = false, false
 			h.noteChannelFailure(cand)
@@ -478,6 +542,11 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		data, rerr2 := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
 		_ = resp.Body.Close()
 		if rerr2 != nil {
+			if c.Request.Context().Err() != nil {
+				// 客户端中途断开：读体失败非渠道之过，不计熔断不重试
+				rec.Status, rec.Error = 499, "client disconnected"
+				return attemptDone
+			}
 			onlyRateLimited, authOnly = false, false
 			lastErr = rerr2.Error()
 			h.noteChannelFailure(cand)
@@ -544,7 +613,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 	}
 
 	// 全部候选耗尽：按失败原因分类回错（429 限流 / 503 密钥失效 / 502 其他上游故障）
-	rec.Error = "all channels failed: " + lastErr
+	rec.Error = truncateStr("all channels failed: "+lastErr, 500)
 	switch {
 	case onlyRateLimited:
 		// 仅剩限流类失败 → 429（OpenAI SDK 对 429 有专门退避）
@@ -573,10 +642,12 @@ const (
 	attemptNextChannel                      // 跳过该渠道全部剩余 Key
 )
 
-// chatCacheFields chat 端点参与精确缓存 key 的请求字段白名单（固定顺序迭代，绝不 range map）
+// chatCacheFields chat 端点参与精确缓存 key 的请求字段白名单（固定顺序迭代，绝不 range map）。
+// 影响输出的采样/行为参数必须全部入 key，否则语义不同的请求会命中同一缓存条目
 var chatCacheFields = []string{
 	"model", "messages", "temperature", "top_p", "seed",
-	"presence_penalty", "frequency_penalty", "max_tokens", "stop",
+	"presence_penalty", "frequency_penalty", "max_tokens", "max_completion_tokens", "stop",
+	"n", "logit_bias", "logprobs", "parallel_tool_calls",
 	"response_format", "tools", "tool_choice",
 }
 
@@ -623,9 +694,18 @@ func rewriteModel(data []byte, swap [2]string) []byte {
 	if swap[0] == "" {
 		return data
 	}
-	return bytes.ReplaceAll(data,
+	return swapModelBytes(data, swap)
+}
+
+// swapModelBytes 字面量替换的两种写法都覆盖：紧凑 "model":"x" 与带空格 "model": "x"
+// （部分厂商/代理返回 pretty-print JSON）；带空格形态替换后同样保留原空格
+func swapModelBytes(data []byte, swap [2]string) []byte {
+	data = bytes.ReplaceAll(data,
 		[]byte(`"model":"`+swap[0]+`"`),
 		[]byte(`"model":"`+swap[1]+`"`))
+	return bytes.ReplaceAll(data,
+		[]byte(`"model": "`+swap[0]+`"`),
+		[]byte(`"model": "`+swap[1]+`"`))
 }
 
 // writeRetryAfter 输出 Retry-After 响应头（至少 1 秒，向上取整）
@@ -748,20 +828,21 @@ func (h *Handler) noteChannelFailure(cand Candidate) {
 	}
 }
 
-// applyUsage 把 usage 折算为成本快照（售卖价扣客户 + 成本价记厂商成本）；上游未回 usage 则标记 no_usage、不计费
+// applyUsage 把 usage 折算为成本快照（售卖价扣客户 + 成本价记厂商成本）；上游未回 usage 则标记 no_usage、不计费。
+// tokens 来自不可信的上游响应体：负值/超限一律钳制后再入库，防统计被污染与计费回绕。
 func applyUsage(rec *model.UsageLog, u *Usage, m model.Model) {
 	if u == nil {
 		rec.NoUsage = 1
 		return
 	}
-	rec.PromptTokens = u.PromptTokens
-	rec.CompletionTokens = u.CompletionTokens
+	rec.PromptTokens = clampTokens(u.PromptTokens)
+	rec.CompletionTokens = clampTokens(u.CompletionTokens)
 	rec.InputPrice = m.InputPrice
 	rec.OutputPrice = m.OutputPrice
 	rec.CostInputPrice = m.CostInputPrice
 	rec.CostOutputPrice = m.CostOutputPrice
-	rec.Cost = CalcCost(u.PromptTokens, u.CompletionTokens, m.InputPrice, m.OutputPrice)
-	rec.VendorCost = CalcCost(u.PromptTokens, u.CompletionTokens, m.CostInputPrice, m.CostOutputPrice)
+	rec.Cost = CalcCost(rec.PromptTokens, rec.CompletionTokens, m.InputPrice, m.OutputPrice)
+	rec.VendorCost = CalcCost(rec.PromptTokens, rec.CompletionTokens, m.CostInputPrice, m.CostOutputPrice)
 }
 
 func rawString(raw json.RawMessage) string {

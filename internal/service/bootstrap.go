@@ -54,5 +54,10 @@ func BootstrapAdmin(db *gorm.DB, cfg *config.Config) error {
 	}
 	slog.Info("bootstrap: platform admin created",
 		"username", admin.Username, "id", admin.ID)
+	// 默认口令弱口令告警：建号后仍未改密码是最常见的失守入口
+	if cfg.Security.BootstrapAdminPassword == "change-me" || cfg.Security.BootstrapAdminPassword == "admin123456" {
+		slog.Warn("bootstrap: 管理员仍在使用默认密码，请立即登录修改（config.yaml security.bootstrap_admin_password）",
+			"username", admin.Username)
+	}
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/bits"
 	"sort"
 	"sync"
 	"time"
@@ -84,14 +85,26 @@ func parseLevels(raw string) []int64 {
 }
 
 // bracket 已达最高档位（1..N；0=未达任何档）。全整数比较，无浮点。
+// used/limit 在额度边界可达 int64 高位，裸乘 100 会回绕成负导致档位误判：
+// 乘积比较走 128 位，恒不回绕
 func bracket(used, limit int64, levels []int64) int {
 	lv := 0
 	for i, t := range levels {
-		if used*100 >= limit*t {
+		if mulGE128(used, 100, limit, t) {
 			lv = i + 1
 		}
 	}
 	return lv
+}
+
+// mulGE128 非负整数比较 a×sa >= b×sb（128 位精确，无回绕）
+func mulGE128(a, sa, b, sb int64) bool {
+	hi1, lo1 := bits.Mul64(uint64(a), uint64(sa))
+	hi2, lo2 := bits.Mul64(uint64(b), uint64(sb))
+	if hi1 != hi2 {
+		return hi1 > hi2
+	}
+	return lo1 >= lo2
 }
 
 // checkAlert 单主体水位检查。升降档规则：

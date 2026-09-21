@@ -33,6 +33,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 	}
 	r := gin.New()
 	r.Use(gin.Recovery(), middleware.RequestID())
+	applyTrustedProxies(r, cfg.Server.TrustedProxies)
 
 	if len(cfg.Server.CORSOrigins) > 0 {
 		r.Use(cors.New(cors.Config{
@@ -93,11 +94,13 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 	// usage_logs 按月归档（billing.usage_retention_months>0 才启用；导出校验后再删，幂等）
 	go service.RunUsageArchiver(db, cfg.Billing.UsageRetentionMonths, cfg.Billing.UsageArchiveDir, cfg.Billing.Timezone)
 	verif := service.NewVerification(db, &cfg.Smtp)
-	authH := &AuthHandler{DB: db, Secret: cfg.Security.JWTSecret, TTL: cfg.Security.JWTTTL.Duration, Verif: verif}
+	authH := &AuthHandler{DB: db, Secret: cfg.Security.JWTSecret, TTL: cfg.Security.JWTTTL.Duration,
+		Verif: verif, UserLimiter: middleware.NewRateLimiter(10, 10)}
 	tokenH := &AccessTokenHandler{DB: db}
 	loginLimiter := middleware.NewRateLimiter(5, 5)
 	codeLimiter := middleware.NewRateLimiter(3, 3)
-	apiGrp := r.Group("/api")
+	// 管理面均为小 JSON（playground 亦自限 1MB），4MB 上限防无界读入
+	apiGrp := r.Group("/api", middleware.MaxBody(4<<20))
 	apiGrp.POST("/auth/login", loginLimiter.Middleware(
 		func(c *gin.Context) string { return c.ClientIP() },
 		"rate_limit_error", "尝试过于频繁，请稍后再试",
@@ -235,6 +238,21 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 }
 
 // newCoordinator 按配置构建协调器：Redis（多实例全局）优先，失败或未配置回退内存实现
+// applyTrustedProxies 设定 c.ClientIP() 解析 X-Forwarded-For 的信任来源：
+// 默认仅回环（本机反代形态）；反代在别的机器时按 server.trusted_proxies 配置网段。
+// 不设白名单 = gin 默认信任一切来源，任一客户端伪造 XFF 即可每请求换 IP，
+// 绕过登录/验证码的按 IP 限流。非法配置回退仅回环（fail-safe，不因配置错误放大信任面）。
+func applyTrustedProxies(r *gin.Engine, configured []string) {
+	proxies := configured
+	if len(proxies) == 0 {
+		proxies = []string{"127.0.0.1", "::1"}
+	}
+	if err := r.SetTrustedProxies(proxies); err != nil {
+		slog.Warn("trusted_proxies 配置非法，回退仅信任回环", "configured", proxies, "err", err)
+		_ = r.SetTrustedProxies([]string{"127.0.0.1", "::1"})
+	}
+}
+
 func newCoordinator(cfg *config.Config, m *metrics.Metrics) coord.Coordinator {
 	if cfg.Redis.Addr != "" {
 		rc, err := coord.NewRedis(coord.RedisConfig{

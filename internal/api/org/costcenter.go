@@ -10,23 +10,26 @@ import (
 	"token-gateway/internal/database"
 	"token-gateway/internal/httpx"
 	"token-gateway/internal/model"
+	"token-gateway/internal/service"
 )
 
 // 成本中心：org 内受控归集词表。词表 CRUD / key 改派 / org 报表。
 // 一切查询强制 WHERE org_id；归档不删除（历史引用保留）。
 
-// dayExpr 报表按日分桶的方言表达式（各自取服务器本地时区）
+// dayExpr 报表按日分桶的方言表达式：账期时区偏移在 Go 侧算好后在 SQL 平移，
+// 与 service/billing.go 对账单同一口径，不依赖服务器系统时区
 func dayExpr() string {
+	_, off := time.Now().In(service.BillingLoc()).Zone()
 	if database.Dialect == "postgres" {
-		return "to_char(to_timestamp(l.created_at), 'YYYY-MM-DD')"
+		return fmt.Sprintf("to_char(to_timestamp(l.created_at + %d), 'YYYY-MM-DD')", off)
 	}
-	return "date(l.created_at, 'unixepoch', 'localtime')"
+	return fmt.Sprintf("strftime('%%Y-%%m-%%d', l.created_at + %d, 'unixepoch')", off)
 }
 
-// monthStartUnix 本月零点（本地时区）
+// monthStartUnix 账期时区的本月 1 日零点
 func monthStartUnix() int64 {
-	n := time.Now()
-	return time.Date(n.Year(), n.Month(), 1, 0, 0, 0, 0, time.Local).Unix()
+	n := time.Now().In(service.BillingLoc())
+	return time.Date(n.Year(), n.Month(), 1, 0, 0, 0, 0, n.Location()).Unix()
 }
 
 // validCenter 校验中心属本 org 且启用（nil = 取消归集，放行）

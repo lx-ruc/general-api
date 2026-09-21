@@ -225,9 +225,20 @@ func (h *Handler) DeleteOrg(c *gin.Context) {
 	if !ok {
 		return
 	}
-	// 级联清理：客户 + 其全部用户 + 用户的 API key 同事务删除；
-	// usage_logs / quota_grants 为历史账单与审计流水，保留不动
+	// 级联清理：客户 + 其全部用户 + 用户的 API key 与管理面访问令牌同事务删除；
+	// usage_logs / quota_grants 为历史账单与审计流水，保留不动。
+	// 顺序注意：users.org_id 带 ON DELETE CASCADE，删 org 会先级联删光 users——
+	// 依赖 users 行的子查询必须放在删 org 之前；access_tokens 无 FK 级联，必须显式清
 	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("DELETE FROM api_keys WHERE user_id IN (SELECT id FROM users WHERE org_id = ?)", id).Error; err != nil {
+			return err
+		}
+		if err := tx.Exec("DELETE FROM access_tokens WHERE user_id IN (SELECT id FROM users WHERE org_id = ?)", id).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("org_id = ?", id).Delete(&model.User{}).Error; err != nil {
+			return err
+		}
 		res := tx.Where("id = ?", id).Delete(&model.Org{})
 		if res.Error != nil {
 			return res.Error
@@ -235,10 +246,7 @@ func (h *Handler) DeleteOrg(c *gin.Context) {
 		if res.RowsAffected == 0 {
 			return gorm.ErrRecordNotFound
 		}
-		if err := tx.Exec("DELETE FROM api_keys WHERE user_id IN (SELECT id FROM users WHERE org_id = ?)", id).Error; err != nil {
-			return err
-		}
-		return tx.Where("org_id = ?", id).Delete(&model.User{}).Error
+		return nil
 	})
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -267,6 +275,10 @@ func (h *Handler) AddOrgQuota(c *gin.Context) {
 	if err := service.AddOrgQuota(h.DB, id, req.Amount, middleware.GetUID(c), req.Remark); err != nil {
 		if err == service.ErrNotFound {
 			httpx.Fail(c, http.StatusNotFound, "客户不存在")
+			return
+		}
+		if err == service.ErrQuotaOverflow {
+			httpx.Fail(c, http.StatusBadRequest, "追加后额度超出可表示范围，请调整数值")
 			return
 		}
 		httpx.Fail(c, http.StatusInternalServerError, "追加额度失败")
@@ -1058,7 +1070,7 @@ func (h *Handler) CreateModel(c *gin.Context) {
 	if !httpx.BindJSON(c, &req) {
 		return
 	}
-	if req.InputPrice < 0 || req.OutputPrice < 0 {
+	if req.InputPrice < 0 || req.OutputPrice < 0 || req.CostInputPrice < 0 || req.CostOutputPrice < 0 {
 		httpx.Fail(c, http.StatusBadRequest, "价格不能为负")
 		return
 	}
@@ -1096,8 +1108,8 @@ func (h *Handler) UpdateModel(c *gin.Context) {
 		Vendor          string `json:"vendor"`
 		InputPrice      *int64 `json:"input_price" binding:"required,min=0"`
 		OutputPrice     *int64 `json:"output_price" binding:"required,min=0"`
-		CostInputPrice  *int64 `json:"cost_input_price"`
-		CostOutputPrice *int64 `json:"cost_output_price"`
+		CostInputPrice  *int64 `json:"cost_input_price" binding:"min=0"`
+		CostOutputPrice *int64 `json:"cost_output_price" binding:"min=0"`
 		Status          *int   `json:"status"`
 		Remark          string `json:"remark"`
 	}
@@ -1319,25 +1331,32 @@ func (h *Handler) HandleRecharge(c *gin.Context) {
 		if req.Action == "reject" {
 			newStatus = "rejected"
 		}
-		if err := tx.Exec(`UPDATE recharge_requests SET status = ?, handled_by = ?, handled_at = ?, reply = ? WHERE id = ?`,
-			newStatus, operator, now, req.Reply, id).Error; err != nil {
-			return err
+		// pending 判定并入事务内的条件更新：并发双审批（双击/双管理员）只有一个事务能改到行，杜绝双重到账
+		res := tx.Exec(`UPDATE recharge_requests SET status = ?, handled_by = ?, handled_at = ?, reply = ?
+			WHERE id = ? AND status = 'pending'`, newStatus, operator, now, req.Reply, id)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
 		}
 		if req.Action == "approve" {
-			if err := tx.Exec("UPDATE orgs SET quota_limit = quota_limit + ?, updated_at = ? WHERE id = ?",
-				r.Amount, now, r.OrgID).Error; err != nil {
-				return err
-			}
-			// 流水与加额度同事务，杜绝"额度已动、流水缺失"的审计断裂
-			return tx.Create(&model.QuotaGrant{
-				SubjectType: "org", SubjectID: r.OrgID, Amount: r.Amount,
-				Remark:     fmt.Sprintf("充值申请 #%d 到账", id),
-				OperatorID: opID(operator), CreatedAt: now,
-			}).Error
+			// 共用 AddOrgQuotaTx：锁行 + 回绕拒绝 + 流水同事务，杜绝"额度已动、流水缺失"
+			// 或天价申请把 quota_limit 加回绕成负数
+			return service.AddOrgQuotaTx(tx, r.OrgID, r.Amount, operator,
+				fmt.Sprintf("充值申请 #%d 到账", id), now)
 		}
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			httpx.Fail(c, http.StatusNotFound, "充值申请不存在或已处理")
+			return
+		}
+		if errors.Is(err, service.ErrQuotaOverflow) {
+			httpx.Fail(c, http.StatusBadRequest, "到账后额度超出可表示范围，请驳回该申请并让客户重新提交")
+			return
+		}
 		httpx.Fail(c, http.StatusInternalServerError, "审批失败")
 		return
 	}

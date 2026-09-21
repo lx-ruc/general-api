@@ -357,3 +357,19 @@ func TestAlertPanicRecovered(t *testing.T) {
 		t.Fatal("CheckBudgetAlerts 未返回")
 	}
 }
+
+// bracket 溢出防护：used*100 / limit*t 在 int64 边界不得回绕为负导致告警静默失效
+func TestAlertBracketOverflow(t *testing.T) {
+	levels := []int64{50, 80, 100}
+	const limit = int64(9_000_000_000_000_000_000) // 9e18：任何 ×100 必回绕
+	used := limit / 100 * 55                        // 55% 水位：超 50% 档未达 80%
+	if used*100 > 0 { // 验证构造确有回绕（回绕后为负）
+		t.Fatalf("用例构造失败：used*100 应回绕为负，got %d", used*100)
+	}
+	if lv := bracket(used, limit, levels); lv != 1 {
+		t.Fatalf("溢出域比较错误：期望档 1，got %d", lv)
+	}
+	if lv := bracket(limit, limit, levels); lv != 3 {
+		t.Fatalf("100%% 应达最高档，got %d", lv)
+	}
+}

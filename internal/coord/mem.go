@@ -42,12 +42,16 @@ func (m *Mem) IsCooling(scope string) bool {
 	return true
 }
 
+// SetCooldown 设置冷却；已有更长的冷却在期时只保留更长的——
+// 避免并发请求的短 429 冷却覆盖 401/403 的长效冷却（与 Redis 实现 keep-longer 语义一致）
 func (m *Mem) SetCooldown(scope string, d time.Duration) {
 	if d <= 0 {
 		return
 	}
 	m.mu.Lock()
-	m.cooldown[scope] = time.Now().Add(d)
+	if until, ok := m.cooldown[scope]; !ok || time.Now().Add(d).After(until) {
+		m.cooldown[scope] = time.Now().Add(d)
+	}
 	m.mu.Unlock()
 }
 

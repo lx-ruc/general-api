@@ -68,21 +68,38 @@ func PeriodOf(loc *time.Location, ts int64) string {
 // ---------- 月末快照 ----------
 
 // SnapshotBalances 写某账期月末的 org limit/used 快照（UPSERT，可重复补跑）。
-// period 'YYYY-MM' 语义 = 该月末时点；调用时刻的现值即近似月末值（正常由次月 00:05 cron 触达）。
+// 期末已用是时点值：当前水位扣减快照期之后发生的消耗（usage_logs.created_at 口径）——
+// 无论任务何时触发/补跑（次月 00:05、晚部署重启、手动补跑），写入的都是该账期月末的精确值，
+// 不会把新月头几分钟的结算污染进上月快照。quota_limit 无历史可回溯，取当前值（近似）。
 func SnapshotBalances(db *gorm.DB, period string) error {
+	loc := BillingLoc()
+	_, end, err := PeriodBounds(loc, period)
+	if err != nil {
+		return err
+	}
 	now := time.Now().Unix()
-	var orgs []model.Org
-	if err := db.Find(&orgs).Error; err != nil {
+	var rows []struct {
+		ID        int64
+		QuotaLimit int64
+		QuotaUsed  int64
+		EndUsed    int64 // 扣除快照期之后消耗 = 该账期期末水位
+	}
+	if err := db.Raw(`
+		SELECT o.id, o.quota_limit, o.quota_used,
+		       o.quota_used - COALESCE(SUM(l.cost), 0) AS end_used
+		FROM orgs o
+		LEFT JOIN usage_logs l ON l.org_id = o.id AND l.created_at >= ?
+		GROUP BY o.id, o.quota_limit, o.quota_used`, end).Scan(&rows).Error; err != nil {
 		return fmt.Errorf("读取客户列表失败: %w", err)
 	}
 	return db.Transaction(func(tx *gorm.DB) error {
-		for _, o := range orgs {
+		for _, o := range rows {
 			if err := tx.Exec(`INSERT INTO period_balances (org_id, period, quota_limit, quota_used, snapshot_at, created_at, updated_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?)
 				ON CONFLICT(org_id, period) DO UPDATE SET
 					quota_limit = excluded.quota_limit, quota_used = excluded.quota_used,
 					snapshot_at = excluded.snapshot_at, updated_at = excluded.updated_at`,
-				o.ID, period, o.QuotaLimit, o.QuotaUsed, now, now, now).Error; err != nil {
+				o.ID, period, o.QuotaLimit, o.EndUsed, now, now, now).Error; err != nil {
 				return err
 			}
 		}
@@ -90,35 +107,45 @@ func SnapshotBalances(db *gorm.DB, period string) error {
 	})
 }
 
-// RunBalanceSnapshotter 常驻协程：启动即补跑一次（漏跑自愈），此后每月 1 日 00:05（账期时区）快照上月。
+// snapshotPrevOnce 快照上一账期一次（幂等，可安全并发/重复调用）。
 // settings CAS（balance_snapshot_period != 当前待写期才动）保证多实例只写一次。
+func snapshotPrevOnce(db *gorm.DB, loc *time.Location) {
+	// 待写期 = 上一个自然月（其月末 ≈ 当前时刻）
+	prev := PeriodOf(loc, time.Now().AddDate(0, -1, 0).Unix())
+	// 标记行可能从未初始化（新库无任何 INSERT 该 key 的路径）：先幂等补插，
+	// 否则 CAS 的 UPDATE 恒 0 行、被当成"已写过"，快照永远不执行
+	if err := db.Exec(`INSERT INTO settings (key, value) VALUES (?, '')
+		ON CONFLICT(key) DO NOTHING`, snapshotPeriodKey).Error; err != nil {
+		slog.Warn("月末快照标记初始化失败", "period", prev, "err", err)
+		return
+	}
+	won := db.Exec(`UPDATE settings SET value = ? WHERE key = ? AND value <> ?`,
+		prev, snapshotPeriodKey, prev)
+	if won.Error != nil {
+		slog.Warn("月末快照 CAS 失败", "period", prev, "err", won.Error)
+		return
+	}
+	if won.RowsAffected == 0 { // 已写过
+		return
+	}
+	if err := SnapshotBalances(db, prev); err != nil {
+		slog.Error("月末快照写入失败", "period", prev, "err", err)
+		// 回滚标记，下次启动/下个周期重试；否则该账期被永久跳过
+		_ = db.Exec(`UPDATE settings SET value = '' WHERE key = ?`, snapshotPeriodKey).Error
+		return
+	}
+	slog.Info("月末余额快照已写入", "period", prev, "timezone", loc.String())
+}
+
+// RunBalanceSnapshotter 常驻协程：启动即补跑一次（漏跑自愈），此后每月 1 日 00:05（账期时区）快照上月。
 func RunBalanceSnapshotter(db *gorm.DB, tz string) {
 	loc := BillingLocation(tz)
-	snapshotPrev := func() {
-		// 待写期 = 上一个自然月（其月末 ≈ 当前时刻）
-		prev := PeriodOf(loc, time.Now().AddDate(0, -1, 0).Unix())
-		won := db.Exec(`UPDATE settings SET value = ? WHERE key = ? AND value <> ?`,
-			prev, snapshotPeriodKey, prev)
-		if won.Error != nil {
-			slog.Warn("月末快照 CAS 失败", "period", prev, "err", won.Error)
-			return
-		}
-		if won.RowsAffected == 0 { // 已写过
-			return
-		}
-		if err := SnapshotBalances(db, prev); err != nil {
-			slog.Error("月末快照写入失败", "period", prev, "err", err)
-			return
-		}
-		slog.Info("月末余额快照已写入", "period", prev, "timezone", loc.String())
-	}
-
-	snapshotPrev() // 启动自愈：部署后/漏跑后首次启动补上
+	snapshotPrevOnce(db, loc) // 启动自愈：部署后/漏跑后首次启动补上
 	for {
 		now := time.Now().In(loc)
 		next := time.Date(now.Year(), now.Month(), 1, 0, 5, 0, 0, loc).AddDate(0, 1, 0)
 		time.Sleep(time.Until(next))
-		snapshotPrev()
+		snapshotPrevOnce(db, loc)
 	}
 }
 

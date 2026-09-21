@@ -3,6 +3,7 @@ package api
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -16,10 +17,11 @@ import (
 )
 
 type AuthHandler struct {
-	DB     *gorm.DB
-	Secret string
-	TTL    time.Duration
-	Verif  *service.Verification
+	DB          *gorm.DB
+	Secret      string
+	TTL         time.Duration
+	Verif       *service.Verification
+	UserLimiter *middleware.RateLimiter // 按用户名维度的登录限流（防分布式换 IP 暴力猜单账号）
 }
 
 // SendCode POST /api/auth/send-code：向邮箱发送注册验证码
@@ -80,8 +82,14 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	if !httpx.BindJSON(c, &req) {
 		return
 	}
+	// 按用户名限流：IP 维度可被伪造 XFF 绕过，账号维度掐断"换 IP 猜同一账号"的暴力破解
+	if h.UserLimiter != nil && !h.UserLimiter.Allow("u:"+strings.ToLower(req.Username)) {
+		httpx.Fail(c, http.StatusTooManyRequests, "尝试过于频繁，请稍后再试")
+		return
+	}
 	var u model.User
 	if err := h.DB.Where("username = ?", req.Username).First(&u).Error; err != nil || u.ID == 0 {
+		auth.CheckPassword(auth.DummyHash, req.Password) // 等耗时哑比较，防时序探测用户名
 		httpx.Fail(c, http.StatusUnauthorized, "用户名或密码错误")
 		return
 	}
@@ -101,7 +109,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 			return
 		}
 	}
-	token, err := auth.GenerateToken(h.Secret, h.TTL, u.ID, u.Role, u.OrgID)
+	token, err := auth.GenerateToken(h.Secret, h.TTL, u.ID, u.Role, u.OrgID, auth.SessionVer(u.PasswordHash))
 	if err != nil {
 		httpx.Fail(c, http.StatusInternalServerError, "签发令牌失败")
 		return

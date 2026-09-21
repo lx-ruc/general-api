@@ -1,9 +1,11 @@
 package platform
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,7 +40,7 @@ func newPlatformEnv(t *testing.T) (*gin.Engine, *gorm.DB, string) {
 	}
 
 	const secret = "test-secret"
-	token, err := auth.GenerateToken(secret, time.Hour, 1, "platform_admin", nil)
+	token, err := auth.GenerateToken(secret, time.Hour, 1, "platform_admin", nil, "")
 	if err != nil {
 		t.Fatalf("生成 token 失败: %v", err)
 	}
@@ -172,5 +174,217 @@ func TestVendorBillDiff(t *testing.T) {
 	_ = db.Raw("SELECT COUNT(*) FROM period_balances").Scan(&cnt).Error
 	if cnt == 0 {
 		t.Fatal("补跑快照应写入 period_balances")
+	}
+}
+
+// 并发审批同一份充值申请：条件 UPDATE 必须在事务内完成 pending 判定，
+// 双击/双管理员的并发 approve 只允许到账一次（quota_limit 与 Σgrants 均不得双记）
+func TestHandleRechargeConcurrentApproveOnce(t *testing.T) {
+	engine, db, token := newPlatformEnv(t)
+	now := time.Now().Unix()
+	if err := db.Exec(`INSERT INTO orgs (id, name, quota_limit, status, created_at, updated_at)
+		VALUES (9, 'race-org', 100000, 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO recharge_requests (id, org_id, amount, status, created_at)
+		VALUES (55, 9, 777777, 'pending', ?)`, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	cipher, _ := crypto.NewCipher("")
+	h := NewHandler(db, cipher, &http.Client{}, nil)
+	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
+	g.PUT("/recharges/:id", h.HandleRecharge)
+
+	var wg sync.WaitGroup
+	codes := make([]int, 8)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodPut, "/api/platform/recharges/55", strings.NewReader(`{"action":"approve"}`))
+			req.Header.Set("Authorization", "Bearer "+token)
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			engine.ServeHTTP(w, req)
+			codes[i] = w.Code
+		}(i)
+	}
+	wg.Wait()
+
+	var limit int64
+	if err := db.Raw("SELECT quota_limit FROM orgs WHERE id = 9").Scan(&limit).Error; err != nil {
+		t.Fatal(err)
+	}
+	if limit != 100000+777777 {
+		t.Errorf("并发审批后 quota_limit = %d, want 877777（到账只能一次）", limit)
+	}
+	var grants int64
+	_ = db.Raw(`SELECT COUNT(*) FROM quota_grants WHERE subject_type='org' AND subject_id=9`).Scan(&grants).Error
+	if grants != 1 {
+		t.Errorf("流水条数 = %d, want 1", grants)
+	}
+	ok := 0
+	for _, c := range codes {
+		if c == http.StatusOK {
+			ok++
+		}
+	}
+	if ok != 1 {
+		t.Errorf("成功响应数 = %d, want 1, codes=%v", ok, codes)
+	}
+}
+
+// 删除客户必须连带清理其全部用户的管理面访问令牌（tgp_），否则令牌在账号删除后仍可调用管理 API
+func TestDeleteOrgCleansAccessTokens(t *testing.T) {
+	engine, db, token := newPlatformEnv(t)
+	now := time.Now().Unix()
+	if err := db.Exec(`INSERT INTO orgs (id, name, quota_limit, status, created_at, updated_at)
+		VALUES (7, 'doomed-co', 1000, 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO users (id, org_id, username, password_hash, role, status, created_at, updated_at)
+		VALUES (70, 7, 'boss7', 'x', 'org_admin', 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO access_tokens (user_id, name, token_hash, prefix, status, created_at, updated_at)
+		VALUES (70, 'ci', 'hash-70', 'tgp_y', 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	cipher, _ := crypto.NewCipher("")
+	h := NewHandler(db, cipher, &http.Client{}, nil)
+	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
+	g.DELETE("/orgs/:id", h.DeleteOrg)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/platform/orgs/7", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("删除应 200，got %d: %s", w.Code, w.Body.String())
+	}
+	var cnt int64
+	_ = db.Raw(`SELECT COUNT(*) FROM access_tokens WHERE user_id = 70`).Scan(&cnt).Error
+	if cnt != 0 {
+		t.Fatalf("客户删除后其用户的访问令牌应一并清理，剩 %d", cnt)
+	}
+}
+
+// 并发录入同一 (period, channel) 的厂商账单：原生 upsert 下不得撞 UNIQUE 约束回 500，
+// 全部 200 且库里恰好一行（金额为最后落库者）
+func TestUpsertVendorBillConcurrent(t *testing.T) {
+	engine, db, token := newPlatformEnv(t)
+	now := time.Now().Unix()
+	if err := db.Exec(`INSERT INTO channels (id, name, base_url, status, created_at, updated_at)
+		VALUES (3, 'race-ch', 'https://z', 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(db, nil, nil, nil)
+	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
+	g.PUT("/vendor-bills", h.UpsertVendorBill)
+
+	period := time.Now().In(service.BillingLoc()).Format("2006-01")
+	var wg sync.WaitGroup
+	codes := make([]int, 8)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			body := fmt.Sprintf(`{"period":%q,"channel_id":3,"billed_points":%d}`, period, 1000+i)
+			req := httptest.NewRequest(http.MethodPut, "/api/platform/vendor-bills", strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer "+token)
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			engine.ServeHTTP(w, req)
+			codes[i] = w.Code
+		}(i)
+	}
+	wg.Wait()
+	for i, c := range codes {
+		if c != http.StatusOK {
+			t.Fatalf("并发 upsert 应全部 200，第 %d 个得 %d", i, c)
+		}
+	}
+	var cnt int64
+	_ = db.Raw(`SELECT COUNT(*) FROM vendor_bills WHERE period = ? AND channel_id = 3`, period).Scan(&cnt).Error
+	if cnt != 1 {
+		t.Fatalf("并发 upsert 后应恰好一行，得 %d", cnt)
+	}
+	var pts int64
+	_ = db.Raw(`SELECT billed_points FROM vendor_bills WHERE period = ? AND channel_id = 3`, period).Scan(&pts).Error
+	if pts < 1000 || pts > 1007 {
+		t.Fatalf("落库金额应为并发值之一，得 %d", pts)
+	}
+}
+
+// 成本价（cost_input/output_price）与售卖价同样不允许为负
+func TestModelCostPriceRejectsNegative(t *testing.T) {
+	engine, db, token := newPlatformEnv(t)
+	h := NewHandler(db, nil, nil, nil)
+	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
+	g.POST("/models", h.CreateModel)
+	g.PUT("/models/:id", h.UpdateModel)
+
+	do := func(method, url, body string) int {
+		req := httptest.NewRequest(method, url, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+		return w.Code
+	}
+	if c := do(http.MethodPost, "/api/platform/models",
+		`{"name":"neg","input_price":1,"output_price":1,"cost_input_price":-5}`); c != http.StatusBadRequest {
+		t.Fatalf("创建时负成本价应 400，got %d", c)
+	}
+	if err := db.Exec(`INSERT INTO models (id, name, input_price, output_price, status, created_at, updated_at)
+		VALUES (1, 'm', 1, 1, 1, 0, 0)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if c := do(http.MethodPut, "/api/platform/models/1",
+		`{"input_price":1,"output_price":1,"cost_output_price":-9}`); c != http.StatusBadRequest {
+		t.Fatalf("更新时负成本价应 400，got %d", c)
+	}
+}
+
+// 天价充值审批：amount 使 quota_limit 回绕时审批整体拒绝（400），
+// 申请保持 pending、额度与流水均不动，可改走驳回
+func TestHandleRechargeOverflowRejected(t *testing.T) {
+	engine, db, token := newPlatformEnv(t)
+	now := time.Now().Unix()
+	if err := db.Exec(`INSERT INTO orgs (id, name, quota_limit, status, created_at, updated_at)
+		VALUES (11, 'ov-org', ?, 1, ?, ?)`, int64(1)<<62, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO recharge_requests (id, org_id, amount, status, created_at)
+		VALUES (77, 11, ?, 'pending', ?)`, int64(1)<<62, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	cipher, _ := crypto.NewCipher("")
+	h := NewHandler(db, cipher, &http.Client{}, nil)
+	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
+	g.PUT("/recharges/:id", h.HandleRecharge)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/platform/recharges/77", strings.NewReader(`{"action":"approve"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("回绕审批应 400，got %d body=%s", w.Code, w.Body)
+	}
+	var status string
+	_ = db.Raw("SELECT status FROM recharge_requests WHERE id = 77").Scan(&status).Error
+	if status != "pending" {
+		t.Fatalf("拒绝后申请应保持 pending，got %s", status)
+	}
+	var lim int64
+	_ = db.Raw("SELECT quota_limit FROM orgs WHERE id = 11").Scan(&lim).Error
+	if lim != int64(1)<<62 {
+		t.Fatalf("quota_limit 不得变动，got %d", lim)
+	}
+	var grants int64
+	_ = db.Raw(`SELECT COUNT(*) FROM quota_grants WHERE subject_type='org' AND subject_id=11`).Scan(&grants).Error
+	if grants != 0 {
+		t.Fatalf("不得留流水，got %d", grants)
 	}
 }

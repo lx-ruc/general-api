@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"math"
 	"time"
 
 	"gorm.io/gorm"
@@ -15,11 +16,12 @@ import (
 // - 结算 = 同一事务内双记账（user + org）+ 写日志
 
 var (
-	ErrNotFound    = errors.New("not found")
-	ErrUserQuota   = errors.New("employee quota exceeded, please contact your company admin")
-	ErrOrgQuota    = errors.New("company quota exhausted, please contact the platform admin")
-	ErrUserMonthly = errors.New("employee monthly spending cap reached, resets next month")
-	ErrOrgMonthly  = errors.New("company monthly spending cap reached, resets next month")
+	ErrNotFound      = errors.New("not found")
+	ErrUserQuota     = errors.New("employee quota exceeded, please contact your company admin")
+	ErrOrgQuota      = errors.New("company quota exhausted, please contact the platform admin")
+	ErrUserMonthly   = errors.New("employee monthly spending cap reached, resets next month")
+	ErrOrgMonthly    = errors.New("company monthly spending cap reached, resets next month")
+	ErrQuotaOverflow = errors.New("quota limit out of int64 range")
 )
 
 // currentPeriod 当前账期（账期时区 wall-clock，'YYYY-MM'）
@@ -106,44 +108,92 @@ func Settle(db *gorm.DB, rec *model.UsageLog) error {
 // AddOrgQuota 平台给客户追加限额（带审计流水）；amount 可为负用于回收。
 // 追加后如有余量，欠费停服（status=2）自动恢复为启用——手动停用（0）不会被误恢复。
 func AddOrgQuota(db *gorm.DB, orgID, amount, operatorID int64, remark string) error {
-	now := time.Now().Unix()
 	return db.Transaction(func(tx *gorm.DB) error {
-		res := tx.Exec("UPDATE orgs SET quota_limit = quota_limit + ?, updated_at = ? WHERE id = ?",
-			amount, now, orgID)
-		if res.Error != nil {
-			return res.Error
-		}
-		if res.RowsAffected == 0 {
-			return ErrNotFound
-		}
-		if err := tx.Exec(`UPDATE orgs SET status = 1, updated_at = ?
-			WHERE id = ? AND status = 2 AND quota_limit > quota_used`, now, orgID).Error; err != nil {
-			return err
-		}
-		return tx.Create(&model.QuotaGrant{
-			SubjectType: "org", SubjectID: orgID, Amount: amount,
-			Remark: remark, OperatorID: opID(operatorID), CreatedAt: now,
-		}).Error
+		return AddOrgQuotaTx(tx, orgID, amount, operatorID, remark, time.Now().Unix())
 	})
 }
 
-// AddUserQuota 客户管理员给子账号追加限额；强制 org 归属校验防越权
+// AddOrgQuotaTx 事务内追加 org 限额（供 AddOrgQuota 与充值审批等已有事务复用）。
+// 先锁行读旧值再计算新限额，回绕（正溢出/负下溢）整个事务拒绝，
+// 保证 Σgrants == quota_limit 恒成立且 limit 永不回绕。
+func AddOrgQuotaTx(tx *gorm.DB, orgID, amount, operatorID int64, remark string, now int64) error {
+	var o model.Org
+	if err := lockFirst(tx, &o, orgID); err != nil {
+		return err
+	}
+	if !addNoWrap(o.QuotaLimit, amount) {
+		return ErrQuotaOverflow
+	}
+	if err := tx.Exec("UPDATE orgs SET quota_limit = quota_limit + ?, updated_at = ? WHERE id = ?",
+		amount, now, orgID).Error; err != nil {
+		return err
+	}
+	if err := tx.Exec(`UPDATE orgs SET status = 1, updated_at = ?
+		WHERE id = ? AND status = 2 AND quota_limit > quota_used`, now, orgID).Error; err != nil {
+		return err
+	}
+	return tx.Create(&model.QuotaGrant{
+		SubjectType: "org", SubjectID: orgID, Amount: amount,
+		Remark: remark, OperatorID: opID(operatorID), CreatedAt: now,
+	}).Error
+}
+
+// AddUserQuota 客户管理员给子账号追加限额；强制 org 归属校验防越权。
+// 同 AddOrgQuota：锁行 + 回绕拒绝（quota_limit NULL 视作 0 基线）
 func AddUserQuota(db *gorm.DB, orgID, userID, amount, operatorID int64, remark string) error {
 	now := time.Now().Unix()
 	return db.Transaction(func(tx *gorm.DB) error {
-		res := tx.Exec("UPDATE users SET quota_limit = COALESCE(quota_limit, 0) + ?, updated_at = ? WHERE id = ? AND org_id = ?",
-			amount, now, userID, orgID)
-		if res.Error != nil {
-			return res.Error
+		var u model.User
+		if err := lockFirst(tx, &u, userID, "org_id = ?", orgID); err != nil {
+			return err
 		}
-		if res.RowsAffected == 0 {
-			return ErrNotFound
+		var base int64
+		if u.QuotaLimit != nil {
+			base = *u.QuotaLimit
+		}
+		if !addNoWrap(base, amount) {
+			return ErrQuotaOverflow
+		}
+		if err := tx.Exec("UPDATE users SET quota_limit = COALESCE(quota_limit, 0) + ?, updated_at = ? WHERE id = ? AND org_id = ?",
+			amount, now, userID, orgID).Error; err != nil {
+			return err
 		}
 		return tx.Create(&model.QuotaGrant{
 			SubjectType: "user", SubjectID: userID, Amount: amount,
 			Remark: remark, OperatorID: opID(operatorID), CreatedAt: now,
 		}).Error
 	})
+}
+
+// lockFirst 事务内取行：PG 加 FOR UPDATE 行锁防并发丢失更新；
+// SQLite 由连接级 _txlock=immediate 串行化写事务护住窗口（与 SetUserQuotaUnlimited 同法）
+func lockFirst(tx *gorm.DB, dst any, id int64, conds ...any) error {
+	q := tx.Model(dst).Where("id = ?", id)
+	if len(conds) == 2 {
+		q = q.Where(conds[0].(string), conds[1])
+	}
+	if tx.Dialector.Name() == "postgres" {
+		q = q.Clauses(clause.Locking{Strength: "UPDATE"})
+	}
+	if err := q.First(dst).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrNotFound
+		}
+		return err
+	}
+	return nil
+}
+
+// addNoWrap base+amount 是否在 int64 域内不回绕（正溢出与负下溢都拒绝）
+func addNoWrap(base, amount int64) bool {
+	sum := base + amount
+	if amount > 0 && sum < base {
+		return false
+	}
+	if amount < 0 && sum > base {
+		return false
+	}
+	return true
 }
 
 // SetUserQuotaUnlimited 子账号限额"设值"路径（转不限 / 转限额）：同事务读旧值→更新→差值入流水，
@@ -208,7 +258,11 @@ func PointsPerYuan(db *gorm.DB) int64 {
 		if ch < '0' || ch > '9' {
 			return 1_000_000
 		}
-		n = n*10 + int64(ch-'0')
+		d := int64(ch - '0')
+		if n > (math.MaxInt64-d)/10 { // 超长数字会回绕出任意汇率，按非法配置回退默认
+			return 1_000_000
+		}
+		n = n*10 + d
 	}
 	if n <= 0 {
 		return 1_000_000

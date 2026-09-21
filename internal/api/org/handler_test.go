@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -48,7 +49,7 @@ func newOrgEnv(t *testing.T) *orgEnv {
 	}
 
 	const secret = "test-secret"
-	token, err := auth.GenerateToken(secret, time.Hour, 2, "org_admin", &oid)
+	token, err := auth.GenerateToken(secret, time.Hour, 2, "org_admin", &oid, "")
 	if err != nil {
 		t.Fatalf("生成 token 失败: %v", err)
 	}
@@ -145,5 +146,85 @@ func TestMemberQuotaLedger(t *testing.T) {
 	}
 	if after := e.sumUserGrants(mid); after != before {
 		t.Fatalf("同态调用不应产生流水，%d → %d", before, after)
+	}
+}
+
+// 并发审批同一份额度申请：pending 判定必须在事务内以条件 UPDATE 完成，
+// 双击/双管理员的并发 approve 只允许加额一次（Σgrants 与 quota_limit 均不得双记）
+func TestHandleRequestConcurrentApproveOnce(t *testing.T) {
+	e := newOrgEnv(t)
+	e.engine.Group("/api/org") // 确保 group 存在（newOrgEnv 已建）
+	now := time.Now().Unix()
+	// 子账号 + 一份 pending 申请（amount=5000）
+	if err := e.db.Exec(`INSERT INTO users (id, org_id, username, password_hash, role, quota_limit, status, created_at, updated_at)
+		VALUES (10, 1, 'm1', 'x', 'member', 1000, 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := e.db.Exec(`INSERT INTO quota_requests (id, org_id, user_id, amount, reason, status, created_at)
+		VALUES (77, 1, 10, 5000, 'need more', 'pending', ?)`, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(e.db)
+	// 挂到带 JWTAuth 的 /api/org 组上（与 newOrgEnv 同 secret）
+	g := e.engine.Group("/api/org", middleware.JWTAuth("test-secret", e.db))
+	g.PUT("/requests/:id", h.HandleRequest)
+
+	var wg sync.WaitGroup
+	codes := make([]int, 8)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			w := e.do(http.MethodPut, "/api/org/requests/77", `{"action":"approve"}`)
+			codes[i] = w.Code
+		}(i)
+	}
+	wg.Wait()
+
+	var limit int64
+	if err := e.db.Raw("SELECT quota_limit FROM users WHERE id = 10").Scan(&limit).Error; err != nil {
+		t.Fatal(err)
+	}
+	if limit != 1000+5000 {
+		t.Errorf("并发审批后 quota_limit = %d, want 6000（加额只能生效一次）", limit)
+	}
+	if got := e.sumUserGrants(10); got != 5000+0 { // 建号 1000 未走流水（直插），批准 5000 必须恰好一条
+		t.Errorf("Σgrants(user) = %d, want 5000", got)
+	}
+	approved := 0
+	for _, c := range codes {
+		if c == http.StatusOK {
+			approved++
+		}
+	}
+	if approved != 1 {
+		t.Errorf("成功响应数 = %d, want 1（其余应为 404 已处理），codes=%v", approved, codes)
+	}
+}
+
+// 删除子账号必须连带清理其管理面访问令牌（tgp_），否则令牌在账号删除后仍可调用管理 API
+func TestDeleteMemberCleansAccessTokens(t *testing.T) {
+	e := newOrgEnv(t)
+	now := time.Now().Unix()
+	if err := e.db.Exec(`INSERT INTO users (id, org_id, username, password_hash, role, status, created_at, updated_at)
+		VALUES (11, 1, 'doomed', 'x', 'member', 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := e.db.Exec(`INSERT INTO access_tokens (user_id, name, token_hash, prefix, status, created_at, updated_at)
+		VALUES (11, 'ci', 'hash-11', 'tgp_x', 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(e.db)
+	g := e.engine.Group("/api/org", middleware.JWTAuth("test-secret", e.db))
+	g.DELETE("/members/:id", h.DeleteMember)
+
+	w := e.do(http.MethodDelete, "/api/org/members/11", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("删除应 200，got %d: %s", w.Code, w.Body.String())
+	}
+	var cnt int64
+	_ = e.db.Raw(`SELECT COUNT(*) FROM access_tokens WHERE user_id = 11`).Scan(&cnt).Error
+	if cnt != 0 {
+		t.Fatalf("子账号删除后其访问令牌应一并清理，剩 %d", cnt)
 	}
 }

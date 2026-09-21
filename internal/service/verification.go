@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math/big"
 	"net/smtp"
+	"regexp"
 	"strings"
 	"time"
 
@@ -33,10 +34,14 @@ func NewVerification(db *gorm.DB, smtp *config.Smtp) *Verification {
 	return &Verification{db: db, smtp: smtp}
 }
 
+// emailRe 收敛为白名单（HTML5 规范邮箱正则）：local 部分仅限可打印 ASCII 标点，
+// 域名部分仅限字母数字与连字符。邮箱会拼进 SMTP 头（To:），必须整体拒绝
+// 控制字符与空白，防止 CRLF 邮件头注入（如 "a@b.com\r\nBcc:..."）。
+var emailRe = regexp.MustCompile(`^[a-zA-Z0-9.!#$%&'*+/=?^_` + "`" + `{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$`)
+
 // ValidEmail 简易邮箱格式校验
 func ValidEmail(s string) bool {
-	return len(s) <= 254 && strings.Contains(s, "@") && strings.Contains(s, ".") &&
-		!strings.ContainsAny(s, " \t")
+	return len(s) <= 254 && strings.Contains(s, ".") && emailRe.MatchString(s)
 }
 
 type verifyRow struct {
@@ -91,7 +96,8 @@ func (v *Verification) SendCode(email string) (devCode string, retryAfter int, e
 	return "", 0, nil
 }
 
-// Verify 校验并消费验证码（一次性）
+// Verify 校验并消费验证码（一次性）。尝试计数与消费均为原子条件写：
+// 并发错码不丢计数（读-改-写会让 5 次上限形同虚设），并发对码只成功一次。
 func (v *Verification) Verify(email, code string) error {
 	email = strings.ToLower(strings.TrimSpace(email))
 	var row verifyRow
@@ -103,15 +109,24 @@ func (v *Verification) Verify(email, code string) error {
 		return fmt.Errorf("验证码已过期，请重新获取")
 	}
 	if row.Code != code {
-		row.Attempts++
-		if row.Attempts >= maxAttempts {
-			_ = v.db.Exec("DELETE FROM verification_codes WHERE email = ?", email).Error
-			return fmt.Errorf("错误次数过多，验证码已作废，请重新获取")
+		// 原子自增 + 上限封口：attempts 达 5 后不再增长，靠下面的复读作废
+		res := v.db.Exec(`UPDATE verification_codes SET attempts = attempts + 1
+			WHERE email = ? AND attempts < ?`, email, maxAttempts)
+		if res.Error == nil && res.RowsAffected > 0 {
+			var attempts int
+			_ = v.db.Raw("SELECT attempts FROM verification_codes WHERE email = ?", email).Scan(&attempts).Error
+			if attempts >= maxAttempts {
+				_ = v.db.Exec("DELETE FROM verification_codes WHERE email = ?", email).Error
+				return fmt.Errorf("错误次数过多，验证码已作废，请重新获取")
+			}
 		}
-		_ = v.db.Exec("UPDATE verification_codes SET attempts = ? WHERE email = ?", row.Attempts, email).Error
 		return fmt.Errorf("验证码不正确")
 	}
-	_ = v.db.Exec("DELETE FROM verification_codes WHERE email = ?", email).Error
+	// 原子消费：删得到行才算验证成功（并发同码请求只有一个能删到）
+	res := v.db.Exec("DELETE FROM verification_codes WHERE email = ? AND code = ?", email, row.Code)
+	if res.Error != nil || res.RowsAffected == 0 {
+		return fmt.Errorf("验证码不正确")
+	}
 	return nil
 }
 

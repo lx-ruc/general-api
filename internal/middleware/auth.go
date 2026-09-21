@@ -32,6 +32,7 @@ func JWTAuth(secret string, db *gorm.DB) gin.HandlerFunc {
 		}
 		var uid int64
 		var jwtOrgID *int64
+		var jwtVer string
 		if strings.HasPrefix(tokenStr, "tgp_") {
 			u, err := authByAccessToken(db, tokenStr)
 			if err != nil {
@@ -45,16 +46,17 @@ func JWTAuth(secret string, db *gorm.DB) gin.HandlerFunc {
 				abortUnauthorized(c, "invalid or expired token")
 				return
 			}
-			uid, jwtOrgID = claims.UID, claims.OrgID
+			uid, jwtOrgID, jwtVer = claims.UID, claims.OrgID, claims.Ver
 		}
 		var row struct {
-			Status   int
-			Role     string
-			OrgID    *int64
-			OrgState *int // LEFT JOIN：系统管理员无组织为 NULL
+			Status       int
+			Role         string
+			OrgID        *int64
+			PasswordHash string
+			OrgState     *int // LEFT JOIN：系统管理员无组织为 NULL
 		}
 		if err := db.Raw(`
-			SELECT u.status, u.role, u.org_id, o.status AS org_state
+			SELECT u.status, u.role, u.org_id, u.password_hash, o.status AS org_state
 			FROM users u LEFT JOIN orgs o ON o.id = u.org_id
 			WHERE u.id = ?`, uid).Scan(&row).Error; err != nil || row.Role == "" {
 			abortUnauthorized(c, "account not found or deleted")
@@ -69,13 +71,19 @@ func JWTAuth(secret string, db *gorm.DB) gin.HandlerFunc {
 			abortUnauthorized(c, "organization is disabled")
 			return
 		}
+		// 会话指纹（仅 JWT 轨）：改密码/重置密码后旧登录会话即时失效；
+		// 空 ver = 升级前签发的存量 token，放行到自然过期。tgp_ 令牌不受密码变更影响（长期凭据，吊销走管理台）
+		if jwtVer != "" && auth.SessionVer(row.PasswordHash) != jwtVer {
+			abortUnauthorized(c, "session expired, please login again")
+			return
+		}
 		c.Set(ctxUID, uid)
 		c.Set(ctxRole, row.Role) // 以库内角色为准，角色变更即时生效
-		// org 归属：令牌轨取库内值（账号调动即时生效）；JWT 轨沿用签发时值（兼容既有语义）
-		if jwtOrgID != nil {
-			c.Set(ctxOrgID, jwtOrgID)
-		} else if row.OrgID != nil && *row.OrgID != 0 {
+		// org 归属以库内为准（账号调动/迁移即时生效）；库内无归属时才回退签发时值
+		if row.OrgID != nil && *row.OrgID != 0 {
 			c.Set(ctxOrgID, row.OrgID)
+		} else if jwtOrgID != nil {
+			c.Set(ctxOrgID, jwtOrgID)
 		}
 		c.Next()
 	}

@@ -25,9 +25,7 @@ func pipeSSE(w io.Writer, ctx context.Context, body io.Reader, modelSwap [2]stri
 		}
 		var out []byte = event.Bytes()
 		if modelSwap[0] != "" {
-			out = bytes.ReplaceAll(out,
-				[]byte(`"model":"`+modelSwap[0]+`"`),
-				[]byte(`"model":"`+modelSwap[1]+`"`))
+			out = swapModelBytes(out, modelSwap)
 		}
 		if _, err := w.Write(out); err != nil {
 			return err

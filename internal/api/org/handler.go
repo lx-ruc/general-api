@@ -17,6 +17,9 @@ import (
 	"token-gateway/internal/service"
 )
 
+// errRequestHandled 审批事务内条件更新未命中（申请已被并发处理）的哨兵错误
+var errRequestHandled = errors.New("request already handled")
+
 type Handler struct {
 	DB *gorm.DB
 }
@@ -207,7 +210,7 @@ func (h *Handler) DeleteMember(c *gin.Context) {
 	if !ok {
 		return
 	}
-	// 级联删除子账号的 API key（历史 usage_logs 保留）
+	// 级联删除子账号的 API key 与管理面访问令牌（历史 usage_logs 保留）
 	err := h.DB.Transaction(func(tx *gorm.DB) error {
 		res := tx.Where("id = ? AND org_id = ? AND role = 'member'", id, oid).Delete(&model.User{})
 		if res.Error != nil {
@@ -216,7 +219,10 @@ func (h *Handler) DeleteMember(c *gin.Context) {
 		if res.RowsAffected == 0 {
 			return gorm.ErrRecordNotFound
 		}
-		return tx.Where("user_id = ?", id).Delete(&model.APIKey{}).Error
+		if err := tx.Where("user_id = ?", id).Delete(&model.APIKey{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("user_id = ?", id).Delete(&model.AccessToken{}).Error
 	})
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -284,6 +290,10 @@ func (h *Handler) AddMemberQuota(c *gin.Context) {
 	if err := service.AddUserQuota(h.DB, oid, id, req.Amount, middleware.GetUID(c), req.Remark); err != nil {
 		if err == service.ErrNotFound {
 			httpx.Fail(c, http.StatusNotFound, "子账号不存在")
+			return
+		}
+		if err == service.ErrQuotaOverflow {
+			httpx.Fail(c, http.StatusBadRequest, "追加后额度超出可表示范围，请调整数值")
 			return
 		}
 		httpx.Fail(c, http.StatusInternalServerError, "追加额度失败")
@@ -561,9 +571,16 @@ func (h *Handler) HandleRequest(c *gin.Context) {
 		if req.Action == "reject" {
 			newStatus = "rejected"
 		}
-		if err := tx.Exec(`UPDATE quota_requests SET status = ?, handled_by = ?, handled_at = ?, reply = ? WHERE id = ?`,
-			newStatus, operator, now, req.Reply, id).Error; err != nil {
-			return err
+		// pending 判定并入事务内的条件更新：并发双审批（双击/双管理员）只有一个事务能改到行，
+		// 杜绝"两个事务都读到 pending、各自加额入账"的双重记账
+		res := tx.Exec(`UPDATE quota_requests SET status = ?, handled_by = ?, handled_at = ?, reply = ?
+			WHERE id = ? AND org_id = ? AND status = 'pending'`,
+			newStatus, operator, now, req.Reply, id, oid)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return errRequestHandled
 		}
 		if req.Action == "approve" {
 			if err := tx.Exec("UPDATE users SET quota_limit = COALESCE(quota_limit, 0) + ?, updated_at = ? WHERE id = ? AND org_id = ?",
@@ -580,6 +597,10 @@ func (h *Handler) HandleRequest(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
+		if errors.Is(err, errRequestHandled) {
+			httpx.Fail(c, http.StatusNotFound, "申请不存在或已处理")
+			return
+		}
 		httpx.Fail(c, http.StatusInternalServerError, "审批失败")
 		return
 	}
@@ -623,7 +644,7 @@ func (h *Handler) CreateRecharge(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Amount  int64  `json:"amount" binding:"required,gt=0"`
+		Amount  int64  `json:"amount" binding:"required,gt=0,lte=1000000000000000"` // 上限 1e15 点（默认汇率合 10 亿元），防天价申请
 		Voucher string `json:"voucher" binding:"required"`
 	}
 	if !httpx.BindJSON(c, &req) {
@@ -643,8 +664,9 @@ func (h *Handler) Billing(c *gin.Context) {
 	if !ok {
 		return
 	}
-	month := c.DefaultQuery("month", time.Now().Format("2006-01"))
-	mStart, err := time.ParseInLocation("2006-01", month, time.Local)
+	// 月边界与对账单同一时区口径（billing.timezone），不随服务器系统时区漂移
+	month := c.DefaultQuery("month", time.Now().In(service.BillingLoc()).Format("2006-01"))
+	mStart, err := time.ParseInLocation("2006-01", month, service.BillingLoc())
 	if err != nil {
 		httpx.Fail(c, http.StatusBadRequest, "month 格式应为 YYYY-MM")
 		return
@@ -698,9 +720,11 @@ func (h *Handler) Billing(c *gin.Context) {
 		Cost     int64  `json:"cost"`
 	}
 	var daily []dayRow
-	dateExpr := "strftime('%Y-%m-%d', created_at, 'unixepoch', 'localtime')"
+	// 日分桶同样锚定账期时区：Go 侧算偏移，SQL 平移（与 billing.go 一致）
+	_, off := time.Unix(s, 0).In(service.BillingLoc()).Zone()
+	dateExpr := fmt.Sprintf("strftime('%%Y-%%m-%%d', created_at + %d, 'unixepoch')", off)
 	if database.Dialect == "postgres" {
-		dateExpr = "to_char(to_timestamp(created_at), 'YYYY-MM-DD')"
+		dateExpr = fmt.Sprintf("to_char(to_timestamp(created_at + %d), 'YYYY-MM-DD')", off)
 	}
 	_ = h.DB.Raw(fmt.Sprintf(`SELECT %s AS date, COUNT(*) AS requests, COALESCE(SUM(cost),0) AS cost
 		FROM usage_logs WHERE org_id = ? AND created_at >= ? AND created_at < ?

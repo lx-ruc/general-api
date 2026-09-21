@@ -16,16 +16,19 @@ type visitor struct {
 
 // RateLimiter 内存令牌桶（按 key 隔离），带过期清理
 type RateLimiter struct {
-	mu       sync.Mutex
-	visitors map[string]*visitor
-	rate     rate.Limit
-	burst    int
+	mu        sync.Mutex
+	visitors  map[string]*visitor
+	rate      rate.Limit
+	burst     int
+	unlimited bool // 构造时 perMinute<=0：不限流
 }
 
-// NewRateLimiter perMinute 每分钟配额；burst 允许的瞬时突发
+// NewRateLimiter perMinute 每分钟配额；burst 允许的瞬时突发。
+// perMinute<=0 = 不限流（Allow 恒 true）——与本仓库其他阈值语义一致（0=关闭），
+// 避免配 0 想关限流的部署被静默替换成 60 RPM
 func NewRateLimiter(perMinute, burst int) *RateLimiter {
 	if perMinute <= 0 {
-		perMinute = 60
+		return &RateLimiter{unlimited: true}
 	}
 	if burst <= 0 {
 		burst = 1
@@ -40,6 +43,9 @@ func NewRateLimiter(perMinute, burst int) *RateLimiter {
 }
 
 func (r *RateLimiter) Allow(key string) bool {
+	if r.unlimited {
+		return true
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	v, ok := r.visitors[key]

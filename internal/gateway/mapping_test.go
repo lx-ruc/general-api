@@ -120,3 +120,18 @@ func TestModelMappingCacheNoLeak(t *testing.T) {
 		t.Fatalf("缓存回放不应泄漏上游名，body=%s", w2.Body)
 	}
 }
+
+// swapModelBytes 覆盖带空格的 "model": "x" 形态（部分厂商/代理返回 pretty-print JSON）
+func TestSwapModelBytesSpacedForm(t *testing.T) {
+	in := []byte(`{"id": "x", "model": "up-m1", "choices": []}`)
+	out := swapModelBytes(in, [2]string{"up-m1", "pub-m1"})
+	if strings.Contains(string(out), `"model": "up-m1"`) || !strings.Contains(string(out), `"model": "pub-m1"`) {
+		t.Fatalf("带空格形态应被改写，got %s", out)
+	}
+	// 紧凑形态不回归
+	in2 := []byte(`{"model":"up-m1"}`)
+	out2 := swapModelBytes(in2, [2]string{"up-m1", "pub-m1"})
+	if string(out2) != `{"model":"pub-m1"}` {
+		t.Fatalf("紧凑形态改写错误，got %s", out2)
+	}
+}

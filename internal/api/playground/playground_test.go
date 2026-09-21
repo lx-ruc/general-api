@@ -101,7 +101,7 @@ func newPGEnv(t *testing.T) *pgEnv {
 
 func (e *pgEnv) token(t *testing.T, uid int64, role string, orgID *int64) string {
 	t.Helper()
-	tok, err := auth.GenerateToken(jwtSecret, time.Hour, uid, role, orgID)
+	tok, err := auth.GenerateToken(jwtSecret, time.Hour, uid, role, orgID, "")
 	if err != nil {
 		t.Fatalf("签发 JWT 失败: %v", err)
 	}

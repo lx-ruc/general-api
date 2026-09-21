@@ -1,6 +1,7 @@
 package service
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -103,4 +104,63 @@ func TestQuotaLedgerInvariant(t *testing.T) {
 		t.Fatalf("转限额应以消耗 800,000 为起点，得 Σ=%d limit=%d", g, l)
 	}
 	assertInvariant("消耗起点转限额")
+}
+
+// 额度追加溢出防护：amount 接近 MaxInt64 时 quota_limit + amount 不得回绕，
+// 必须显式报错且不留半截事务（limit 不变、无流水）
+func TestAddQuotaOverflowGuard(t *testing.T) {
+	gdb, err := database.Open(config.Database{Driver: "sqlite", Path: t.TempDir() + "/ov.db"})
+	if err != nil {
+		t.Fatalf("打开测试库失败: %v", err)
+	}
+	if err := database.Migrate(gdb); err != nil {
+		t.Fatalf("迁移失败: %v", err)
+	}
+	t.Cleanup(func() { sqlDB, _ := gdb.DB(); _ = sqlDB.Close() })
+	now := time.Now().Unix()
+	_ = gdb.Exec(`INSERT INTO orgs (id, name, quota_limit, status, created_at, updated_at)
+		VALUES (7, 'o', ?, 1, ?, ?)`, int64(1)<<62, now, now).Error
+	_ = gdb.Exec(`INSERT INTO users (id, org_id, username, password_hash, role, status, quota_limit, created_at, updated_at)
+		VALUES (7, 7, 'u7', 'x', 'member', 1, ?, ?, ?)`, int64(1)<<62, now, now).Error
+
+	if err := AddOrgQuota(gdb, 7, math.MaxInt64-(1<<60), 1, "溢出充值"); err == nil {
+		t.Fatal("org 追加溢出应报错")
+	} else {
+		var lim int64
+		_ = gdb.Raw("SELECT quota_limit FROM orgs WHERE id = 7").Scan(&lim).Error
+		if lim != int64(1)<<62 {
+			t.Fatalf("失败事务不得改动 limit，got %d", lim)
+		}
+		var cnt int64
+		_ = gdb.Raw("SELECT COUNT(*) FROM quota_grants WHERE subject_type='org' AND subject_id=7").Scan(&cnt).Error
+		if cnt != 0 {
+			t.Fatalf("失败不得留流水，got %d 条", cnt)
+		}
+	}
+	if err := AddUserQuota(gdb, 7, 7, math.MaxInt64-(1<<60), 1, "溢出追加"); err == nil {
+		t.Fatal("user 追加溢出应报错")
+	}
+	// 正常路径不受影响
+	if err := AddOrgQuota(gdb, 7, 1000, 1, "正常"); err != nil {
+		t.Fatalf("正常追加失败: %v", err)
+	}
+	if err := AddUserQuota(gdb, 7, 7, 1000, 1, "正常"); err != nil {
+		t.Fatalf("正常追加失败: %v", err)
+	}
+}
+
+// PointsPerYuan 超长数字串不得回绕出任意汇率
+func TestPointsPerYuanOverflow(t *testing.T) {
+	gdb, err := database.Open(config.Database{Driver: "sqlite", Path: t.TempDir() + "/pp.db"})
+	if err != nil {
+		t.Fatalf("打开测试库失败: %v", err)
+	}
+	if err := database.Migrate(gdb); err != nil {
+		t.Fatalf("迁移失败: %v", err)
+	}
+	t.Cleanup(func() { sqlDB, _ := gdb.DB(); _ = sqlDB.Close() })
+	_ = gdb.Exec("INSERT INTO settings (key, value) VALUES ('points_per_yuan', '99999999999999999999999999')").Error
+	if got := PointsPerYuan(gdb); got != 1_000_000 {
+		t.Fatalf("超长数字应回退默认 1e6，got %d", got)
+	}
 }

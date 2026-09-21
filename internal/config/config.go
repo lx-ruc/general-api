@@ -29,9 +29,10 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 }
 
 type Server struct {
-	Addr        string   `yaml:"addr"`
-	CORSOrigins []string `yaml:"cors_origins"`
-	SiteURL     string   `yaml:"site_url"` // 管理台外部地址；告警邮件直达链接用，空=不带链接
+	Addr           string   `yaml:"addr"`
+	CORSOrigins    []string `yaml:"cors_origins"`
+	SiteURL        string   `yaml:"site_url"`        // 管理台外部地址；告警邮件直达链接用，空=不带链接
+	TrustedProxies []string `yaml:"trusted_proxies"` // 解析 X-Forwarded-For 的可信反代地址/CIDR；空=仅回环
 }
 
 // Database 数据库：driver=sqlite（单文件，默认）或 postgres（多实例高可用）
@@ -185,6 +186,13 @@ func Load(path string) (*Config, error) {
 	if cfg.Gateway.KeyCooldownScope != "key" {
 		cfg.Gateway.KeyCooldownScope = "channel"
 	}
+	// 请求体上限夹取到 [1, 4096] MB：0 会让限长退化成拒绝一切请求，
+	// 超大值经 <<20 移位可回绕出负数，两者都封死
+	if cfg.Gateway.MaxBodyMB <= 0 {
+		cfg.Gateway.MaxBodyMB = 10
+	} else if cfg.Gateway.MaxBodyMB > 4096 {
+		cfg.Gateway.MaxBodyMB = 4096
+	}
 	return cfg, nil
 }
 
@@ -250,6 +258,7 @@ func applyEnv(cfg *Config) {
 	setStrList("TG_RETRY_KEY_CODES", &cfg.Gateway.RetryKeyCodes)
 	setStrList("TG_DISABLE_KEY_CODES", &cfg.Gateway.DisableKeyCodes)
 	setStrList("TG_RETRY_CHANNEL_CODES", &cfg.Gateway.RetryChannelCodes)
+	setStrList("TG_TRUSTED_PROXIES", &cfg.Server.TrustedProxies)
 	setStr("TG_REDIS_ADDR", &cfg.Redis.Addr)
 	setStr("TG_BILLING_TIMEZONE", &cfg.Billing.Timezone)
 	setInt("TG_USAGE_RETENTION_MONTHS", &cfg.Billing.UsageRetentionMonths)

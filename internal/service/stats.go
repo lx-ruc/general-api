@@ -64,8 +64,10 @@ func (s Scope) cond() (string, []any) {
 	return cond, args
 }
 
+// localDay0 账期时区的今日零点（±offsetDays 天）；与对账单/快照同一时区口径，
+// 避免服务器系统时区与 billing.timezone 不一致时"今日"边界漂移
 func localDay0(offsetDays int) int64 {
-	now := time.Now()
+	now := time.Now().In(BillingLoc())
 	t := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	return t.AddDate(0, 0, offsetDays).Unix()
 }
@@ -85,14 +87,17 @@ func StatsOverview(db *gorm.DB, scope Scope) (*Overview, error) {
 		return nil, err
 	}
 
-	// 近 7 日序列（含今日），缺失日期补零（日期表达式按方言分支）
+	// 近 7 日序列（含今日），缺失日期补零（日期表达式按方言分支）。
+	// 日分桶口径与 billing.go 对账单一致：账期时区偏移在 Go 侧算好后 SQL 平移，
+	// 不依赖服务器系统时区
 	since := localDay0(-6)
 	seriesCond, seriesArgs := scope.cond()
 	seriesCond += " AND l.created_at >= ?"
 	seriesArgs = append(seriesArgs, since)
-	dateExpr := "strftime('%Y-%m-%d', l.created_at, 'unixepoch', 'localtime')"
+	_, off := time.Unix(since, 0).In(BillingLoc()).Zone()
+	dateExpr := fmt.Sprintf("strftime('%%Y-%%m-%%d', l.created_at + %d, 'unixepoch')", off)
 	if database.Dialect == "postgres" {
-		dateExpr = "to_char(to_timestamp(l.created_at), 'YYYY-MM-DD')"
+		dateExpr = fmt.Sprintf("to_char(to_timestamp(l.created_at + %d), 'YYYY-MM-DD')", off)
 	}
 	var rows []DayPoint
 	err := db.Raw(fmt.Sprintf(`
@@ -109,7 +114,7 @@ func StatsOverview(db *gorm.DB, scope Scope) (*Overview, error) {
 	for _, r := range rows {
 		byDate[r.Date] = r
 	}
-	now := time.Now()
+	now := time.Now().In(BillingLoc())
 	for i := 6; i >= 0; i-- {
 		d := now.AddDate(0, 0, -i).Format("2006-01-02")
 		if p, ok := byDate[d]; ok {

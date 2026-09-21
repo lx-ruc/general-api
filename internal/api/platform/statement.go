@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 
 	"token-gateway/internal/httpx"
 	"token-gateway/internal/middleware"
@@ -202,19 +201,15 @@ func (h *Handler) UpsertVendorBill(c *gin.Context) {
 	}
 	now := time.Now().Unix()
 	uid := middleware.GetUID(c)
-	err := h.DB.Transaction(func(tx *gorm.DB) error {
-		res := tx.Exec(`UPDATE vendor_bills SET billed_points = ?, note = ?, updated_at = ?
-			WHERE period = ? AND channel_id = ?`, req.BilledPoints, req.Note, now, req.Period, req.ChannelID)
-		if res.Error != nil {
-			return res.Error
-		}
-		if res.RowsAffected == 0 {
-			return tx.Exec(`INSERT INTO vendor_bills (period, channel_id, billed_points, note, created_by, created_at, updated_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?)`,
-				req.Period, req.ChannelID, req.BilledPoints, req.Note, uid, now, now).Error
-		}
-		return nil
-	})
+	// 原生 upsert（SQLite/PostgreSQL 语法一致）：并发录入同一 (period, channel) 不再撞
+	// UNIQUE 约束回 500；created_by 保留首次录入人，冲突只更新金额/备注
+	err := h.DB.Exec(`INSERT INTO vendor_bills (period, channel_id, billed_points, note, created_by, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(period, channel_id) DO UPDATE SET
+			billed_points = excluded.billed_points,
+			note = excluded.note,
+			updated_at = excluded.updated_at`,
+		req.Period, req.ChannelID, req.BilledPoints, req.Note, uid, now, now).Error
 	if err != nil {
 		httpx.Fail(c, http.StatusInternalServerError, "保存失败")
 		return

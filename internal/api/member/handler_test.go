@@ -49,7 +49,7 @@ func newMemberEnv(t *testing.T) *memberEnv {
 	}
 
 	const secret = "test-secret"
-	token, err := auth.GenerateToken(secret, time.Hour, 1, "member", &orgID)
+	token, err := auth.GenerateToken(secret, time.Hour, 1, "member", &orgID, "")
 	if err != nil {
 		t.Fatalf("生成 token 失败: %v", err)
 	}

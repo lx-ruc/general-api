@@ -13,7 +13,7 @@ import (
 
 // RedisCoord 多实例全局协调实现。
 //
-//   - 冷却：SET NX EX（tg:cd:{scope}）
+//   - 冷却：keep-longer 原子设置（tg:cd:{scope}，仅当新冷却更长才覆盖）
 //   - 闸门：ZSET lease（tg:slot:{scope}），member=请求 uuid、score=租约到期 ms；
 //     拿到名额后心跳续租（lease/3），进程崩溃最迟 lease 时长自动回收名额；
 //     排队者按 50→200ms 退避轮询，ctx 取消立即退出
@@ -93,13 +93,23 @@ func (r *RedisCoord) IsCooling(scope string) bool {
 	return n > 0
 }
 
+// cooldownLua 原子 keep-longer：现有 TTL 不存在或更短才覆盖。
+// 避免并发请求的短 429 冷却截断 401/403 的长效冷却（或短 Retry-After 截断长 Retry-After）
+var cooldownLua = redis.NewScript(`
+local cur = redis.call('TTL', KEYS[1])
+if cur <= 0 or tonumber(ARGV[2]) > cur then
+  return redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
+end
+return 0`)
+
 func (r *RedisCoord) SetCooldown(scope string, d time.Duration) {
 	if d <= 0 {
 		return
 	}
 	ctx, cancel := withTimeout()
 	defer cancel()
-	err := r.client.Set(ctx, "tg:cd:"+scope, "1", d).Err()
+	err := cooldownLua.Run(ctx, r.client, []string{"tg:cd:" + scope},
+		"1", d.Milliseconds()).Err()
 	r.err(ctx, "set_cooldown", err)
 }
 

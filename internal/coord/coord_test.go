@@ -22,6 +22,28 @@ func TestMemCooldown(t *testing.T) {
 	}
 }
 
+// SetCooldown keep-longer：短冷却不得截断在期的长冷却；长冷却可以延长短冷却
+func TestMemCooldownKeepLonger(t *testing.T) {
+	m := NewMem(0)
+	m.SetCooldown("k:1", 500*time.Millisecond)
+	m.SetCooldown("k:1", 30*time.Millisecond) // 并发 429 的短冷却：不应缩短
+	if !m.IsCooling("k:1") {
+		t.Fatal("短冷却不应清除在期冷却")
+	}
+	time.Sleep(60 * time.Millisecond) // 30ms 已过，500ms 未到
+	if !m.IsCooling("k:1") {
+		t.Fatal("短冷却不应截断长冷却（500ms 仍应在期）")
+	}
+
+	m2 := NewMem(0)
+	m2.SetCooldown("k:2", 30*time.Millisecond)
+	m2.SetCooldown("k:2", 500*time.Millisecond) // 更长的冷却到达：应延长
+	time.Sleep(60 * time.Millisecond)
+	if !m2.IsCooling("k:2") {
+		t.Fatal("更长的冷却应覆盖短冷却")
+	}
+}
+
 func TestMemSlotQueueAndTimeout(t *testing.T) {
 	m := NewMem(0)
 	ctx := context.Background()
@@ -126,6 +148,20 @@ func TestRedisCoord(t *testing.T) {
 	time.Sleep(60 * time.Millisecond)
 	if rc.IsCooling("t:cd") {
 		t.Fatal("冷却到期后应自动恢复")
+	}
+
+	// 冷却 keep-longer：短冷却不截断长冷却
+	rc.SetCooldown("t:cd2", 500*time.Millisecond)
+	rc.SetCooldown("t:cd2", 40*time.Millisecond)
+	time.Sleep(60 * time.Millisecond)
+	if !rc.IsCooling("t:cd2") {
+		t.Fatal("短冷却不应截断长冷却（keep-longer）")
+	}
+	rc.SetCooldown("t:cd3", 40*time.Millisecond)
+	rc.SetCooldown("t:cd3", 500*time.Millisecond)
+	time.Sleep(60 * time.Millisecond)
+	if !rc.IsCooling("t:cd3") {
+		t.Fatal("长冷却应覆盖短冷却")
 	}
 
 	// 闸门
