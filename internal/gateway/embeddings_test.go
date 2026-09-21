@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -128,5 +129,46 @@ func TestEmbeddingsKeyPoolCooldown(t *testing.T) {
 	}
 	if !e.cd.IsCooling(scopeOf(1, 1)) || !e.cd.IsCooling(scopeOf(1, 2)) {
 		t.Fatal("全池 Key 应进入冷却")
+	}
+}
+
+// 模型映射对 embeddings 同样生效（共用 relay 内核）：出站改写为上游名，
+// 响应改写回对外名，计费锚定对外名
+func TestEmbeddingsModelMapping(t *testing.T) {
+	e := newTestEnv(t)
+	var mu sync.Mutex
+	var gotModel string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var req struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(b, &req)
+		mu.Lock()
+		gotModel = req.Model
+		mu.Unlock()
+		// 按上游模型名应答（真实厂商行为）
+		_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}],"model":"` + req.Model + `","usage":{"prompt_tokens":7,"total_tokens":7}}`))
+	}))
+	defer up.Close()
+	e.seedMappedChannel(t, 1, "ch-emb-map", up.URL)
+
+	w := e.postEmbed(`{"model":"m1","input":"map me"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("应 200，got %d body=%s", w.Code, w.Body)
+	}
+	mu.Lock()
+	upModel := gotModel
+	mu.Unlock()
+	if upModel != "up-m1" {
+		t.Fatalf("上游应收到的模型名为 up-m1，got %s", upModel)
+	}
+	if !strings.Contains(w.Body.String(), `"model":"m1"`) || strings.Contains(w.Body.String(), "up-m1") {
+		t.Fatalf("客户端应看到对外名且无上游名泄漏: %s", w.Body)
+	}
+	var billed string
+	_ = e.f.db.Raw(`SELECT model_name FROM usage_logs ORDER BY id DESC LIMIT 1`).Scan(&billed).Error
+	if billed != "m1" {
+		t.Fatalf("计费应锚定对外名 m1，got %s", billed)
 	}
 }
