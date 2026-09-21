@@ -9,7 +9,9 @@
 用法：python3 tools/e2e/run.py   # 失败退出码 1
 """
 import json
+import os
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
@@ -56,7 +58,7 @@ class MockHandler(BaseHTTPRequestHandler):
         code = self._code_by(key, self.path)
         if code == 429:
             self.send_response(429)
-            self.send_header('Retry-After', '5')
+            self.send_header('Retry-After', '1')  # 短冷却：A12 自愈重试不等太久
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps({'error': {'code': 'rate_limit', 'message': 'mock 429'}}).encode())
@@ -91,7 +93,11 @@ class MockHandler(BaseHTTPRequestHandler):
 
 
 def start_mock():
-    srv = ThreadingHTTPServer(('127.0.0.1', MOCK_PORT), MockHandler)
+    try:
+        srv = ThreadingHTTPServer(('127.0.0.1', MOCK_PORT), MockHandler)
+    except OSError as e:
+        sys.exit(f'内置 mock 上游绑定 :{MOCK_PORT} 失败（{e}）——'
+                 f'端口可能被残留的 tools/mockupstream 等占用，请先释放再跑')
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
 
@@ -175,12 +181,52 @@ def sse_chat(model, key):
 
 
 def db_rows(sql, args=()):
-    """只读打开 WAL 库做不变量校验"""
+    """只读做不变量校验：默认读 SQLite 文件；TG_E2E_DB_DSN 设为 PG 连接串
+    （如 'host=/tmp user=xx dbname=xx sslmode=disable'）时改走 psql，配合网关 PG 模式联调"""
+    dsn = os.environ.get('TG_E2E_DB_DSN', '')
+    if dsn:
+        return pg_rows(dsn, sql, args)
     conn = sqlite3.connect(f'file:{DB_PATH}?mode=ro', uri=True, timeout=5)
     try:
         return conn.execute(sql, args).fetchall()
     finally:
         conn.close()
+
+
+def pg_rows(dsn, sql, args):
+    """psql 子进程只读查询：? 占位符按序内联为字面量（args 仅限 int/str；
+    SQL 内不得出现字符串形式的 '?'），输出按字段还原 int/float/str 三型"""
+    def lit(v):
+        if v is None:
+            return 'NULL'
+        if isinstance(v, bool):
+            return "'t'" if v else "'f'"
+        if isinstance(v, int):
+            return str(v)
+        return "'" + str(v).replace("'", "''") + "'"
+
+    parts = sql.split('?')
+    if len(parts) - 1 != len(args):
+        raise RuntimeError(f'占位符与参数数量不符: {sql} / {args}')
+    rendered = parts[0]
+    for arg, part in zip(args, parts[1:]):
+        rendered += lit(arg) + part
+    sep = '\x1f'
+    res = subprocess.run(
+        ['psql', dsn, '-At', '-F', sep, '--no-psqlrc', '-v', 'ON_ERROR_STOP=1', '-c', rendered],
+        capture_output=True, text=True)
+    if res.returncode != 0:
+        raise RuntimeError('psql 查询失败: ' + res.stderr.strip())
+
+    def cast(f):
+        for conv in (int, float):
+            try:
+                return conv(f)
+            except ValueError:
+                continue
+        return f
+
+    return [tuple(cast(f) for f in line.split(sep)) for line in res.stdout.splitlines()]
 
 
 def main():
@@ -293,9 +339,29 @@ def main():
     m_txt_b, m_txt_a = (m_before if isinstance(m_before, str) else m_before.decode(errors='ignore'),
                         m_after if isinstance(m_after, str) else m_after.decode(errors='ignore'))
 
-    st, _, r = chat(m_rot, k1)
-    d429 = metric('tg_gateway_upstream_429_total', m_txt_a) - metric('tg_gateway_upstream_429_total', m_txt_b)
-    check('A12 上游 429 → 换 key 自愈 200', st == 200 and d429 >= 0, f'{st} Δ429={d429}')
+    # A12 两种冷却粒度下的自愈：key 粒度 → 网关请求内换 Key 重试，首轮即 200；
+    # channel 粒度（默认，厂商限额按账户）→ 整渠道冷却 Retry-After 秒，窗口过后重试恢复 200。
+    # 首轮命中好 Key 也直接 200。曾见 429 则上游 429 计数必须 +1（指标路径一并验证）。
+    body_rot = {'model': m_rot, 'max_tokens': 64, 'messages': [{'role': 'user', 'content': f'rot {TS}'}]}
+    _, _, m429_b = call('GET', '/metrics')
+    m429_b = m429_b if isinstance(m429_b, str) else m429_b.decode(errors='ignore')
+    st, h, r = call('POST', '/v1/chat/completions', body=body_rot, key=k1)
+    seen_429 = st == 429
+    for _ in range(6):
+        if st == 200:
+            break
+        try:
+            wait = int(h.get('Retry-After', '1')) + 1
+        except (TypeError, ValueError):
+            wait = 2
+        time.sleep(wait)
+        st, h, r = call('POST', '/v1/chat/completions', body=body_rot, key=k1)
+        seen_429 = seen_429 or st == 429
+    _, _, m429_a = call('GET', '/metrics')
+    m429_a = m429_a if isinstance(m429_a, str) else m429_a.decode(errors='ignore')
+    d429 = metric('tg_gateway_upstream_429_total', m429_a) - metric('tg_gateway_upstream_429_total', m429_b)
+    check('A12 上游 429 → 冷却/换 Key 自愈 200', st == 200 and (not seen_429 or d429 >= 1),
+          f'{st} 429见过={seen_429} Δ429={d429}')
     m_txt_b = m_txt_a
     _, _, m_txt_a = call('GET', '/metrics')
     m_txt_a = m_txt_a if isinstance(m_txt_a, str) else m_txt_a.decode(errors='ignore')
