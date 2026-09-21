@@ -416,8 +416,9 @@ def main():
         'admin_username': f'e2eb{TS}', 'admin_password': 'E2ePass123'})
     org2 = login(f'e2eb{TS}', 'E2ePass123')
     st, _, r = call('GET', '/api/org/members', org2)
-    items = r.get('items', [])
-    check('B5 客户隔离：对方看不到本客户成员列表', st == 200 and len(items) == 0, f'{items}')
+    items = r.get('list', [])  # PageResult 包络是 {list,total,page,page_size}
+    check('B5 客户隔离：对方看不到本客户成员列表',
+          st == 200 and r.get('total', -1) == 0 and not items, f'{r}')
     st, _, r = call('GET', f'/api/org/members/{m1_id}', org2)
     check('B6 客户隔离：越权查成员 → 404', st == 404, f'got {st}')
     st, _, r = call('GET', '/api/org/stats/overview', org2)
