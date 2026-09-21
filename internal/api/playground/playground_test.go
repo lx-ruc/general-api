@@ -1,7 +1,10 @@
 package playground
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -279,5 +282,55 @@ func TestStreamingPassthrough(t *testing.T) {
 	// usage 5×2 + 2×8 = 26
 	if got := quotaUsed(t, e.db, "users", 2); got != 26 {
 		t.Fatalf("流式结算应 26，得 %d", got)
+	}
+}
+
+// 1MB 自限的 413 必须先排空剩余请求体：写完 body 再读响应的客户端
+// （urllib/curl 等非全双工实现）在服务端未读尽就回包断开时会拿到内核
+// RST（broken pipe）而非 413。Go 自家 http.Client 全双工读写会掩盖该缺陷，
+// 必须用裸 socket 刻意复现受害客户端行为（与 middleware 的同款测试对齐）。
+func TestChatOversizeDrainsBody(t *testing.T) {
+	e := newPGEnv(t)
+	srv := httptest.NewServer(e.engine)
+	t.Cleanup(srv.Close)
+
+	tok := e.token(t, 2, "member", i64(1))
+	var payload bytes.Buffer
+	payload.WriteString(`{"model":"m1","messages":[{"role":"user","content":"`)
+	payload.Write(bytes.Repeat([]byte("x"), 6<<20)) // 6MB：远超回环缓冲，强制写中途阻塞
+	payload.WriteString(`"}]}`)
+
+	conn, err := net.Dial("tcp", srv.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	hdr := "POST /api/playground/chat HTTP/1.1\r\nHost: t\r\nContent-Type: application/json\r\n" +
+		"Authorization: Bearer " + tok + "\r\n" +
+		fmt.Sprintf("Content-Length: %d\r\n\r\n", payload.Len())
+	if _, err := conn.Write([]byte(hdr)); err != nil {
+		t.Fatal(err)
+	}
+	// 分块写：若服务端提前回包且未排空剩余 body，写中途会被 RST 断开
+	chunk := payload.Bytes()
+	for written := 0; written < len(chunk); {
+		end := written + (64 << 10)
+		if end > len(chunk) {
+			end = len(chunk)
+		}
+		n, werr := conn.Write(chunk[written:end])
+		written += n
+		if werr != nil {
+			t.Fatalf("写 body 中途被断开（客户端读不到 413）: written=%d/%d err=%v", written, len(chunk), werr)
+		}
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	resp, rerr := http.ReadResponse(bufio.NewReader(conn), nil)
+	if rerr != nil {
+		t.Fatalf("客户端应能读到 413 而非连接被重置: %v", rerr)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("超 1MB 应回 413，got %d", resp.StatusCode)
 	}
 }

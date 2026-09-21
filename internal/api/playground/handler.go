@@ -101,6 +101,10 @@ func (h *Handler) Chat(c *gin.Context) {
 
 	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 1<<20))
 	if err != nil || len(body) == 0 || len(body) >= 1<<20 {
+		// 先排空剩余请求体再回 413：不排空直接写响应并断开，内核 RST 会让
+		// "写完 body 再读响应"的客户端（urllib/curl）拿到 broken pipe 而非 413
+		// （与 middleware.MaxBody 同一缺陷类；外层 MaxBody 上限 4MB，排水封顶取同值）
+		middleware.DrainRequestBody(c.Request.Body, 4<<20)
 		openaiFail(c, http.StatusRequestEntityTooLarge, "request_too_large", "request body too large")
 		return
 	}
