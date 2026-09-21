@@ -47,7 +47,10 @@ func ParseToken(secret, tokenStr string) (*Claims, error) {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
 		return []byte(secret), nil
-	})
+	},
+		// 纵深防御：即使持密钥者手造的 token，缺 exp（永不过期）或签发者
+		// 不是本服务（共用密钥的其他系统）也一律拒绝
+		jwt.WithExpirationRequired(), jwt.WithIssuer("token-gateway"))
 	if err != nil || !token.Valid {
 		return nil, fmt.Errorf("invalid token")
 	}
