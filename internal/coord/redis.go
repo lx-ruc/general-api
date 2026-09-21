@@ -95,8 +95,10 @@ func (r *RedisCoord) IsCooling(scope string) bool {
 
 // cooldownLua 原子 keep-longer：现有 TTL 不存在或更短才覆盖。
 // 避免并发请求的短 429 冷却截断 401/403 的长效冷却（或短 Retry-After 截断长 Retry-After）
+// 注意必须用 PTTL（毫秒）：TTL 是秒精度，亚秒冷却返回 0 会被 cur<=0 误判为不存在，
+// 秒级窗口边界也被截断（1500ms 剩余 → TTL=1 → 1200ms 新冷却反而"更长"直接覆盖缩短）
 var cooldownLua = redis.NewScript(`
-local cur = redis.call('TTL', KEYS[1])
+local cur = redis.call('PTTL', KEYS[1])
 if cur <= 0 or tonumber(ARGV[2]) > cur then
   return redis.call('SET', KEYS[1], ARGV[1], 'PX', ARGV[2])
 end

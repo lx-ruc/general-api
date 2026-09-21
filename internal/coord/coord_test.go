@@ -2,6 +2,7 @@ package coord
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -164,22 +165,37 @@ func TestRedisCoord(t *testing.T) {
 		t.Fatal("长冷却应覆盖短冷却")
 	}
 
-	// 闸门
+	// 秒级窗口边界：1500ms 剩余时到达的 1200ms 冷却不得覆盖（TTL 秒精度会把
+	// 剩余截断成 1，令 1200>1 误判"更长"而缩短冷却——必须用 PTTL 毫秒比较）
+	rc.SetCooldown("t:cd4", 1500*time.Millisecond)
+	rc.SetCooldown("t:cd4", 1200*time.Millisecond)
+	if !rc.IsCooling("t:cd4") {
+		t.Fatal("覆盖后应仍在冷却期")
+	}
+	time.Sleep(1000 * time.Millisecond) // 1200ms 已过，1500ms 未到
+	if !rc.IsCooling("t:cd4") {
+		t.Fatal("短冷却不得截断长冷却（秒级边界）")
+	}
+
+	// 闸门（scope 带唯一后缀：防上一轮未释放的租约残留让本轮排队等 45s）
 	ctx := context.Background()
-	rel, ok := rc.AcquireSlot(ctx, "t:slot", 1)
+	slotScope := fmt.Sprintf("t:slot:%d", time.Now().UnixNano())
+	rel, ok := rc.AcquireSlot(ctx, slotScope, 1)
 	if !ok {
 		t.Fatal("首个名额应获取成功")
 	}
 	qctx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer cancel()
-	if _, ok := rc.AcquireSlot(qctx, "t:slot", 1); ok {
+	if _, ok := rc.AcquireSlot(qctx, slotScope, 1); ok {
 		t.Fatal("满员时排队超时不应获取成功")
 	}
 	rel()
 	rel() // 幂等
-	if _, ok := rc.AcquireSlot(ctx, "t:slot", 1); !ok {
+	rel2, ok := rc.AcquireSlot(ctx, slotScope, 1)
+	if !ok {
 		t.Fatal("释放后应可再次获取")
 	}
+	rel2() // 收尾释放，避免污染下一轮
 
 	// 缓存
 	rc.CacheSet("t:ck", []byte("v"), time.Minute)
