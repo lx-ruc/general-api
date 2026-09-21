@@ -240,6 +240,9 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 	// 读取 body（限长）
 	body, err := io.ReadAll(io.LimitReader(c.Request.Body, h.MaxBody+1))
 	if err != nil || int64(len(body)) > h.MaxBody {
+		// 已读 limit+1，剩余部分有界排空后再回 413：不读直接关会让
+		// "先写完再读" 的客户端（urllib/curl）撞上 RST 读不到错误响应
+		middleware.DrainRequestBody(c.Request.Body, h.MaxBody)
 		rec.Status, rec.Error = http.StatusRequestEntityTooLarge, "request body too large"
 		openaiError(c, http.StatusRequestEntityTooLarge, "request_too_large", "request body too large")
 		return
