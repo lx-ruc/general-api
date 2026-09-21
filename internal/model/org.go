@@ -14,7 +14,7 @@ type Org struct {
 	MonthlyPeriod     string `json:"monthly_period"`
 	Status            int    `json:"status"`              // 1启用 0停用 2欠费停服（自动）
 	RequireCostCenter int    `json:"require_cost_center"` // 1=新建 key 必须归集成本中心
-	AlertLevels       string `json:"alert_levels"`        // 预警阈值升序 JSON（[] = 关闭）
+	AlertLevels       string `json:"alert_levels" gorm:"default:'[80]'"` // 预警阈值升序 JSON（[] = 关闭）；零值省略走列默认 [80]，否则 GORM 会写入空串压掉默认
 	AlertLevel        int    `json:"alert_level"`         // 当前已达档位（边沿状态机）
 	AlertSince        int64  `json:"alert_since"`         // 进入当前档位的时间
 	CreatedAt         int64  `gorm:"autoCreateTime" json:"created_at"`

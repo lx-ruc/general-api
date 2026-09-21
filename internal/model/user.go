@@ -20,7 +20,7 @@ type User struct {
 	MonthlyQuota  int64  `json:"monthly_quota"` // 单月消费上限（点；0=不限）
 	MonthlyCost   int64  `json:"monthly_cost"`  // 当前账期累计（monthly_period 有效时）
 	MonthlyPeriod string `json:"monthly_period"`
-	AlertLevels   string `json:"alert_levels"` // 个人预警阈值 JSON（[] = 关闭；不限额者不参与）
+	AlertLevels   string `json:"alert_levels" gorm:"default:'[80]'"` // 个人预警阈值 JSON（[] = 关闭；不限额者不参与）；零值省略走列默认 [80]
 	AlertLevel   int    `json:"alert_level"`  // 当前已达档位（边沿状态机）
 	AlertSince   int64  `json:"alert_since"`
 	Status       int    `json:"status"`

@@ -34,6 +34,7 @@ func (h *Handler) GetAlertLevels(c *gin.Context) {
 		return
 	}
 	var row struct {
+		ID            int64
 		AlertLevels   string
 		AlertLevel    int
 		AlertSince    int64
@@ -43,9 +44,11 @@ func (h *Handler) GetAlertLevels(c *gin.Context) {
 		MonthlyCost   int64
 		MonthlyPeriod string
 	}
+	// 未配置过预警（alert_levels 空）不是错误：threshold 回 0（关闭）；
+	// 404 只留给客户真不存在（Raw+Scan 无行时零值，靠 ID 判别）
 	if err := h.DB.Raw(
-		"SELECT alert_levels, alert_level, alert_since, quota_limit, quota_used, monthly_quota, monthly_cost, monthly_period FROM orgs WHERE id = ?",
-		oid).Scan(&row).Error; err != nil || row.AlertLevels == "" {
+		"SELECT id, alert_levels, alert_level, alert_since, quota_limit, quota_used, monthly_quota, monthly_cost, monthly_period FROM orgs WHERE id = ?",
+		oid).Scan(&row).Error; err != nil || row.ID == 0 {
 		httpx.Fail(c, http.StatusNotFound, "客户不存在")
 		return
 	}
