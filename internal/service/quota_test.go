@@ -235,6 +235,102 @@ func TestQuotaConcurrentAdmissionAndSettle(t *testing.T) {
 	}
 }
 
+// 欠费停服状态机的全部边界迁移（并发主路径 1→2 已由 TestQuotaConcurrentAdmissionAndSettle 覆盖）：
+//   - 首次超扣结算：1 → 2（used 达 limit）
+//   - 充值有余量：2 → 1
+//   - 负回收后仍超限：status 停在 1（迁移只发生在结算点；停服效果由 Precheck 拦截兜底）
+//   - 手动停用（0）：结算不迁移、充值不误恢复（管理员意图优先）
+//   - quota_limit=0：结算不置 2（Precheck 已拦；防御性验证）
+//   - cost=0 结算（缓存命中/无 usage）：不做欠费迁移
+func TestArrearsStateMachine(t *testing.T) {
+	gdb, err := database.Open(config.Database{Driver: "sqlite", Path: t.TempDir() + "/arrears.db"})
+	if err != nil {
+		t.Fatalf("打开测试库失败: %v", err)
+	}
+	if err := database.Migrate(gdb); err != nil {
+		t.Fatalf("迁移失败: %v", err)
+	}
+	t.Cleanup(func() { sqlDB, _ := gdb.DB(); _ = sqlDB.Close() })
+	now := time.Now().Unix()
+
+	// org 21 正常额度；22 手动停用；23 limit=0；24 供 cost=0 结算
+	seed := func(id int64, limit int64, status int) {
+		_ = gdb.Exec(`INSERT INTO orgs (id, name, quota_limit, status, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)`, id, fmt.Sprintf("arr-%d", id), limit, status, now, now).Error
+		_ = gdb.Exec(`INSERT INTO users (id, org_id, username, password_hash, role, status, created_at, updated_at)
+			VALUES (?, ?, ?, 'x', 'member', 1, ?, ?)`, id, id, fmt.Sprintf("arru-%d", id), now, now).Error
+	}
+	seed(21, 100, 1)
+	seed(22, 100, 0)
+	seed(23, 0, 1)
+	seed(24, 100, 1)
+
+	status := func(id int64) int {
+		var s int
+		_ = gdb.Raw("SELECT status FROM orgs WHERE id = ?", id).Scan(&s).Error
+		return s
+	}
+	settle := func(id, cost int64) {
+		t.Helper()
+		rec := &model.UsageLog{RequestID: fmt.Sprintf("ar-%d-%d", id, cost), OrgID: id, UserID: id,
+			ModelName: "ar-m", Cost: cost, Status: 200, CreatedAt: now}
+		if err := Settle(gdb, rec); err != nil {
+			t.Fatalf("org %d 结算失败: %v", id, err)
+		}
+	}
+
+	// 21：首次超扣（used 99 < 100 放行，结算后 199 >= 100）→ 欠费停服
+	_ = gdb.Exec("UPDATE orgs SET quota_used = 99 WHERE id = 21").Error
+	_ = gdb.Exec("UPDATE users SET quota_used = 99 WHERE id = 21").Error
+	settle(21, 100)
+	if s := status(21); s != 2 {
+		t.Fatalf("[21] 首次超扣结算应置 status=2，got %d", s)
+	}
+	// 充值 +200 → limit 300 > used 199 → 自动恢复 1
+	if err := AddOrgQuota(gdb, 21, 200, 1, "充值恢复"); err != nil {
+		t.Fatalf("[21] 充值失败: %v", err)
+	}
+	if s := status(21); s != 1 {
+		t.Fatalf("[21] 充值有余量应恢复 status=1，got %d", s)
+	}
+	// 负回收 −250 → limit 50 < used 199 → status 停在 1（迁移只在结算点；Precheck 拦截兜底）
+	if err := AddOrgQuota(gdb, 21, -250, 1, "回收仍超限"); err != nil {
+		t.Fatalf("[21] 负回收失败: %v", err)
+	}
+	if s := status(21); s != 1 {
+		t.Fatalf("[21] 负回收后 status 应保持 1（不在此处迁移），got %d", s)
+	}
+	if err := Precheck(gdb, 21); err != ErrOrgQuota {
+		t.Fatalf("[21] 回收超限后 Precheck 应拒（ErrOrgQuota），got %v", err)
+	}
+
+	// 22：手动停用下结算不迁移、充值不误恢复
+	_ = gdb.Exec("UPDATE orgs SET quota_used = 99 WHERE id = 22").Error
+	settle(22, 100)
+	if s := status(22); s != 0 {
+		t.Fatalf("[22] 手动停用结算不得迁移（保持 0），got %d", s)
+	}
+	if err := AddOrgQuota(gdb, 22, 1000, 1, "充值"); err != nil {
+		t.Fatalf("[22] 充值失败: %v", err)
+	}
+	if s := status(22); s != 0 {
+		t.Fatalf("[22] 手动停用充值不得误恢复（保持 0），got %d", s)
+	}
+
+	// 23：limit=0 结算不置 2（quota_limit > 0 条件；Precheck 已在入口拦截）
+	settle(23, 50)
+	if s := status(23); s != 1 {
+		t.Fatalf("[23] limit=0 结算不应置 2，got %d", s)
+	}
+
+	// 24：cost=0（缓存命中/无 usage）结算不做欠费评估——即使已超限也不迁移
+	_ = gdb.Exec("UPDATE orgs SET quota_used = 150 WHERE id = 24").Error
+	settle(24, 0)
+	if s := status(24); s != 1 {
+		t.Fatalf("[24] cost=0 结算不应迁移 status，got %d", s)
+	}
+}
+
 // PointsPerYuan 超长数字串不得回绕出任意汇率
 func TestPointsPerYuanOverflow(t *testing.T) {
 	gdb, err := database.Open(config.Database{Driver: "sqlite", Path: t.TempDir() + "/pp.db"})
