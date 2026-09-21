@@ -1115,22 +1115,31 @@ func (h *Handler) UpdateModel(c *gin.Context) {
 		return
 	}
 	var req struct {
-		DisplayName     string `json:"display_name"`
-		Vendor          string `json:"vendor"`
-		InputPrice      *int64 `json:"input_price" binding:"required,min=0"`
-		OutputPrice     *int64 `json:"output_price" binding:"required,min=0"`
-		CostInputPrice  *int64 `json:"cost_input_price" binding:"min=0"`
-		CostOutputPrice *int64 `json:"cost_output_price" binding:"min=0"`
-		Status          *int   `json:"status"`
-		Remark          string `json:"remark"`
+		DisplayName     *string `json:"display_name"`
+		Vendor          *string `json:"vendor"`
+		InputPrice      *int64  `json:"input_price" binding:"required,min=0"`
+		OutputPrice     *int64  `json:"output_price" binding:"required,min=0"`
+		CostInputPrice  *int64  `json:"cost_input_price" binding:"omitempty,min=0"`
+		CostOutputPrice *int64  `json:"cost_output_price" binding:"omitempty,min=0"`
+		Status          *int    `json:"status"`
+		Remark          *string `json:"remark"`
 	}
 	if !httpx.BindJSON(c, &req) {
 		return
 	}
+	// 指针语义：未传的字段不修改——部分更新（如仅改 status）不得抹空 display_name/vendor/remark
 	updates := map[string]any{
-		"display_name": req.DisplayName, "vendor": req.Vendor,
 		"input_price": *req.InputPrice, "output_price": *req.OutputPrice,
-		"remark": req.Remark, "updated_at": time.Now().Unix(),
+		"updated_at": time.Now().Unix(),
+	}
+	if req.DisplayName != nil {
+		updates["display_name"] = *req.DisplayName
+	}
+	if req.Vendor != nil {
+		updates["vendor"] = *req.Vendor
+	}
+	if req.Remark != nil {
+		updates["remark"] = *req.Remark
 	}
 	if req.CostInputPrice != nil {
 		updates["cost_input_price"] = *req.CostInputPrice

@@ -278,9 +278,9 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		rec.IsStream = 1
 	}
 
-	// 模型存在且启用
+	// 模型存在且启用（禁用模型与不存在同响应，不泄漏存在性；与 /v1/models、playground 的 status=1 口径一致）
 	var m model.Model
-	if err := h.DB.Where("name = ?", modelName).First(&m).Error; err != nil {
+	if err := h.DB.Where("name = ? AND status = 1", modelName).First(&m).Error; err != nil {
 		rec.Status, rec.Error = http.StatusNotFound, "model not found: "+truncateStr(modelName, 100)
 		openaiError(c, http.StatusNotFound, "invalid_request_error",
 			fmt.Sprintf("model %q does not exist or is not available", modelName))

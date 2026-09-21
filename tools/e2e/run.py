@@ -496,6 +496,27 @@ def main():
     st, _, r = call('PUT', '/api/me/password', member_tok, {'old_password': 'wrong', 'new_password': 'Xx12345678'})
     check('B28 改密码：旧密码错误被拒', st == 400 or st == 401 or st == 422, f'{st}')
 
+    # 模型下架：渠道能力/授权仍在，数据面也必须 404（与 /v1/models 口径一致）；部分更新不抹空展示名
+    st, _, r = call('GET', '/api/platform/models', admin)
+    mlst = r.get('list') if isinstance(r, dict) else r
+    m_free_id = next(x['id'] for x in mlst if x.get('name') == m_free)
+    dn_before = next(x.get('display_name') or '' for x in mlst if x['id'] == m_free_id)
+    st, _, r = call('PUT', f'/api/platform/models/{m_free_id}', admin,
+                    {'input_price': 0, 'output_price': 0, 'status': 0})
+    check('B29 模型下架（部分更新）', st == 200, f'{st} {r}')
+    st, _, r = chat(m_free, k1)
+    code = (r.get('error') or {}).get('code') if isinstance(r, dict) else None
+    check('B30 下架后数据面 404（渠道/授权仍在也不放行）',
+          st == 404 and code == 'invalid_request_error', f'{st} {code}')
+    st, _, r = call('PUT', f'/api/platform/models/{m_free_id}', admin, {'input_price': 0, 'output_price': 0, 'status': 1})
+    check('B31 重新上架', st == 200, f'{st}')
+    st, _, r = chat(m_free, k1)
+    check('B32 重新上架后恢复 200', st == 200, f'{st}')
+    st, _, r = call('GET', '/api/platform/models', admin)
+    mlst = r.get('list') if isinstance(r, dict) else r
+    dn_after = next((x.get('display_name') or '') for x in mlst if x['id'] == m_free_id)
+    check('B33 部分更新不抹空 display_name', dn_after == dn_before, f'{dn_before!r} -> {dn_after!r}')
+
     # ============ C. 计费不变量（直接查库） ============
     bad = db_rows("""
         SELECT u.id, u.username, COALESCE(u.quota_limit,0), COALESCE((SELECT SUM(amount) FROM quota_grants g WHERE g.subject_type='user' AND g.subject_id=u.id),0)

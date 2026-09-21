@@ -575,3 +575,46 @@ func TestAllKeys401ReturnsChannelKeyInvalid(t *testing.T) {
 		t.Fatalf("两把 Key 均应被自动禁用，got %d", disabled)
 	}
 }
+
+// 模型被平台下架（status=0）后，数据面必须与"模型不存在"同响应（404 invalid_request_error）：
+// 渠道能力与用户授权都还在也不得放行计费（与 /v1/models、playground 的 m.status=1 口径一致）。
+// chat 与 embeddings 共用 relay 预检，两条路都验证；上游命中数必须为 0。
+func TestDisabledModelRejected(t *testing.T) {
+	e := newTestEnv(t)
+	var hits atomic.Int64
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(okBody))
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch-dis", up.URL, nil, 1)
+
+	// 基线：启用时可通
+	if w := e.post(chatBody("q1", "")); w.Code != http.StatusOK {
+		t.Fatalf("启用模型应 200，got %d body=%s", w.Code, w.Body)
+	}
+	// 下架（保留渠道能力与用户授权——模拟 UpdateModel status=0 的真实后果）
+	mustExec(t, e.f, `UPDATE models SET status = 0 WHERE name = 'm1'`)
+
+	w := e.post(chatBody("q2", ""))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("下架模型应 404，got %d body=%s", w.Code, w.Body)
+	}
+	if !strings.Contains(w.Body.String(), "does not exist or is not available") {
+		t.Fatalf("报错应与模型不存在同文案（不泄漏存在性）: %s", w.Body)
+	}
+	we := e.postEmbed(`{"model":"m1","input":"q3"}`)
+	if we.Code != http.StatusNotFound {
+		t.Fatalf("embeddings 下架模型也应 404，got %d body=%s", we.Code, we.Body)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("下架后不得再触达上游，hits=%d（仅基线 1 次）", got)
+	}
+	// 拒绝的请求仍留审计行：status=404 且不计费
+	var rows int64
+	_ = e.f.db.Raw(`SELECT COUNT(*) FROM usage_logs WHERE status = 404 AND cost = 0`).Scan(&rows).Error
+	if rows < 2 {
+		t.Fatalf("chat/embeddings 拒绝各应留一条 404 审计行，got %d", rows)
+	}
+}
