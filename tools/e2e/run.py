@@ -549,6 +549,35 @@ def main():
     rows = db_rows("SELECT COALESCE(quota_used,0) FROM users WHERE id=?", (mq_id,))
     check('C8 超扣封顶在单请求成本内（300 限额两次 200 后 ≈400）', 0 < rows[0][0] <= 400, f'{rows[0][0]}')
 
+    # ============ D. 清理本轮残留（不留垃圾给联调库） ============
+    def db_exec(sql, args=()):
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn.execute(sql, args)
+        conn.commit()
+        conn.close()
+
+    # org 删除不级联 quota_grants/recharge_requests——先手工清流水再删 org
+    for oid, in db_rows("SELECT id FROM orgs WHERE name LIKE ?", (f'e2e-%{TS}%',)):
+        db_exec("DELETE FROM quota_grants WHERE subject_type='org' AND subject_id=?", (oid,))
+        db_exec("DELETE FROM recharge_requests WHERE org_id=?", (oid,))
+        call('DELETE', f'/api/platform/orgs/{oid}', admin)
+    for ch in (ch_ok, ch_nokey, ch_500, ch_ok2, ch_rot, ch_dis):
+        db_exec("DELETE FROM vendor_bills WHERE channel_id=?", (ch,))
+        call('DELETE', f'/api/platform/channels/{ch}', admin)
+    for m in (m_free, m_priced, m_noch, m_nokey, m_nogrant, m_fail, m_rot, m_dis):
+        row = db_rows("SELECT id FROM models WHERE name=?", (m,))
+        if row:
+            call('DELETE', f"/api/platform/models/{row[0][0]}", admin)
+    db_exec("DELETE FROM usage_logs WHERE model_name LIKE ?", (f'e2e-%{TS}',))
+    db_exec("DELETE FROM quota_requests WHERE reason = 'e2e 测试'")
+
+    left = db_rows("SELECT COUNT(*) FROM orgs WHERE name LIKE ?", (f'e2e-%{TS}%',))[0][0]
+    left += db_rows("SELECT COUNT(*) FROM channels WHERE name LIKE ?", (f'e2e-%{TS}%',))[0][0]
+    left += db_rows("SELECT COUNT(*) FROM models WHERE name LIKE ?", (f'e2e-%{TS}%',))[0][0]
+    left += db_rows("SELECT COUNT(*) FROM users WHERE username LIKE ?", (f'e2e%{TS}',))[0][0]
+    left += db_rows("SELECT COUNT(*) FROM usage_logs WHERE model_name LIKE ?", (f'e2e-%{TS}',))[0][0]
+    check('D1 本轮测试残留清零', left == 0, f'left={left}')
+
     # ============ 汇总 ============
     fails = [r for r in results if r[0] == 'FAIL']
     print(f'\n==== {len(results) - len(fails)}/{len(results)} 通过，{len(fails)} 失败 ====')
