@@ -39,6 +39,8 @@ async function submit() {
   ElMessage.success(action.value === 'approve' ? '已批准并追加额度' : '已驳回')
   replyVisible.value = false
   load()
+  // 通知布局刷新侧边栏待审批角标（审批后 pending 数已变）
+  window.dispatchEvent(new CustomEvent('quota-requests-changed'))
 }
 
 const statusType = (s: string) => (s === 'pending' ? 'warning' : s === 'approved' ? 'success' : 'danger')

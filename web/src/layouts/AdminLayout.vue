@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '../stores/auth'
@@ -80,16 +80,21 @@ function handleLogout() {
   router.push('/login')
 }
 
-// 待审批额度申请角标（客户管理员）
+// 待审批额度申请角标（客户管理员）。额度申请页审批/驳回后广播
+// quota-requests-changed 事件，这里监听重拉，避免角标留旧值误导
 const pendingCount = ref(0)
-onMounted(async () => {
-  if (auth.user?.role === 'org_admin') {
-    try {
-      const r = await apiOrgRequests({ status: 'pending', page: 1, page_size: 1 })
-      pendingCount.value = r.total || 0
-    } catch { /* 拉取失败不打扰 */ }
-  }
+async function refreshPending() {
+  if (auth.user?.role !== 'org_admin') return
+  try {
+    const r = await apiOrgRequests({ status: 'pending', page: 1, page_size: 1 })
+    pendingCount.value = r.total || 0
+  } catch { /* 拉取失败不打扰 */ }
+}
+onMounted(() => {
+  refreshPending()
+  window.addEventListener('quota-requests-changed', refreshPending)
 })
+onUnmounted(() => window.removeEventListener('quota-requests-changed', refreshPending))
 
 // 修改密码
 const pwdVisible = ref(false)
