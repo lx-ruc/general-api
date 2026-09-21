@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"log/slog"
+	"os"
 
 	"gorm.io/gorm"
 
@@ -20,6 +21,11 @@ var migrateTables = []string{
 // MigrateFromSQLite 把一个 SQLite 库的全部业务数据搬到当前库（通常为 postgres）。
 // 目标表非空时跳过该表（防重复导入）；迁移后打印逐表行数核对。
 func MigrateFromSQLite(dst *gorm.DB, srcPath string) error {
+	// SQLite 驱动对不存在的路径会静默新建空库：源路径打错字会"成功迁移 0 行"，
+	// 必须先确认文件真实存在
+	if _, err := os.Stat(srcPath); err != nil {
+		return fmt.Errorf("源库文件不可访问: %w", err)
+	}
 	src, err := database.Open(config.Database{Driver: "sqlite", Path: srcPath})
 	if err != nil {
 		return fmt.Errorf("打开源 SQLite 失败: %w", err)
@@ -41,10 +47,15 @@ func MigrateFromSQLite(dst *gorm.DB, srcPath string) error {
 			continue
 		}
 		var rows []map[string]any
-		if err := src.Table(t).Order("id").Find(&rows).Error; err != nil {
+		// settings 无 id 列（key 为主键），排序键随表调整；其余表按 id 保证迁移顺序确定
+		order := "id"
+		if t == "settings" {
+			order = "key"
+		}
+		if err := src.Table(t).Order(order).Find(&rows).Error; err != nil {
 			return fmt.Errorf("读取 %s 失败: %w", t, err)
 		}
-		// settings 无 id 列时 Find map 也能工作；批量写入
+		// 批量写入
 		if err := dst.Table(t).CreateInBatches(&rows, 500).Error; err != nil {
 			return fmt.Errorf("写入 %s 失败: %w", t, err)
 		}
@@ -57,8 +68,9 @@ func MigrateFromSQLite(dst *gorm.DB, srcPath string) error {
 		totalDst += dstCount
 	}
 
-	// PG：重置 identity 序列到最大 id（显式 is_called=true），并回读校验
-	if database.Dialect == "postgres" {
+	// PG：重置 identity 序列到最大 id（显式 is_called=true），并回读校验。
+	// 用 dst 自身方言判断——database.Dialect 是全局量，上面打开源 SQLite 已把它改成 sqlite
+	if dst.Dialector.Name() == "postgres" {
 		for _, t := range migrateTables {
 			if t == "settings" {
 				continue
