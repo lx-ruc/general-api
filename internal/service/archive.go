@@ -54,8 +54,10 @@ func ArchiveUsageOnce(db *gorm.DB, retentionMonths int, archiveDir string, loc *
 	if retentionMonths <= 0 {
 		return 0, nil
 	}
+	// COALESCE：空表 MIN 为 NULL，直接 Scan 进 int64 会报 converting NULL 错
+	// （启用归档的全新部署每次启动都会走到这里）
 	var minTS int64
-	if err := db.Raw("SELECT MIN(created_at) FROM usage_logs").Scan(&minTS).Error; err != nil {
+	if err := db.Raw("SELECT COALESCE(MIN(created_at), 0) FROM usage_logs").Scan(&minTS).Error; err != nil {
 		return 0, fmt.Errorf("查最早 usage_log: %w", err)
 	}
 	if minTS == 0 {

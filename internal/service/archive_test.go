@@ -34,6 +34,19 @@ func countUsage(f *dbFixture2) int64 {
 	return n
 }
 
+// 空表启动：MIN(created_at) 为 NULL，应静默跳过而非 Scan 报错
+// （启用归档的全新部署每次启动都会走这条路，曾实际炸出 ERROR 日志）
+func TestArchiveEmptyTable(t *testing.T) {
+	f := newMonthlyDB(t)
+	n, err := ArchiveUsageOnce(f.db, 2, t.TempDir(), BillingLocation("Asia/Shanghai"))
+	if err != nil {
+		t.Fatalf("空表不应报错: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("空表应归档 0 行, got %d", n)
+	}
+}
+
 // retention=1：早于上月上线的整月导出+删除，当月保留；文件行数与库内一致
 func TestArchiveExportsAndPrunes(t *testing.T) {
 	f := newMonthlyDB(t)
