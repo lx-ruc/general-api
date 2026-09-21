@@ -17,6 +17,7 @@ import (
 
 	"token-gateway/internal/auth"
 	"token-gateway/internal/crypto"
+	"token-gateway/internal/database"
 	"token-gateway/internal/gateway"
 	"token-gateway/internal/httpx"
 	"token-gateway/internal/middleware"
@@ -121,6 +122,11 @@ func (h *Handler) CreateOrg(c *gin.Context) {
 		}).Error
 	})
 	if err != nil {
+		// 并发同客户名/同管理员用户名：预检查拦不住，映射回同款文案（防驱动错误原文泄漏）
+		if database.IsDuplicateKey(err) {
+			httpx.Fail(c, http.StatusBadRequest, "客户名或管理员用户名已存在")
+			return
+		}
 		httpx.Fail(c, http.StatusInternalServerError, "创建客户失败: "+err.Error())
 		return
 	}
@@ -1091,6 +1097,11 @@ func (h *Handler) CreateModel(c *gin.Context) {
 		Status: status, Remark: req.Remark,
 	}
 	if err := h.DB.Create(&m).Error; err != nil {
+		// 并发同模型名：映射回与预检查一致的 400（原为 500 泛化错误）
+		if database.IsDuplicateKey(err) {
+			httpx.Fail(c, http.StatusBadRequest, "模型名已存在")
+			return
+		}
 		httpx.Fail(c, http.StatusInternalServerError, "创建模型失败")
 		return
 	}

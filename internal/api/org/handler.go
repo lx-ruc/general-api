@@ -118,6 +118,11 @@ func (h *Handler) CreateMember(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
+		// 并发同用户名建号：预检查拦不住，映射回同款文案（原缺陷：500 + 驱动错误原文泄漏）
+		if database.IsDuplicateKey(err) {
+			httpx.Fail(c, http.StatusBadRequest, "用户名已存在")
+			return
+		}
 		httpx.Fail(c, http.StatusInternalServerError, "创建子账号失败: "+err.Error())
 		return
 	}

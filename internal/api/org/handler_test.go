@@ -228,3 +228,53 @@ func TestDeleteMemberCleansAccessTokens(t *testing.T) {
 		t.Fatalf("子账号删除后其访问令牌应一并清理，剩 %d", cnt)
 	}
 }
+
+// 并发同用户名建子账号：预检查拦不住竞态，败者撞 users.username 唯一索引。
+// 原缺陷：败者拿 500 + 驱动错误原文「constraint failed: UNIQUE constraint failed:
+// users.username (2067)」；现应 400 + 与预检查一致的文案
+func TestCreateMemberConcurrentDuplicateFriendly(t *testing.T) {
+	e := newOrgEnv(t)
+	const body = `{"username":"dupuser","password":"Pass123456"}`
+	const n = 8
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	codes := make([]int, n)
+	bodies := make([]string, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			w := e.do(http.MethodPost, "/api/org/members", body)
+			codes[i], bodies[i] = w.Code, w.Body.String()
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	ok := 0
+	for i := 0; i < n; i++ {
+		if codes[i] == http.StatusOK {
+			ok++
+		}
+	}
+	if ok != 1 {
+		t.Fatalf("并发建号应恰 1 成功，得 %d：%v %v", ok, codes, bodies)
+	}
+	for i := 0; i < n; i++ {
+		if codes[i] == http.StatusOK {
+			continue
+		}
+		if codes[i] != http.StatusBadRequest || !strings.Contains(bodies[i], "用户名已存在") {
+			t.Fatalf("败者应 400 + 友好文案，得 %d: %s", codes[i], bodies[i])
+		}
+		if strings.Contains(bodies[i], "constraint") {
+			t.Fatalf("驱动错误原文泄漏: %s", bodies[i])
+		}
+	}
+	var cnt int64
+	_ = e.db.Raw(`SELECT COUNT(*) FROM users WHERE username='dupuser'`).Scan(&cnt).Error
+	if cnt != 1 {
+		t.Fatalf("库中应恰 1 行，得 %d", cnt)
+	}
+}

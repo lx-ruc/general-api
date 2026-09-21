@@ -1,6 +1,8 @@
 package service
 
 import (
+	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -113,5 +115,51 @@ func TestVerifyConcurrentSingleConsumption(t *testing.T) {
 	wg.Wait()
 	if okCount != 1 {
 		t.Fatalf("并发正确验证应恰好成功 1 次，得 %d", okCount)
+	}
+}
+
+// 并发同用户名注册：预检查（SELECT COUNT）拦不住竞态，败者撞 users.username 唯一索引，
+// 必须拿到与预检查一致的友好文案——原缺陷：把驱动原始错误
+// 「constraint failed: UNIQUE constraint failed: users.username (2067)」原样泄漏给注册方
+func TestRegisterCompanyConcurrentDuplicateFriendly(t *testing.T) {
+	v, db := newVerifyEnv(t)
+	now := time.Now().Unix()
+	emails := []string{"ca@x.com", "cb@x.com"}
+	for _, e := range emails {
+		if err := db.Exec(`INSERT INTO verification_codes (email, code, expire_at, sent_at, attempts)
+			VALUES (?, '123456', ?, ?, 0)`, e, now+300, now).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	errs := make([]error, len(emails))
+	for i, e := range emails {
+		wg.Add(1)
+		go func(i int, e string) {
+			defer wg.Done()
+			<-start
+			errs[i] = v.RegisterCompany(db, fmt.Sprintf("并发客户%d", i), e, "123456", "sameuser", "Pass123456")
+		}(i, e)
+	}
+	close(start)
+	wg.Wait()
+
+	var users int64
+	_ = db.Raw(`SELECT COUNT(*) FROM users WHERE username='sameuser'`).Scan(&users).Error
+	if users != 1 {
+		t.Fatalf("并发同用户名应恰建 1 个账号，得 %d", users)
+	}
+	for _, err := range errs {
+		if err == nil {
+			continue // 胜者
+		}
+		msg := err.Error()
+		if strings.Contains(msg, "constraint") || strings.Contains(msg, "SQLSTATE") {
+			t.Fatalf("败者拿到驱动原始错误: %s", msg)
+		}
+		if msg != "账号或邮箱已被使用" {
+			t.Fatalf("败者文案不符: %q", msg)
+		}
 	}
 }

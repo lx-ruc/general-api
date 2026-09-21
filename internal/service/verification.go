@@ -15,6 +15,7 @@ import (
 
 	"token-gateway/internal/auth"
 	"token-gateway/internal/config"
+	"token-gateway/internal/database"
 	"token-gateway/internal/model"
 )
 
@@ -158,7 +159,7 @@ func (v *Verification) RegisterCompany(db *gorm.DB, orgName, email, code, userna
 	if err != nil {
 		return err
 	}
-	return db.Transaction(func(tx *gorm.DB) error {
+	err = db.Transaction(func(tx *gorm.DB) error {
 		org := model.Org{Name: orgName, Remark: "自助注册 · 邮箱 " + email, QuotaLimit: 0, Status: 1}
 		if err := tx.Create(&org).Error; err != nil {
 			return err
@@ -169,6 +170,18 @@ func (v *Verification) RegisterCompany(db *gorm.DB, orgName, email, code, userna
 			Role: model.RoleOrgAdmin, Status: 1,
 		}).Error
 	})
+	if err != nil {
+		// 并发同用户名/同客户名注册：预检查拦不住，后来者撞唯一索引——
+		// 映射回与预检查一致的文案，不把驱动原始错误泄漏给注册方
+		if database.IsDuplicateKey(err) {
+			if strings.Contains(err.Error(), "users") {
+				return fmt.Errorf("账号或邮箱已被使用")
+			}
+			return fmt.Errorf("客户名已被注册")
+		}
+		return err
+	}
+	return nil
 }
 
 // sendMail 标准库 SMTP 发送；465 端口走 SSL，其余走 STARTTLS
