@@ -618,3 +618,50 @@ func TestDisabledModelRejected(t *testing.T) {
 		t.Fatalf("chat/embeddings 拒绝各应留一条 404 审计行，got %d", rows)
 	}
 }
+
+// 闸门排队超时的终态：唯一渠道占满且等待超时 → 换不到候选落默认分支
+// 502 upstream_error（带 queue wait timeout 语义），并计入排队超时指标；
+// 占位请求释放闸门后恢复通行
+func TestQueueWaitTimeoutReturns502(t *testing.T) {
+	e := newTestEnv(t)
+	e.h.MaxConcurrency = 1
+	e.h.QueueWaitTimeout = 50 * time.Millisecond
+	allow := make(chan struct{})
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-allow // 受控上游：放行前不回复，占住闸门
+		_, _ = w.Write([]byte(okBody))
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch-q", up.URL, nil, 1)
+
+	// 占位请求（异步）：拿走唯一闸门名额，挂在上游等待
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if w := e.post(chatBody("holder", "")); w.Code != http.StatusOK {
+			t.Errorf("占位请求最终应 200，got %d", w.Code)
+		}
+	}()
+	time.Sleep(150 * time.Millisecond) // 确保占位已拿到闸门
+
+	before := e.m.QueueTimeouts.Value()
+	w := e.post(chatBody("second", ""))
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("排队超时应 502，got %d body=%s", w.Code, w.Body)
+	}
+	if !strings.Contains(w.Body.String(), "queue wait timeout") {
+		t.Fatalf("错误信息应含 queue wait timeout: %s", w.Body)
+	}
+	if got := e.m.QueueTimeouts.Value() - before; got != 1 {
+		t.Fatalf("排队超时指标应 +1，got +%d", got)
+	}
+
+	close(allow)
+	wg.Wait()
+	// 闸门已释放：新请求立即通行
+	w = e.post(chatBody("third", ""))
+	if w.Code != http.StatusOK {
+		t.Fatalf("释放后应恢复 200，got %d body=%s", w.Code, w.Body)
+	}
+}
