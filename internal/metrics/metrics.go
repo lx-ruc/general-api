@@ -44,6 +44,7 @@ type Histogram struct {
 	buckets    []float64 // 上界
 	counts     []uint64
 	sum        atomic.Uint64 // 微秒累加，导出时转秒
+	total      atomic.Uint64 // 观察次数；与桶解耦（超出最大桶的观察也必须计入 _count/+Inf）
 	mu         sync.Mutex
 }
 
@@ -54,6 +55,7 @@ func NewHistogram(name, help string, buckets []float64) *Histogram {
 func (h *Histogram) Observe(seconds float64) {
 	us := uint64(seconds * 1e6)
 	h.sum.Add(us)
+	h.total.Add(1)
 	h.mu.Lock()
 	for i, b := range h.buckets {
 		if seconds <= b {
@@ -166,16 +168,17 @@ func writeHistogram(b *strings.Builder, h *Histogram) {
 	}
 	b.WriteString(fmt.Sprintf("# HELP %s %s\n# TYPE %s histogram\n", h.name, h.help, h.name))
 	h.mu.Lock()
-	var totalCount uint64
 	for i, c := range h.counts {
-		totalCount += c
 		b.WriteString(fmt.Sprintf("%s_bucket{le=%q} %d\n", h.name, trimFloat(h.buckets[i]), c))
 	}
 	sumUs := h.sum.Load()
 	h.mu.Unlock()
-	b.WriteString(fmt.Sprintf("%s_bucket{le=\"+Inf\"} %d\n", h.name, totalCount))
+	// 总数 = 观察次数本身。桶是累积语义（一次观察落入所有 ≥ 值的桶），
+	// 对桶求和会把快请求重复计 len(buckets) 倍，_count 与 +Inf 曾因此虚高 10 倍
+	total := h.total.Load()
+	b.WriteString(fmt.Sprintf("%s_bucket{le=\"+Inf\"} %d\n", h.name, total))
 	b.WriteString(fmt.Sprintf("%s_sum %s\n", h.name, trimFloat(float64(sumUs)/1e6)))
-	b.WriteString(fmt.Sprintf("%s_count %d\n", h.name, totalCount))
+	b.WriteString(fmt.Sprintf("%s_count %d\n", h.name, total))
 }
 
 func trimFloat(f float64) string {
