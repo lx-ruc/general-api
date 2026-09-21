@@ -13,7 +13,9 @@ import (
 	"token-gateway/internal/model"
 )
 
-var pwdRe = regexp.MustCompile(`("(?:password|new_password|old_password|upstream_key)"\s*:\s*")[^"]*(")`)
+// 任意以 password 结尾的字段（password/admin_password/new_password/old_password…）、
+// upstream_key 与 keys 数组（渠道 Key 池批量入参）都脱敏——值形态度不限于字符串
+var pwdRe = regexp.MustCompile(`("(?:[a-z_]*password|upstream_key|keys)"\s*:\s*)(?:"[^"]*"|\[[^\]]*\])`)
 
 // Audit 管理台写操作审计：记录 /api 下所有非 GET 请求（登录除外）。
 // 密码/密钥字段脱敏；数据面 /v1 不记（量大且已有 usage_logs）。
@@ -39,7 +41,7 @@ func Audit(db *gorm.DB) gin.HandlerFunc {
 		c.Next()
 		// 异步落库，不阻塞响应
 		uid := GetUID(c)
-		detail := pwdRe.ReplaceAllString(string(body), "${1}***${2}")
+		detail := pwdRe.ReplaceAllString(string(body), `${1}"***"`)
 		if len(detail) > 500 {
 			detail = detail[:500] + "..."
 		}
