@@ -74,7 +74,10 @@ func Precheck(db *gorm.DB, userID int64) error {
 	return nil
 }
 
-// Settle 事后结算：响应已发给客户端，无法回滚，故无条件记账（超扣幅度封顶在单请求成本内）。
+// Settle 事后结算：响应已发给客户端，无法回滚，故无条件记账。
+// 超扣上界：串行到达时封顶在单请求成本内；并发齐射下 N 个在飞请求可同时通过
+// advisory 预检，上界放宽为 N×单次成本（可用性优先的既定设计，见 docs/需求验收报告.md；
+// 并发语义由 TestQuotaConcurrentAdmissionAndSettle 固化）。
 // cost>0 时同事务双记账（总额 + 月累计，跨月首笔原子重置）+ 欠费检查：
 // 客户总额度耗尽 → 自动置 status=2 欠费停服（仅从 1 迁移；手动停用 0 不受影响）。
 func Settle(db *gorm.DB, rec *model.UsageLog) error {

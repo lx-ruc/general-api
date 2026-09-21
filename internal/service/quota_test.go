@@ -1,12 +1,15 @@
 package service
 
 import (
+	"fmt"
 	"math"
+	"sync"
 	"testing"
 	"time"
 
 	"token-gateway/internal/config"
 	"token-gateway/internal/database"
+	"token-gateway/internal/model"
 )
 
 func TestQuotaLedgerInvariant(t *testing.T) {
@@ -146,6 +149,89 @@ func TestAddQuotaOverflowGuard(t *testing.T) {
 	}
 	if err := AddUserQuota(gdb, 7, 7, 1000, 1, "正常"); err != nil {
 		t.Fatalf("正常追加失败: %v", err)
+	}
+}
+
+// 并发额度竞态的两条既定语义（可用性优先的 advisory 预检 + 无条件结算，见 docs/需求验收报告.md）：
+//  1. 预检不锁：N 路并发预检在余额未尽时全部放行（并发齐射的超扣上界是 N×单次成本，
+//     「封顶在单请求成本内」仅对串行到达成立）
+//  2. 结算不丢：N 路并发 Settle 每一笔都必须落账——quota_used 与 Σusage_logs.cost
+//     精确相等（SQLite WAL _txlock=immediate 单写者串行化下不得出现丢失更新），
+//     且额度耗尽后 org 自动置欠费停服
+func TestQuotaConcurrentAdmissionAndSettle(t *testing.T) {
+	gdb, err := database.Open(config.Database{Driver: "sqlite", Path: t.TempDir() + "/race.db"})
+	if err != nil {
+		t.Fatalf("打开测试库失败: %v", err)
+	}
+	if err := database.Migrate(gdb); err != nil {
+		t.Fatalf("迁移失败: %v", err)
+	}
+	t.Cleanup(func() { sqlDB, _ := gdb.DB(); _ = sqlDB.Close() })
+	now := time.Now().Unix()
+	const uid, oid, limit, cost = int64(11), int64(11), int64(300), int64(200)
+	_ = gdb.Exec(`INSERT INTO orgs (id, name, quota_limit, status, created_at, updated_at)
+		VALUES (11, 'race-org', ?, 1, ?, ?)`, limit, now, now).Error
+	_ = gdb.Exec(`INSERT INTO users (id, org_id, username, password_hash, role, status, quota_limit, created_at, updated_at)
+		VALUES (11, 11, 'race-u', 'x', 'member', 1, ?, ?, ?)`, limit, now, now).Error
+
+	const n = 20
+	// 阶段一：N 路并发预检（used=0 < limit）——必须全部放行（advisory，不加锁）
+	start := make(chan struct{})
+	pre := make([]error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			pre[i] = Precheck(gdb, uid)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	for i, e := range pre {
+		if e != nil {
+			t.Fatalf("预检 #%d 不应拒绝（advisory 语义）: %v", i, e)
+		}
+	}
+
+	// 阶段二：N 路并发结算——全部精确落账
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			rec := &model.UsageLog{RequestID: fmt.Sprintf("race-%d", i), OrgID: oid, UserID: uid,
+				ModelName: "race-m", Cost: cost, Status: 200, CreatedAt: now}
+			if err := Settle(gdb, rec); err != nil {
+				t.Errorf("结算 #%d 失败: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	var userUsed, orgUsed, sumCost, cnt, orgStatus int64
+	_ = gdb.Raw("SELECT quota_used FROM users WHERE id = ?", uid).Scan(&userUsed).Error
+	_ = gdb.Raw("SELECT quota_used FROM orgs WHERE id = ?", oid).Scan(&orgUsed).Error
+	_ = gdb.Raw("SELECT COALESCE(SUM(cost),0), COUNT(*) FROM usage_logs WHERE user_id = ?", uid).Row().Scan(&sumCost, &cnt)
+	_ = gdb.Raw("SELECT status FROM orgs WHERE id = ?", oid).Scan(&orgStatus).Error
+
+	want := int64(n) * cost
+	if userUsed != want || orgUsed != want || sumCost != want || cnt != n {
+		t.Fatalf("并发结算丢失更新：user=%d org=%d Σcost=%d rows=%d，应全为 %d/%d 行",
+			userUsed, orgUsed, sumCost, cnt, want, n)
+	}
+	if userUsed <= limit {
+		t.Fatalf("并发齐射应真实超扣（used=%d > limit=%d），否则测试未覆盖竞态窗口", userUsed, limit)
+	}
+	if userUsed > want {
+		t.Fatalf("超扣不得超出 N×单次成本：used=%d > %d", userUsed, want)
+	}
+	if orgStatus != 2 {
+		t.Fatalf("额度耗尽后 org 应欠费停服 status=2，got %d", orgStatus)
+	}
+	// 竞态之后的串行请求必须被预检拦下（超扣止步于本批在飞请求）
+	if err := Precheck(gdb, uid); err != ErrUserQuota {
+		t.Fatalf("耗尽后串行预检应拒绝（ErrUserQuota），got %v", err)
 	}
 }
 
