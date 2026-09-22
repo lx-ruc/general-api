@@ -39,8 +39,16 @@ func Audit(db *gorm.DB) gin.HandlerFunc {
 			c.Request.Body = io.NopCloser(strings.NewReader(string(body)))
 		}
 		c.Next()
-		// 异步落库，不阻塞响应
+		// 异步落库，不阻塞响应。所有字段必须在同步段从 c 取值：
+		// 请求一结束 gin 就把 Context/ResponseWriter 放回 sync.Pool 供下一个
+		// 连接 reset() 复用，goroutine 里再读会与复用写竞争（race 实证），
+		// 且可能把下一个请求的 method/path/status/角色记进本条审计。
 		uid := GetUID(c)
+		role := GetRole(c)
+		method := c.Request.Method
+		path := c.Request.URL.Path
+		status := c.Writer.Status()
+		ip := c.ClientIP()
 		detail := pwdRe.ReplaceAllString(string(body), `${1}"***"`)
 		if len(detail) > 500 {
 			detail = detail[:500] + "..."
@@ -48,12 +56,12 @@ func Audit(db *gorm.DB) gin.HandlerFunc {
 		go func() {
 			_ = db.Create(&model.AuditLog{
 				ActorID:   nilIfZero(uid),
-				Actor:     GetRole(c), // 角色；具体用户见 actor_id
-				Method:    c.Request.Method,
-				Path:      c.Request.URL.Path,
-				Status:    c.Writer.Status(),
+				Actor:     role, // 角色；具体用户见 actor_id
+				Method:    method,
+				Path:      path,
+				Status:    status,
 				Detail:    detail,
-				IP:        c.ClientIP(),
+				IP:        ip,
 				CreatedAt: time.Now().Unix(),
 			}).Error
 		}()

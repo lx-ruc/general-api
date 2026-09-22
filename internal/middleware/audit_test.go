@@ -1,7 +1,14 @@
 package middleware
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
 
 	"token-gateway/internal/config"
 	"token-gateway/internal/database"
@@ -74,5 +81,87 @@ func TestScrubAuditHistory(t *testing.T) {
 	// 幂等：第二轮无行变更
 	if n := ScrubAuditHistory(db); n != 0 {
 		t.Fatalf("第二轮应 0 行变更，got %d", n)
+	}
+}
+
+// 审计异步落库与 gin 对象池复用的竞争回归：请求一结束 gin 就把
+// Context/ResponseWriter 放回 sync.Pool 供下一个连接 reset() 复用，审计
+// goroutine 若在异步段再读 c.Writer.Status()/GetRole(c)/c.Request.* 就会与
+// 复用写竞争（-race 必报），且审计行可能串台记成下一个请求的属性。
+// 修复口径：全部字段在同步段取值，goroutine 只拿纯值。
+// 竞争本身须以 `go test -race` 运行本测试才被检出；普通模式断言串台计数。
+func TestAuditAsyncWriteOwnRequestAttributes(t *testing.T) {
+	db, err := database.Open(config.Database{Driver: "sqlite", Path: t.TempDir() + "/test.db"})
+	if err != nil {
+		t.Fatalf("打开测试库失败: %v", err)
+	}
+	if err := database.Migrate(db); err != nil {
+		t.Fatalf("迁移测试库失败: %v", err)
+	}
+	t.Cleanup(func() { sqlDB, _ := db.DB(); _ = sqlDB.Close() })
+
+	// 每条路径绑定不同状态码：串台（把 B 请求的 path/status 记进 A 的行）
+	// 会直接打破「每路径恰好 N 行」的计数
+	paths := map[string]int{"/api/a": 200, "/api/b": 400, "/api/c": 404, "/api/d": 500}
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(Audit(db))
+	for p, s := range paths {
+		s := s
+		r.POST(p, func(c *gin.Context) { c.Status(s) })
+	}
+
+	const rounds = 100
+	var wg sync.WaitGroup
+	for i := 0; i < rounds; i++ {
+		for p := range paths {
+			wg.Add(1)
+			go func(p string) {
+				defer wg.Done()
+				w := httptest.NewRecorder()
+				r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, p, strings.NewReader(`{"i":1}`)))
+			}(p)
+		}
+	}
+	wg.Wait()
+
+	// 等异步审计全部落库
+	wantTotal := int64(rounds * len(paths))
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var n int64
+		db.Raw("SELECT COUNT(*) FROM audit_logs").Scan(&n)
+		if n >= wantTotal || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	type row struct {
+		Path   string
+		Status int
+		Method string
+	}
+	var rows []row
+	if err := db.Raw("SELECT path, status, method FROM audit_logs").Scan(&rows).Error; err != nil {
+		t.Fatalf("读审计行失败: %v", err)
+	}
+	if int64(len(rows)) != wantTotal {
+		t.Fatalf("审计行数不符：got %d want %d", len(rows), wantTotal)
+	}
+	perPath := map[string]int{}
+	for _, rw := range rows {
+		if rw.Method != http.MethodPost {
+			t.Fatalf("审计串台：path=%s 记成了 method=%s", rw.Path, rw.Method)
+		}
+		if s, ok := paths[rw.Path]; !ok || s != rw.Status {
+			t.Fatalf("审计串台：path=%s status=%d 不是该路径注册的状态", rw.Path, rw.Status)
+		}
+		perPath[rw.Path]++
+	}
+	for p := range paths {
+		if perPath[p] != rounds {
+			t.Fatalf("路径 %s 审计计数串台：got %d want %d", p, perPath[p], rounds)
+		}
 	}
 }
