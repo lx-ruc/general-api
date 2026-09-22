@@ -107,6 +107,54 @@ func TestClientCancelNotChannelFailure(t *testing.T) {
 	}
 }
 
+// B4 流式版：SSE 客户端中途断开 → usage_logs 同样记 499（与非流式同口径，
+// 错误率统计不把断连误算成成功 200）；usage 块未到达 → 不计量（no_usage=1）；
+// 不计熔断
+func TestClientCancelDuringStreamLogged499(t *testing.T) {
+	e := newTestEnv(t)
+	e.h.Breaker = NewBreaker(3)
+	block := make(chan struct{}) // 上游写完首块后挂住，制造"断连落在飞行途中"
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"he\"}}]}\n\n"))
+		w.(http.Flusher).Flush()
+		<-block
+	}))
+	defer up.Close()
+	defer close(block)
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, nil, 10)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(chatBody("stream-cancel", `,"stream":true`)))
+	req.Header.Set("Authorization", "Bearer "+e.apiKey)
+	ctx, cancel := context.WithCancel(req.Context())
+	req = req.WithContext(ctx)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+	e.engine.ServeHTTP(httptest.NewRecorder(), req)
+
+	waitFor(t, 2*time.Second, func() bool {
+		var n int64
+		_ = e.f.db.Raw("SELECT COUNT(*) FROM usage_logs WHERE is_stream = 1 AND status = 499").Scan(&n).Error
+		return n == 1
+	})
+	var row struct{ Status, NoUsage, Cost int64 }
+	_ = e.f.db.Raw("SELECT status, no_usage, cost FROM usage_logs WHERE is_stream = 1").Scan(&row).Error
+	if row.Status != 499 {
+		t.Fatalf("流式断连应记 499（与非流式同口径），got status=%d", row.Status)
+	}
+	if row.NoUsage != 1 || row.Cost != 0 {
+		t.Fatalf("断连时 usage 块未到达，应不计量: %+v", row)
+	}
+	var status int64
+	_ = e.f.db.Raw("SELECT status FROM channels WHERE id = 1").Scan(&status).Error
+	if status != 1 {
+		t.Fatalf("流式断连不应计入熔断：渠道被误禁用（status=%d）", status)
+	}
+}
+
 // B6：n / max_completion_tokens / logprobs / parallel_tool_calls 参与
 // 精确缓存 key——仅这些字段不同的请求不得共享缓存条目
 func TestCacheKeyDistinguishesSemantics(t *testing.T) {

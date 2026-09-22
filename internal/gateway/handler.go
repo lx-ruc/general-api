@@ -534,8 +534,15 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			if h.Metrics != nil {
 				h.Metrics.ActiveStreams.Dec()
 			}
-			if perr != nil && usage == nil {
-				rec.Error = truncateStr(perr.Error(), 500)
+			if perr != nil {
+				// 客户端断开（ctx 取消连带上游连接被拆）：非渠道之过，记 499，
+				// 与非流式路径同口径——否则错误率统计把断连误算成成功 200
+				if c.Request.Context().Err() != nil {
+					rec.Status = 499
+				}
+				if usage == nil {
+					rec.Error = truncateStr(perr.Error(), 500)
+				}
 			}
 			applyUsage(rec, usage, m)
 			return attemptDone
