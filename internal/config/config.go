@@ -203,6 +203,12 @@ func Load(path string) (*Config, error) {
 	if cfg.Security.JWTSecret == "" {
 		return nil, fmt.Errorf("security.jwt_secret is required (config.yaml 或 TG_JWT_SECRET)")
 	}
+	// 占位符守卫：照抄 config.example.yaml 的公开已知密钥不得静默启动（任何人可伪造
+	// 管理员 JWT）——与 bootstrap 管理员密码的占位符守卫对称；改 config.yaml 或用
+	// TG_JWT_SECRET 覆盖即可
+	if cfg.Security.JWTSecret == "change-me-to-a-random-string" {
+		return nil, fmt.Errorf("security.jwt_secret 仍是示例占位值，请改为随机密钥（config.yaml 或 TG_JWT_SECRET）")
+	}
 	if cfg.Server.Addr == "" {
 		cfg.Server.Addr = ":8080"
 	}
