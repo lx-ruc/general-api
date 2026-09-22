@@ -104,7 +104,7 @@ async function savePrice(row: MModel) {
   <el-card shadow="never">
     <template #header>
       <div class="card-header">
-        <span>模型定价（单价 = 元 / M token；额度按 token 预算计（1 元 = 1,000,000 token）；点击表中单价数字可直接修改）</span>
+        <span>模型定价（表格按元 / M token 展示；表单与行内编辑输入、提交的是 token 数，1 元 = 1,000,000 token；点击表中单价数字可直接修改）</span>
         <el-button type="primary" @click="openCreate">新建模型</el-button>
       </div>
     </template>
@@ -119,8 +119,9 @@ async function savePrice(row: MModel) {
       <el-table-column label="输入单价" width="170" align="right">
         <template #default="{ row }">
           <el-input-number v-if="editing && editing.id === row.id && editing.field === 'input'"
-            v-model="editVal" :min="0" :step="500000" size="small" style="width: 140px"
+            v-model="editVal" :min="0" :step="500000" size="small" style="width: 106px"
             v-focus @change="savePrice(row)" @blur="savePrice(row)" />
+          <span v-if="editing && editing.id === row.id && editing.field === 'input'" class="dim">token</span>
           <template v-else-if="row.input_price > 0">
             <span class="price-edit num green" title="点击修改" @click="startEdit(row, 'input')">{{ fmtPrice(row.input_price, PPY) }}</span>
             <span class="dim">/M · {{ fmtPrice1K(row.input_price, PPY) }}/千</span>
@@ -131,8 +132,9 @@ async function savePrice(row: MModel) {
       <el-table-column label="输出单价" width="170" align="right">
         <template #default="{ row }">
           <el-input-number v-if="editing && editing.id === row.id && editing.field === 'output'"
-            v-model="editVal" :min="0" :step="500000" size="small" style="width: 140px"
+            v-model="editVal" :min="0" :step="500000" size="small" style="width: 106px"
             v-focus @change="savePrice(row)" @blur="savePrice(row)" />
+          <span v-if="editing && editing.id === row.id && editing.field === 'output'" class="dim">token</span>
           <template v-else-if="row.output_price > 0">
             <span class="price-edit num green" title="点击修改" @click="startEdit(row, 'output')">{{ fmtPrice(row.output_price, PPY) }}</span>
             <span class="dim">/M · {{ fmtPrice1K(row.output_price, PPY) }}/千</span>
@@ -165,11 +167,11 @@ async function savePrice(row: MModel) {
       <el-form-item v-else label="模型名"><el-input v-model="form.name" disabled /></el-form-item>
       <el-form-item label="显示名"><el-input v-model="form.display_name" /></el-form-item>
       <el-form-item label="厂商"><el-input v-model="form.vendor" /></el-form-item>
-      <el-form-item label="输入单价（元/M token）">
+      <el-form-item label="输入单价（token/M）">
         <el-input-number v-model="form.input_price" :min="0" :step="500000" />
         <span class="tip">= {{ fmtPrice(form.input_price, PPY) }}/M ·{{ fmtPrice1K(form.input_price, PPY) }}/千</span>
       </el-form-item>
-      <el-form-item label="输出单价（元/M token）">
+      <el-form-item label="输出单价（token/M）">
         <el-input-number v-model="form.output_price" :min="0" :step="500000" />
         <span class="tip">= {{ fmtPrice(form.output_price, PPY) }}/M ·{{ fmtPrice1K(form.output_price, PPY) }}/千</span>
       </el-form-item>
