@@ -367,6 +367,13 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			openaiError(c, http.StatusServiceUnavailable, "channel_key_missing",
 				"upstream key is not configured or disabled, please contact the platform admin")
 			return
+		case selStats.DecryptFailed > 0 && selStats.DecryptFailed == selStats.KeyedChannels:
+			// 密钥材料齐备但全部解不开：aes_key 轮换后未重建渠道密钥 / 密文损坏。
+			// 也是配置问题（重试无意义），不得落入"全冷却"429 误导客户端退避重试
+			rec.Status, rec.Error = http.StatusServiceUnavailable, "all upstream keys failed to decrypt"
+			openaiError(c, http.StatusServiceUnavailable, "channel_key_missing",
+				"upstream keys cannot be decrypted (aes_key changed?), please contact the platform admin")
+			return
 		default:
 			// 所有 Key 冷却中：语义是"上游限流中"，回 429 而非 503
 			rec.Status, rec.Error = http.StatusTooManyRequests, "no available key (all cooling)"

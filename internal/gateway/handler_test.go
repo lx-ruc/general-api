@@ -56,6 +56,7 @@ type testEnv struct {
 	apiKey  string
 	userID  int64
 	orgID   int64
+	cfg     *config.Config
 	upCount atomic.Int64 // 上游 mock 命中计数（按需在各测试里另行统计）
 }
 
@@ -99,7 +100,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	v1 := engine.Group("/v1", middleware.APIKeyAuth(f.db))
 	v1.POST("/chat/completions", h.ChatCompletions)
 	v1.POST("/embeddings", h.Embeddings)
-	return &testEnv{f: f, h: h, cd: cd, m: m, engine: engine, apiKey: apiKey, userID: 1, orgID: 1}
+	return &testEnv{f: f, h: h, cd: cd, m: m, engine: engine, apiKey: apiKey, userID: 1, orgID: 1, cfg: cfg}
 }
 
 // seedUpstreamChannel 渠道指向 mock 上游；poolKeys 非空走 Key 池，否则 legacy 单 key
@@ -663,5 +664,54 @@ func TestQueueWaitTimeoutReturns502(t *testing.T) {
 	w = e.post(chatBody("third", ""))
 	if w.Code != http.StatusOK {
 		t.Fatalf("释放后应恢复 200，got %d body=%s", w.Code, w.Body)
+	}
+}
+
+// aes_key 轮换后密钥材料齐备但全部解不开：应回 503 channel_key_missing（配置问题），
+// 而非误入「全冷却」语义回 429 upstream_busy——Retry-After 会诱导客户端无意义重试
+func TestAllKeysUndecryptableReturns503(t *testing.T) {
+	e := newTestEnv(t)
+	store, _ := crypto.NewCipher(crypto.RandomKeyB64()) // 存库时用的 key
+	runtime, _ := crypto.NewCipher(crypto.RandomKeyB64()) // 轮换后的 key
+	encPool, err := store.Encrypt("pool-real-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encLegacy, err := store.Encrypt("legacy-real-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	// 渠道 1：池内密文；渠道 2：legacy 密文——runtime key 下全部解不开
+	mustExec(t, e.f, `INSERT INTO channels (id,name,base_url,path,weight,priority,status,created_at,updated_at)
+		VALUES (1,'c1','http://up.test','/v1/chat/completions',1,10,1,?,?)`, now, now)
+	mustExec(t, e.f, `INSERT INTO channel_keys (channel_id,key_enc,weight,status,created_at,updated_at)
+		VALUES (1,?,1,1,?,?)`, encPool, now, now)
+	mustExec(t, e.f, `INSERT INTO channels (id,name,base_url,path,upstream_key_enc,weight,priority,status,created_at,updated_at)
+		VALUES (2,'c2','http://up.test','/v1/chat/completions',?,1,1,1,?,?)`, encLegacy, now, now)
+	mustExec(t, e.f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (1,'m1')`)
+	mustExec(t, e.f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (2,'m1')`)
+
+	h2 := NewHandler(e.f.db, runtime, e.cfg, middleware.NewRateLimiter(10000, 20), e.m, e.cd)
+	engine2 := gin.New()
+	v1 := engine2.Group("/v1", middleware.APIKeyAuth(e.f.db))
+	v1.POST("/chat/completions", h2.ChatCompletions)
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(chatBody("q", "")))
+	req.Header.Set("Authorization", "Bearer "+e.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	engine2.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("解密全失败应回 503，got %d body=%s", w.Code, w.Body)
+	}
+	if !strings.Contains(w.Body.String(), "channel_key_missing") || !strings.Contains(w.Body.String(), "decrypt") {
+		t.Fatalf("错误应指向解密失败: %s", w.Body)
+	}
+	if strings.Contains(w.Body.String(), "upstream_busy") || w.Header().Get("Retry-After") != "" {
+		t.Fatalf("不得误导为限流重试: %s retry-after=%q", w.Body, w.Header().Get("Retry-After"))
+	}
+	if _, _, status := e.usageRow(t, e.lastUsage(t)); status != 503 {
+		t.Fatalf("usage_log 应记 503，got %d", status)
 	}
 }

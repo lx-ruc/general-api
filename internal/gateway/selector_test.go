@@ -154,3 +154,55 @@ func TestSelectCandidatesPriorityGroups(t *testing.T) {
 		t.Fatal("高优先级组的候选应排在前面（降级备用）")
 	}
 }
+
+// DecryptFailed 计数精确性：全部解密失败计满、正确 key 归零；
+// 冷却+解密失败混合时只计纯解密失败渠道（冷却渠道可恢复，整体保持 429 语义）
+func TestSelectCandidatesDecryptFailedStats(t *testing.T) {
+	f := newTestDB(t)
+	store, _ := crypto.NewCipher(crypto.RandomKeyB64())  // 存库用的 key
+	wrong, _ := crypto.NewCipher(crypto.RandomKeyB64()) // 轮换后的 key
+	now := time.Now().Unix()
+	encPool1, _ := store.Encrypt("p1")
+	encPool2, _ := store.Encrypt("p2")
+	encLegacy, _ := store.Encrypt("legacy-plain")
+	mustExec(t, f, `INSERT INTO channels (id,name,base_url,path,weight,priority,status,created_at,updated_at)
+		VALUES (1,'c1','http://up.test','/v1/chat/completions',1,10,1,?,?)`, now, now)
+	mustExec(t, f, `INSERT INTO channel_keys (channel_id,key_enc,weight,status,created_at,updated_at)
+		VALUES (1,?,1,1,?,?)`, encPool1, now, now)
+	mustExec(t, f, `INSERT INTO channel_keys (channel_id,key_enc,weight,status,created_at,updated_at)
+		VALUES (1,?,1,1,?,?)`, encPool2, now+1, now+1)
+	mustExec(t, f, `INSERT INTO channels (id,name,base_url,path,upstream_key_enc,weight,priority,status,created_at,updated_at)
+		VALUES (2,'c2','http://up.test','/v1/chat/completions',?,1,1,1,?,?)`, encLegacy, now, now)
+	mustExec(t, f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (1,'m1')`)
+	mustExec(t, f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (2,'m1')`)
+
+	// 错误 key：候选空，两渠道均计解密失败
+	cands, stats, err := SelectCandidates(f.db, wrong, "m1", coord.NewMem(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cands) != 0 || stats.Channels != 2 || stats.KeyedChannels != 2 || stats.DecryptFailed != 2 || stats.CoolingKeys != 0 {
+		t.Fatalf("全解密失败统计不符: cands=%d stats=%+v", len(cands), stats)
+	}
+
+	// 正确 key：池 2 + legacy 1 共 3 候选，解密失败归零
+	cands, stats, err = SelectCandidates(f.db, store, "m1", coord.NewMem(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cands) != 3 || stats.DecryptFailed != 0 {
+		t.Fatalf("正确 key 应 3 候选且零解密失败: cands=%d stats=%+v", len(cands), stats)
+	}
+
+	// 混合：渠道 1 全冷却（先跳过不解密）、渠道 2 解密失败 → 只计 1，保留 429 语义
+	cd := coord.NewMem(0)
+	cd.SetCooldown("ck:1:1", time.Minute)
+	cd.SetCooldown("ck:1:2", time.Minute)
+	cands, stats, err = SelectCandidates(f.db, wrong, "m1", cd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cands) != 0 || stats.DecryptFailed != 1 || stats.KeyedChannels != 2 || stats.CoolingKeys != 2 {
+		t.Fatalf("混合场景统计不符: cands=%d stats=%+v", len(cands), stats)
+	}
+}

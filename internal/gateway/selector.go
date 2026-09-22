@@ -65,6 +65,7 @@ type SelectStats struct {
 	Channels      int // 启用且 base_url/path 合法、配置了该模型的渠道数
 	KeyedChannels int // 其中配置过密钥的渠道数（池内有启用 Key，或单 Key 密文非空）
 	CoolingKeys   int // 因 429 冷却被跳过的 Key 数（含单 Key 兼容模式）
+	DecryptFailed int // 密钥材料齐备但全部解密失败的渠道数（aes_key 变更/密文损坏 → 配置问题，重试无意义）
 }
 
 // SelectCandidates 查询模型的路由候选（渠道 × Key）：
@@ -132,8 +133,11 @@ func SelectCandidates(db *gorm.DB, cipher *crypto.Cipher, modelName string, cd c
 			group = weightedShuffle(group) // 首组（最高优先级）做负载均衡
 		}
 		for _, r := range group {
-			cc, cooling := channelCandidates(r, cipher, pools[r.ChannelID], cd)
+			cc, cooling, decFail := channelCandidates(r, cipher, pools[r.ChannelID], cd)
 			stats.CoolingKeys += cooling
+			if decFail {
+				stats.DecryptFailed++
+			}
 			cands = append(cands, cc...)
 		}
 		i = j
@@ -142,8 +146,8 @@ func SelectCandidates(db *gorm.DB, cipher *crypto.Cipher, modelName string, cd c
 }
 
 // channelCandidates 单渠道展开为多个候选：优先 Key 池（过滤禁用/冷却 + 权重洗牌），无池回退单 Key。
-// 第二返回值为因冷却被跳过的 Key 数。
-func channelCandidates(r candRow, cipher *crypto.Cipher, pool []keyRow, cd coord.Coordinator) ([]Candidate, int) {
+// 第二返回值为因冷却被跳过的 Key 数；第三返回值表示该渠道密钥材料齐备但全部解密失败。
+func channelCandidates(r candRow, cipher *crypto.Cipher, pool []keyRow, cd coord.Coordinator) ([]Candidate, int, bool) {
 	upstreamModel := ""
 	if r.UpstreamModelName != nil {
 		upstreamModel = *r.UpstreamModelName
@@ -170,24 +174,29 @@ func channelCandidates(r candRow, cipher *crypto.Cipher, pool []keyRow, cd coord
 			usable = append(usable, keyRow{ID: kr.ID, KeyEnc: key, Weight: kr.Weight})
 		}
 		if len(usable) == 0 {
-			return nil, cooling // 池内全部冷却/解密失败 → 该渠道本轮不可用
+			// 池内全部冷却/解密失败 → 该渠道本轮不可用；
+			// 一个都没冷却还全不可用 = 纯解密失败（aes_key 变更/密文损坏）
+			return nil, cooling, cooling == 0
 		}
 		out := make([]Candidate, 0, len(usable))
 		for _, kr := range weightedShuffle(usable) {
 			out = append(out, mk(kr.ID, kr.KeyEnc, upstreamModel, kr.Weight))
 		}
-		return out, cooling
+		return out, cooling, false
 	}
 
 	// 单 Key 兼容模式
+	if r.UpstreamKeyEnc == "" {
+		return nil, 0, false // 无密钥材料：由 KeyedChannels==0 表达，不计解密失败
+	}
 	if cd != nil && cd.IsCooling(fmt.Sprintf("ck:%d:legacy", r.ChannelID)) {
-		return nil, 1
+		return nil, 1, false
 	}
 	key, err := cipher.Decrypt(r.UpstreamKeyEnc)
 	if err != nil || key == "" {
-		return nil, 0
+		return nil, 0, true
 	}
-	return []Candidate{mk(0, key, upstreamModel, r.Weight)}, 0
+	return []Candidate{mk(0, key, upstreamModel, r.Weight)}, 0, false
 }
 
 // weightedShuffle 不放回加权随机抽取，得到一个打乱顺序的列表（权重<=0 按 1 计）

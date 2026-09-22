@@ -20,6 +20,7 @@ security:
   jwt_secret: "change-me-to-a-random-string"   # ENV: TG_JWT_SECRET（必填，生产务必修改）
   jwt_ttl: 12h               # ENV: TG_JWT_TTL
   aes_key: ""               # 32 字节 base64；空=上游渠道 key 明文存储。ENV: TG_AES_KEY
+  metrics_token: ""         # 非空时 /metrics 需鉴权（?token= 或 Bearer）；/healthz 始终开放。ENV: TG_METRICS_TOKEN
   bootstrap_admin_username: admin               # 仅首次启动 users 表为空时生效
   bootstrap_admin_password: "change-me"         # ENV: TG_BOOTSTRAP_ADMIN_PASSWORD
 

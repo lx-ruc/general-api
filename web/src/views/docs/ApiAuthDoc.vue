@@ -93,7 +93,8 @@ const authExample = computed(() => `curl ${baseURL}/models \\
             <tr><td><code>503</code></td><td><code>no_available_channel</code></td>
               <td>该模型没有任何启用中的渠道。属平台配置问题，联系系统管理员。</td></tr>
             <tr><td><code>503</code></td><td><code>channel_key_missing</code></td>
-              <td>候选渠道均未配置（或已停用）上游密钥。属平台配置问题，联系系统管理员。</td></tr>
+              <td>候选渠道均未配置（或已停用）上游密钥，或密钥全部无法解密（<code>aes_key</code> 变更后未重建）。
+                属平台配置问题，联系系统管理员。</td></tr>
             <tr><td><code>503</code></td><td><code>channel_key_invalid</code></td>
               <td>上游拒绝了渠道配置的全部密钥（401/403），无效密钥已被自动停用。联系系统管理员更新密钥。</td></tr>
             <tr><td><code>500</code></td><td><code>internal_error</code></td>
