@@ -1,6 +1,6 @@
 ---
 active: true
-iteration: 11
+iteration: 12
 session_id: a379c968-7f2d-491f-9af1-885267bb9c61
 max_iterations: 20
 completion_promise: "没有发现任何bug，所有功能全部可用，边界条件全部测到"
@@ -214,3 +214,23 @@ started_at: "2026-09-21T08:30:59Z"
 - 前端 vitest 15/15 过
 
 **累计：27 bug 已修（#27 本轮）。下一迭代候选：member 面前端表单 fuzz、demo key UI 配置流、E2E 全回归跑一遍（tools/e2e/run.py 对新二进制）。**
+
+## 迭代 12（2026-09-22）
+
+环境：/tmp/tg-it12 worktree（HEAD=746eac1 最终态，gateway :8081 + admin/admin123456 + cache_ttl 120s + mock :9110）；三条线全部收口。
+
+**A) 最新 HEAD 全量 E2E 回归：61/61 全绿**（C5-C8 计费不变量/缓存零计费/超扣封顶全过，D1 残留清零）。插曲：e2e 的 DB_PATH 是 CWD 相对路径——首轮在主仓库根跑，C 系列读到 live 库（mode=ro 只读、D 清理段写连接因 C8 崩溃未执行，live 库零污染零残留，逐一核实）；换 CWD=/tmp/tg-it12 重跑全绿。
+
+**B) member 面表单 fuzz（API+UI 双路）——零 bug**：
+- 密钥：XSS 名称 Vue 全量转义无执行；过期时刻在过去/负数 → 服务端 400「过期时间必须晚于当前时刻」+ 拦截器 toast 兜底（submitCreate 无 catch 但 finally 复位，dialog 留存）；5000 字符名/控制字符名 400；2^62 超大有效期可落库、渲染 Invalid Date（dayjs 对越界值的 truthful 展示，UI date-picker 到不了、钥匙本身正常工作，triage 外观项不修）
+- 额度申请：负数/零 400（binding gt=0）；UI :min=100000+JS guard+服务端三重防线；XSS reason 转义；超大 amount 无害（运行时受 org 层约束）
+- 排查插曲：「表格丢行」疑云——实为 Playwright 同 URL goto 只做 hash 导航不重载，列表停留旧快照；真 reload 后 3 行全渲染。工具误判，非产品 bug
+
+**C) demo key UI 配置流 → 【修复 #28】（commit 746eac1）**：
+- 全链路活体验证：生成→配置（10M/30 天/fuzz-model）→/v1 授权过滤（models 只见授权项、未授权 403）→计费 200 点落「在线体验」客户→轮换（旧钥即时 401、新钥 200）→停用 401/启用 200/到期 401
+- **#28：RotateDemoKey 新建钥匙不带 ExpiredAt**——管理员配置的有效期在轮换瞬间静默丢失变永久。资损/安全双相关：密钥泄露后的应急轮换恰恰最需要保留期限（模型授权/额度挂 user/org 不受影响，唯独 expired_at 落 key 行被丢）。修复：轮换前读现钥 expired_at 继承给新钥；红测 TestDemoKeyRotatePreservesExpiry 先失败后转绿，demo-key 全组 6/6，go vet + 13 包全过，it12 重建二进制活体复验轮换后有效期保留
+- 小瑕疵（不修）：首次「生成密钥」的确认框文案沿用「轮换后旧密钥立即失效」（彼时无旧钥）
+
+**环境收尾**：it12 worktree 已拆、临时文件已清；活体网关已重建（含 #28 与全部历史修复，前端含用户 WIP 品牌态）按用户最新 config 起在 **:9091**（用户已改端口，注释注明 9090 被 mihomo 占用）——healthz/SPA//v1 鉴权全对、真实渠道 1,2,3,7 未动、用户 :5173/:8083 存活。live 库 mtime 11:31 归因为杀活体时优雅关库 checkpoint（曾排查疑似污染，证实零写入）。
+
+**累计：28 bug 已修（#28 本轮）。下一迭代候选：渠道管理面深度走查（多 Key 权重/映射 UI 流）、告警邮件链路复验、审计日志 UI 检索分页边界、/metrics 指标语义复核。**
