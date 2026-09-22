@@ -1,6 +1,6 @@
 ---
 active: true
-iteration: 16
+iteration: 17
 session_id: a379c968-7f2d-491f-9af1-885267bb9c61
 max_iterations: 20
 completion_promise: "没有发现任何bug，所有功能全部可用，边界条件全部测到"
@@ -310,3 +310,29 @@ started_at: "2026-09-21T08:30:59Z"
 **收尾回归**：`go vet` ✓、`go test ./internal/...` 13 包 ok、vitest 15/15；it15 worktree 已拆、:8081/:9102 已停、/tmp/it15_* 已清；生产 :9091 healthz 正常、用户 :5173/:8083/:8888 存活未动。
 
 **累计：30 bug 已修（本轮 0）。下一迭代候选：浏览器工具恢复探测后 UI 盲区补查、docs 站内容与当前 API 口径核对、前端 vitest 覆盖扩面、deploy Caddy/systemd 实机验证。**
+## 迭代 16（2026-09-22）
+
+环境：/tmp/tg-it16 worktree（网关 :8081 + admin/admin123456 + mock :9102，aes_key K1→K2 轮换场景）；跨 compaction 执行，四条线收口，**本轮 3 bug（#31/#32/#33）**。
+
+**A) docs 站内容与 API 口径核对——全部 7 视图对照代码，#31 修复（54c4ba9）**：
+- FeaturesDoc/IntroDoc 宣称「熔断禁用的渠道需手动恢复」——**与代码相反**：prober.go AutoProbeLoop 周期探测自动恢复 auto_disabled_at>0 的渠道，仅手动禁用（=0）永不探测；两处文案改正（IntroDoc hunk-split 避开品牌 WIP）
+- ApiAuthDoc 错误码表补齐缺失行：413 request_too_large、503 no_available_channel/channel_key_invalid、500 internal_error
+- 核对无误：member DocsView 60-RPM 默认值、Quickstart、ApiModels、ApiChat、诊断响应头；DocsSiteView 为纯外壳无内容口径
+
+**B) 前端 vitest 覆盖扩面——15→40 用例，#32 由新测试当场抓获（0cf5b1b）**：
+- format.test.ts（17）：fmtQuota/fmtTokenCompact/fmtPrice/fmtPrice1K/fmtTime（时区安全）/fmtNum/roleNames
+- chart.test.ts（8）：trendOptions/barOption 含输入不可变、0 值标签隐藏
+- **#32**：fmtTokenCompact 尾零正则 `/\.?0+$/` 吃掉整数零——200000→'2k'（缩小 100 倍）、1e15→'1T'；TDD 红→绿修复 stripTail 只剥小数尾零；平台/客户 Dashboard 令牌表均受影响
+- markdown.ts/clipboard.ts 依赖 DOM env（无 jsdom，不引入依赖以避开用户 package.json WIP）——记录在案
+
+**C) metrics_token 门 + aes_key 失配边界——#33 修复并全矩阵实测（35b2cc2）**：
+- metrics 门 6/6：无 token 401 / ?token= / Bearer / 错 token 401 / healthz 不设防 / 改配置重启生效；**发现 config.example.yaml 缺 metrics_token 键**（代码支持但不可发现）——hunk-split 补记（避开品牌 WIP 两处 hunk）
+- Phase A（aes 正常流）10/10：建渠道密文落库、密钥列表掩码、渠道测试连通、/v1 计费全通
+- Phase B（aes K2 vs 库内 K1 密文）暴露 **#33**：全部密文解不开误入「全冷却」default → 429 upstream_busy + Retry-After，对永久性配置错误误导重试；修复：SelectStats 新增 DecryptFailed（选择器区分「冷却跳过」与「解密失败」），handler 新 case 全候选解密失败回 **503 channel_key_missing**（报错点名 aes_key 变更）；TDD 红→绿 + 选择器统计单测；混合场景（部分冷却+部分解密失败）仍 429
+- 修复后 live 复验：B1 503+decrypt 文案+无 Retry-After；B3 密钥列表 key_masked=''（密文不泄漏）；B6 连续 5 请求 5×503 稳定；usage_logs 记 503/"all upstream keys failed to decrypt"
+- Phase C（aes_key 清空=明文模式 + 密文库存）：密文原样透传作 key，mock 放行 200 不崩溃——真实上游会 401 自动禁用（可见可恢复），记录为既定设计边界
+- Phase D（aes_key 非法）：启动 exit 1 +「初始化加密器失败：base64 decode」fail-fast ✓
+
+**收尾回归**：`go vet` ✓、`go test ./internal/...` 全 ok（gateway/service 强制 -count=1 复跑）、vitest 40/40、`pnpm build` ✓；生产 :9091 已重建二进制（dist 内嵌 #31/#32 前端修复 + #33 后端）并重启 healthz 200，真实渠道 1/2/3/7 未动，用户 :5173/:8083/:8888 存活；it16 worktree 已拆、:8081/:9102 已停、/tmp 密钥与补丁文件已清。
+
+**累计：33 bug 已修（本轮 3）。下一迭代候选：浏览器 UI 盲区补查、curl.ts（用户 WIP 落库后）联动测试、deploy Caddy/systemd 实机验证、月末账期/归档 goroutine 时序专项。**
