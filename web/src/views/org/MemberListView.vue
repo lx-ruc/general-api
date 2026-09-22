@@ -31,7 +31,8 @@ async function load() {
 }
 onMounted(load)
 
-// 新建子账号
+// 新建子账号。额度按 M tokens 录入（1M = 1,000,000 点），提交前换算成点
+const M = 1_000_000
 const createVisible = ref(false)
 const createForm = reactive({ username: '', password: '', display_name: '', quota_amount: 0 })
 async function submitCreate() {
@@ -39,28 +40,28 @@ async function submitCreate() {
     ElMessage.warning('请填写用户名和密码')
     return
   }
-  await apiCreateMember(createForm)
+  await apiCreateMember({ ...createForm, quota_amount: Math.round(createForm.quota_amount * M) })
   ElMessage.success('子账号已创建')
   createVisible.value = false
   Object.assign(createForm, { username: '', password: '', display_name: '', quota_amount: 0 })
   load()
 }
 
-// 额度 / 月限
+// 额度 / 月限（同样按 M tokens 录入；负数为回收）
 const quotaVisible = ref(false)
-const quotaForm = reactive({ member: null as Member | null, amount: 1000000, remark: '', monthly: 0 })
+const quotaForm = reactive({ member: null as Member | null, amount: 1, remark: '', monthly: 0 })
 function openQuota(m: Member) {
   quotaForm.member = m
-  quotaForm.amount = 1000000
+  quotaForm.amount = 1
   quotaForm.remark = ''
-  quotaForm.monthly = m.monthly_quota || 0
+  quotaForm.monthly = (m.monthly_quota || 0) / M
   quotaVisible.value = true
 }
 async function submitQuota() {
   if (!quotaForm.member || !quotaForm.amount) return
-  await apiAddMemberQuota(quotaForm.member.id, quotaForm.amount, quotaForm.remark)
+  await apiAddMemberQuota(quotaForm.member.id, Math.round(quotaForm.amount * M), quotaForm.remark)
   // 单月上限走设值更新（0=不限；与追加额度独立，总是提交保持一致）
-  await apiUpdateMember(quotaForm.member.id, { monthly_quota: quotaForm.monthly || 0 })
+  await apiUpdateMember(quotaForm.member.id, { monthly_quota: Math.round(quotaForm.monthly * M) || 0 })
   ElMessage.success('额度与月限已更新')
   quotaVisible.value = false
   load()
@@ -207,9 +208,9 @@ function remove(m: Member) {
       <el-form-item label="用户名" required><el-input v-model="createForm.username" /></el-form-item>
       <el-form-item label="初始密码" required><el-input v-model="createForm.password" show-password placeholder="至少 6 位" /></el-form-item>
       <el-form-item label="姓名"><el-input v-model="createForm.display_name" /></el-form-item>
-      <el-form-item label="初始额度（token）">
-        <el-input-number v-model="createForm.quota_amount" :min="0" :step="1000000" />
-        <span class="tip">0 = 不限额</span>
+      <el-form-item label="初始额度（M tokens）">
+        <el-input-number v-model="createForm.quota_amount" :min="0" :step="1" />
+        <span class="tip">0 = 不限额；= {{ fmtQuota(Math.round(createForm.quota_amount * M)) }}</span>
       </el-form-item>
     </el-form>
     <template #footer>
@@ -220,12 +221,12 @@ function remove(m: Member) {
 
   <el-dialog v-model="quotaVisible" :title="`额度 / 月限：${quotaForm.member?.display_name || quotaForm.member?.username || ''}`" width="440px">
     <el-form label-width="100px">
-      <el-form-item label="追加token 数">
-        <el-input-number v-model="quotaForm.amount" :step="1000000" />
-        <span class="tip">负数为回收</span>
+      <el-form-item label="追加（M tokens）">
+        <el-input-number v-model="quotaForm.amount" :step="1" />
+        <span class="tip">负数为回收；= {{ fmtQuota(Math.round(quotaForm.amount * M)) }}</span>
       </el-form-item>
-      <el-form-item label="单月上限（token）">
-        <el-input-number v-model="quotaForm.monthly" :min="0" :step="1000000" />
+      <el-form-item label="单月上限（M tokens）">
+        <el-input-number v-model="quotaForm.monthly" :min="0" :step="1" />
         <span class="tip">0 = 不限；当月达限停用，次月自动清零</span>
       </el-form-item>
       <el-form-item label="备注"><el-input v-model="quotaForm.remark" /></el-form-item>

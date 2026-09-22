@@ -19,10 +19,11 @@ async function load() {
 }
 onMounted(load)
 
-// 新建客户
+// 新建客户。额度统一按 M tokens 录入（1M = 1,000,000 点；1 元 = 1M 点），提交前换算成点
+const M = 1_000_000
 const createVisible = ref(false)
 const createForm = reactive({
-  name: '', remark: '', contact_name: '', contact_phone: '', quota_amount: 100000000,
+  name: '', remark: '', contact_name: '', contact_phone: '', quota_amount: 100,
   admin_username: '', admin_password: '', admin_display_name: '',
 })
 async function submitCreate() {
@@ -30,25 +31,25 @@ async function submitCreate() {
     ElMessage.warning('请填写客户名称、管理员账号和密码')
     return
   }
-  await apiCreateOrg(createForm)
+  await apiCreateOrg({ ...createForm, quota_amount: Math.round(createForm.quota_amount * M) })
   ElMessage.success('客户已创建')
   createVisible.value = false
-  Object.assign(createForm, { name: '', remark: '', contact_name: '', contact_phone: '', quota_amount: 100000000, admin_username: '', admin_password: '', admin_display_name: '' })
+  Object.assign(createForm, { name: '', remark: '', contact_name: '', contact_phone: '', quota_amount: 100, admin_username: '', admin_password: '', admin_display_name: '' })
   load()
 }
 
-// 追加额度
+// 追加额度（同样按 M tokens 录入；负数为冲减回收）
 const quotaVisible = ref(false)
-const quotaForm = reactive({ org: null as Org | null, amount: 10000000, remark: '' })
+const quotaForm = reactive({ org: null as Org | null, amount: 10, remark: '' })
 function openQuota(org: Org) {
   quotaForm.org = org
-  quotaForm.amount = 10000000
+  quotaForm.amount = 10
   quotaForm.remark = ''
   quotaVisible.value = true
 }
 async function submitQuota() {
   if (!quotaForm.org || !quotaForm.amount) return
-  await apiAddOrgQuota(quotaForm.org.id, quotaForm.amount, quotaForm.remark)
+  await apiAddOrgQuota(quotaForm.org.id, Math.round(quotaForm.amount * M), quotaForm.remark)
   ElMessage.success('额度已追加')
   quotaVisible.value = false
   load()
@@ -135,8 +136,9 @@ async function removeOrg(org: Org) {
       <el-form-item label="备注"><el-input v-model="createForm.remark" /></el-form-item>
       <el-form-item label="联系人"><el-input v-model="createForm.contact_name" placeholder="客户企业联系人" /></el-form-item>
       <el-form-item label="联系电话"><el-input v-model="createForm.contact_phone" /></el-form-item>
-      <el-form-item label="初始额度（token）">
-        <el-input-number v-model="createForm.quota_amount" :min="0" :step="10000000" />
+      <el-form-item label="初始额度（M tokens）">
+        <el-input-number v-model="createForm.quota_amount" :min="0" :step="10" />
+        <span class="tip">= {{ fmtQuota(Math.round(createForm.quota_amount * M)) }}（高价模型按单价等比多扣）</span>
       </el-form-item>
       <el-divider content-position="left">首任客户管理员</el-divider>
       <el-form-item label="管理员用户名" required><el-input v-model="createForm.admin_username" /></el-form-item>
@@ -151,9 +153,9 @@ async function removeOrg(org: Org) {
 
   <el-dialog v-model="quotaVisible" :title="`追加 / 冲减额度：${quotaForm.org?.name || ''}`" width="440px">
     <el-form label-width="100px">
-      <el-form-item label="token 数">
-        <el-input-number v-model="quotaForm.amount" :step="10000000" />
-        <span class="tip">负数为冲减回收，入对账单冲减段</span>
+      <el-form-item label="M tokens">
+        <el-input-number v-model="quotaForm.amount" :step="10" />
+        <span class="tip">负数为冲减回收，入对账单冲减段；= {{ fmtQuota(Math.round(quotaForm.amount * M)) }}</span>
       </el-form-item>
       <el-form-item label="事由备注"><el-input v-model="quotaForm.remark" /></el-form-item>
     </el-form>

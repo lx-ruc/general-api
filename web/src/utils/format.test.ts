@@ -5,6 +5,8 @@ import {
   fmtTokenCompact,
   fmtPrice,
   fmtPrice1K,
+  yuanToPoints,
+  pointsToYuan,
   fmtTime,
   fmtDate,
   fmtNum,
@@ -122,5 +124,26 @@ describe('fmtTime / fmtDate / fmtNum', () => {
     expect(roleNames.platform_admin).toBe('系统管理员')
     expect(roleNames.org_admin).toBe('客户管理员')
     expect(roleNames.member).toBe('子账号')
+  })
+})
+
+describe('yuanToPoints / pointsToYuan：定价表单元↔点换算', () => {
+  it('常见元价换算为整点', () => {
+    expect(yuanToPoints(3)).toBe(3_000_000)
+    expect(yuanToPoints(0.5)).toBe(500_000)
+    expect(yuanToPoints(0)).toBe(0)
+  })
+
+  it('小数元价四舍五入取整点', () => {
+    expect(yuanToPoints(0.07)).toBe(70_000)
+    expect(yuanToPoints(0.0000004)).toBe(0) // 不足 1 点归零
+  })
+
+  it('点→元回显与元→点往返一致', () => {
+    expect(pointsToYuan(2_000_000)).toBe(2)
+    expect(pointsToYuan(500_000)).toBe(0.5)
+    for (const yuan of [3, 0.5, 0.07, 15]) {
+      expect(pointsToYuan(yuanToPoints(yuan))).toBeCloseTo(yuan, 10)
+    }
   })
 })

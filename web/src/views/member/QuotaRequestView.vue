@@ -6,7 +6,9 @@ import { fmtQuota, fmtTime } from '../../utils/format'
 
 const me = ref<any>(null)
 const list = ref<any[]>([])
-const form = reactive({ amount: 1000000, reason: '' })
+// 申请额度按 M tokens 录入（1M = 1,000,000 点），提交前换算成点
+const M = 1_000_000
+const form = reactive({ amount: 1, reason: '' })
 const submitting = ref(false)
 
 async function load() {
@@ -17,14 +19,14 @@ onMounted(load)
 
 async function submit() {
   if (!form.amount || form.amount <= 0) {
-    ElMessage.warning('请填写申请token 数')
+    ElMessage.warning('请填写申请额度（M tokens）')
     return
   }
   submitting.value = true
   try {
-    await apiCreateRequest(form.amount, form.reason)
+    await apiCreateRequest(Math.round(form.amount * M), form.reason)
     ElMessage.success('申请已提交，等待客户管理员审批')
-    form.amount = 1000000
+    form.amount = 1
     form.reason = ''
     load()
   } finally {
@@ -55,8 +57,9 @@ const statusName = (s: string) => ({ pending: '待审批', approved: '已批准'
 
       <el-divider content-position="left">发起额度申请</el-divider>
       <el-form inline>
-        <el-form-item label="申请token 数">
-          <el-input-number v-model="form.amount" :min="100000" :step="1000000" />
+        <el-form-item label="申请额度（M tokens）">
+          <el-input-number v-model="form.amount" :min="0.1" :step="1" />
+          <span class="hint">= {{ fmtQuota(Math.round(form.amount * M)) }}</span>
         </el-form-item>
         <el-form-item label="理由">
           <el-input v-model="form.reason" placeholder="如：XX 项目联调需要" style="width: 260px" />
