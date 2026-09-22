@@ -1,6 +1,6 @@
 ---
 active: true
-iteration: 9
+iteration: 10
 session_id: a379c968-7f2d-491f-9af1-885267bb9c61
 max_iterations: 20
 completion_promise: "没有发现任何bug，所有功能全部可用，边界条件全部测到"
@@ -171,3 +171,24 @@ started_at: "2026-09-21T08:30:59Z"
 - **fail-open**：shutdown redis 后双节点 /v1 继续 200（redis client 连接池报错仅入日志），计费继续准确（+3×600 与调用一一对应）
 
 **累计：23 bug 已修（#22/#23 本轮）。下一迭代候选：playground 剩余模块深测、前端表单极端输入 fuzz、SSE 网关侧异常路径（上游断流/半包）。**
+
+## 第 10 轮（it10）— SSE 网关侧异常路径 + 管理面边界 fuzz + playground 深测：#24/#25/#26
+
+环境：/tmp/tg-it10 一次性网关 :8096（it10root，cache_ttl 0s）+ mocksse :9104（路径分发：半关/垃圾行/秒DONE/双usage）+ mocksse_rst :9105（SO_LINGER(0) RST）。已全部清理。
+
+**SSE 网关侧 5 异态实测（前 4 安全，第 5 个牵出 #24）**：
+- 半关无 [DONE]：pipeSSE 干净 EOF → err=nil 合法结束，不计量（no_usage=1, cost=0）✓
+- 垃圾 `data:` 行（非 JSON）：静默原样转发，不炸流 ✓
+- 秒 [DONE]：正常空流，不计量 ✓
+- 双 usage 块（300→600）：last-wins 取末块 600，无重复计费（cost 精确=600×单价）✓
+- **RST 中途断流 → #24**：断流计入 upstream_errors 但渠道**永不熔断**——根因是预读 body 前的 `RecordSuccess(2xx 响应头)` 每笔先把连续失败计数清零，"头 200+体断"渠道净计数恒 1。非流式读体失败路径同病。修复：成功计数后置（流式干净收流后、非流式读全体后）；干净 EOF（无 DONE）仍算成功、客户端断开（499）两不记。红测 RST×3 → 渠道自动禁用 → 第 4 笔 503；对照组 EOF×5 不熔断不计数。commit 535b2cf。活体证据：errors 0→5、auto_disabled_at 落库、remark 熔断、第 6/7 笔 503。
+
+**管理面边界 fuzz 矩阵（live :8096）→ #25**：
+- 模型/渠道/客户/成员/充值/申请/分页全维度极端值扫描。triage：monthly_quota 建号时传参被静默忽略（非 bug，字段不在 create 结构体）；weight=0/负 priority/坏 URL 接受但低危跳过；缺价 200 与 presets 同口径可辩护
+- **建客户/建子账号负初始额度 200 放行 → #25**：quota_amount:-5 直接落库 `quota_limit=-5` + 负数 grant `org|2|-5`（Σgrants==quota_limit 口径被污染，且客户一出生即欠费态 quota_used=0≥负 limit 恒 429/403）。两 handler 补 `<0 → 400`（与更新路径 monthly_quota>=0 校验口径一致）；对照验证正额度 200 不受影响。注意 AddOrgQuota/AddUserQuota 负 delta 是合法的冲减功能（带溢出护栏），不动。commit 0940eb2
+- 附带加固：账单明细 `?limit=1e9` 钳制 2000（防一笔拉爆内存；前端固定 500）——同 commit
+- 提交技巧：platform/handler.go 里用户品牌 WIP（notifyOrgQuota「慧沐引擎」@~307）与我的 hunk@~81 分离暂存（awk 切 hunk + git apply --cached），`git diff --cached | grep -c 慧沐引擎`=0 复核
+
+**playground 深测 → #26**：demo key 模块已有 5 测试（幂等/轮换吊销/配置/非法配置/鉴权）覆盖充分。主链路 9 测试外补盲区：**空 body 回 413 request_too_large**（空≠过大，误导 OpenAI 兼容客户端重试策略）——`len(body)==0` 从 413 分支摘出，落 JSON 解析回 400，与数据面 /v1 口径一致。红测先行。commit a8415b0。顺带核阅：限流共享桶 key:0 是文档化设计；org_admin 授权并集含停用成员的授权（低危，记录不修）。
+
+**累计：26 bug 已修（#24/#25/#26 本轮）。下一迭代候选：前端表单极端输入 fuzz（Playwright）、audit_logs 完整性抽查、并发充值/额度申请审批压测。**
