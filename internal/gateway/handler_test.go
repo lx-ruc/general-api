@@ -281,6 +281,26 @@ func Test429CooldownThenFallback(t *testing.T) {
 	}
 }
 
+// #39：上游 429 带 Retry-After: 1（短于 key_cooldown=60s）时实际只冷却 1s，
+// 客户端 Retry-After 也应报 1s——恒报 key_cooldown 会让客户端过度退避 60 倍
+func Test429ClientRetryAfterReflectsAppliedCooldown(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, nil, 10)
+
+	w := e.post(chatBody("q", ""))
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("全 429 应回 429，got %d body=%s", w.Code, w.Body)
+	}
+	if got := w.Header().Get("Retry-After"); got != "1" {
+		t.Fatalf("Retry-After 应为实际应用的冷却 1s，got %q（key_cooldown=60s 误导客户端过度退避）", got)
+	}
+}
+
 // 全部候选都 429 → 最终回 429（而非 502）并带 Retry-After
 func TestAll429Returns429WithRetryAfter(t *testing.T) {
 	e := newTestEnv(t)

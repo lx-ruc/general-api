@@ -37,6 +37,8 @@ def check(name, cond, detail=''):
 # ---------------- mock 上游 ----------------
 
 class MockHandler(BaseHTTPRequestHandler):
+    latched_ok = set()  # k429 前缀 key 已 429 过一次的集合（类属性，跨请求共享）
+
     def log_message(self, *a):  # 静默
         pass
 
@@ -47,6 +49,10 @@ class MockHandler(BaseHTTPRequestHandler):
             return 401
         for pfx, code in (('k429', 429), ('k401', 401), ('k500', 500)):
             if key.startswith(pfx):
+                if pfx == 'k429' and key in self.latched_ok:
+                    return 200  # k429 每 key 只 429 一次：A12 的 Key 选择是随机的，
+                    # 恒 429 会让自愈断言变成 1/128 的抽签（曾连续 7 次命中坏 Key 而 FAIL）
+                self.latched_ok.add(key)
                 return code
         return 200
 

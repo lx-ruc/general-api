@@ -32,7 +32,7 @@ gateway:
   # ---- 高并发三件套（见 internal/coord）----
   channel_max_concurrency: 0   # 每渠道最大并发上游请求数；超出排队等待；0=不限
   queue_wait_timeout: 10s      # 排队等待上限，超时换下一候选/返回 429
-  key_cooldown: 60s            # 上游 429 后该 Key 冷却时长（Retry-After 更长时优先）
+  key_cooldown: 60s            # 上游 429 后该 Key 冷却时长；上游 Retry-After 在 (0,10 分钟] 内时以其为准（上游更清楚自己的限流窗口）。ENV: TG_KEY_COOLDOWN
   cache_ttl: 0s                # 精确缓存（相同请求直接回缓存，不耗上游）；0=关闭
   cache_max_items: 1000        # 内存 LRU 条数上限
   cache_isolate_org: false     # true=缓存按公司隔离（默认全局共享）

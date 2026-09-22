@@ -405,6 +405,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 	var lastErr string
 	onlyRateLimited := true // 全部失败均因 429/排队超时 → 最终回 429 而非 502
 	authOnly := true        // 全部失败均因 401/403（Key 失效自动禁用）→ 回 503 而非 502
+	coolApplied := time.Duration(0) // 本请求实际应用过的最大 Key 冷却时长（429 耗尽时如实回报客户端）
 	tryCandidate := func(cand Candidate) attemptResult {
 		// 渠道并发闸门（有界等待）。超时换渠道：同渠道其他 Key 面对同一个满闸门，重试无意义。
 		// 等待上限 QueueWaitTimeout：<=0 时退化为仅随客户端断开取消（不无限等）
@@ -484,6 +485,9 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			cd := parseRetryAfter(resp.Header.Get("Retry-After"))
 			if cd <= 0 {
 				cd = h.KeyCooldown
+			}
+			if cd > coolApplied {
+				coolApplied = cd
 			}
 			h.coolKeys(cands, cand, cd)
 			lastErr = fmt.Sprintf("upstream %s returned %d (key %d cooling %s)",
@@ -642,9 +646,15 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 	rec.Error = truncateStr("all channels failed: "+lastErr, 500)
 	switch {
 	case onlyRateLimited:
-		// 仅剩限流类失败 → 429（OpenAI SDK 对 429 有专门退避）
+		// 仅剩限流类失败 → 429（OpenAI SDK 对 429 有专门退避）。
+		// Retry-After 如实回报本请求实际应用的冷却时长（上游 Retry-After 可能远短于
+		// key_cooldown，恒报 key_cooldown 会让客户端过度退避）
 		rec.Status = http.StatusTooManyRequests
-		h.writeRetryAfter(c, h.KeyCooldown)
+		ra := coolApplied
+		if ra <= 0 {
+			ra = h.KeyCooldown
+		}
+		h.writeRetryAfter(c, ra)
 		openaiError(c, http.StatusTooManyRequests, "upstream_busy",
 			"upstream is rate limited, please retry later")
 	case authOnly:
