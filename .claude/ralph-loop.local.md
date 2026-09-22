@@ -115,3 +115,14 @@ started_at: "2026-09-21T08:30:59Z"
 **注意**：登录限流 5/分/IP 很容易在反复调试脚本时自伤——脚本应缓存 token（本轮踩过）。
 
 **累计：17 bug 已修（迭代 1-7），迭代 8 零新 bug + 交付体验密钥功能。环境已清理。下一迭代候选：tools/e2e run.py 对齐核验、usage_logs 月度归档边界、config.example.yaml 逐项核对、coord redis 分支单测。**
+
+## 第 8 轮续（it8+）— 四项候选全部收口，发现并修复第 18 个 bug
+
+- **tools/e2e 对齐核验**：live :8081 实跑 `python3 tools/e2e/run.py` → **61/61 通过**（B 系列对账勾稽、C 系列不变量 Σgrants==quota_limit、quota_used==Σusage、缓存命中零计费、超扣上界、D1 残留清理）
+- **config.example.yaml 逐项核对**：脚本提取全部键路径（含注释键）逐一 grep 代码引用——**零孤儿键**（生效键全有引用、注释键非死文档）
+- **usage_logs 归档边界**：已有 5 测试（空表/导出删库/幂等/残缺重导/关闭）。交叉影响核实：对账单"已用"直接 SUM usage_logs，但链式勾稽 `期末used−期初used==期内消耗`（billing.go:263）会在账期被归档后自动 ChainOK=false 自我标记不平，不会静默给错数——安全。新增 3 个边界测试：月末最后一秒归档/保留窗首秒保留（半开区间精确性，PASS）、epoch 脏行
+- **coord Redis 分支**：TestRedisCoord 本就是真实 Redis 集成测试但被 TG_TEST_REDIS_ADDR 门控从未在本地跑过——起一次性 redis-server :9123 实跑 → **PASS**（含 PTTL 毫秒比较的秒级窗口边界回归用例）
+
+**修复 #18**：归档 `COALESCE(MIN(created_at), 0)` 把「表空」（NULL→0）与「存在 created_at=0 的 epoch 脏行」混为一谈——后者令归档**静默永久停摆**（每轮早退"无历史数据"，任何月份都不归档）。改 `sql.NullInt64` 按 Valid 判空 + 负时间戳早退。新边界测试先红后绿确认修复。commit fe759ba
+
+**下一迭代候选**：前端 views 层手工探查（Playwright 走查管理台各页）、gateway SSE 断流/客户端断连结算路径、playground 模块剩余覆盖、多实例 PG 模式（docker-compose 起双网关验全局协调器 fail-open）。
