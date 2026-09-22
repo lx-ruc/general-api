@@ -128,6 +128,34 @@ export const apiListAudit = (params?: any) => http.get<any, any>('/api/platform/
 export const apiUpdateOrgAlertLevels = (id: number, threshold: number) =>
   http.put<any, any>(`/api/platform/orgs/${id}/alert-levels`, { threshold })
 
+// ---- 充值审批与收款信息 ----
+
+export interface RechargeRow {
+  id: number
+  org_id: number
+  org_name: string
+  amount: number
+  voucher: string
+  status: 'pending' | 'approved' | 'rejected'
+  handled_by: number | null
+  handled_at: number | null
+  reply: string
+  created_at: number
+}
+
+export interface RechargePage { list: RechargeRow[]; total: number; page: number; page_size: number }
+
+export const apiListRecharges = (params?: any) => http.get<any, RechargePage>('/api/platform/recharges', { params })
+
+// 批准=额度自动到账并邮件通知客户管理员；驳回附回复说明
+export const apiHandleRecharge = (id: number, action: 'approve' | 'reject', reply = '') =>
+  http.put<any, { message: string }>(`/api/platform/recharges/${id}`, { action, reply })
+
+export const apiGetBankInfo = () => http.get<any, { bank_info: string }>('/api/platform/bank-info')
+
+export const apiUpdateBankInfo = (bankInfo: string) =>
+  http.put<any, { message: string }>('/api/platform/bank-info', { bank_info: bankInfo })
+
 // 平台视角对账单
 export const apiOrgStatement = (id: number, month: string) =>
   http.get<any, any>(`/api/platform/orgs/${id}/statement`, { params: { month } })
