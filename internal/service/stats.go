@@ -38,8 +38,10 @@ type Overview struct {
 	Today   Totals       `json:"today"`
 	Total   Totals       `json:"total"`
 	Series  []DayPoint   `json:"series"` // 近 7 天（含今日）
-	ByOrg   []GroupPoint `json:"by_org,omitempty"`
-	ByUser  []GroupPoint `json:"by_user,omitempty"`
+	// 分组字段恒为数组（空分组不得是 null 或缺键）：前端看板模板裸读 .length，
+	// 全新部署/零调用客户的 overview 一旦缺键，渲染直接 TypeError 白屏
+	ByOrg   []GroupPoint `json:"by_org"`
+	ByUser  []GroupPoint `json:"by_user"`
 	ByModel []GroupPoint `json:"by_model"`
 }
 
@@ -79,7 +81,8 @@ func StatsOverview(db *gorm.DB, scope Scope) (*Overview, error) {
 	todayCond += " AND created_at >= ?"
 	todayArgs = append(todayArgs, localDay0(0))
 
-	ov := &Overview{}
+	// 分组切片预置为空数组：各 scope 只填自己维度，未覆盖维度恒出 []（JSON 契约）
+	ov := &Overview{ByOrg: []GroupPoint{}, ByUser: []GroupPoint{}, ByModel: []GroupPoint{}}
 	if err := scanTotals(db, &ov.Today, todayCond, todayArgs); err != nil {
 		return nil, err
 	}
@@ -175,6 +178,9 @@ func queryGroups(db *gorm.DB, query string, args []any) ([]GroupPoint, error) {
 	err := db.Raw(query, args...).Scan(&out).Error
 	for i := range out {
 		out[i].Profit = out[i].Cost - out[i].VendorCost
+	}
+	if out == nil {
+		out = []GroupPoint{} // 空结果恒出数组（JSON 契约：数组不得为 null）
 	}
 	return out, err
 }

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -58,3 +59,43 @@ func TestStatsByModelExcludesEmptyModelName(t *testing.T) {
 		t.Fatalf("总请求数应为 2，got %d", ov.Total.Requests)
 	}
 }
+
+// 空库 overview 的 JSON 契约：by_org/by_user/by_model 必须是数组（不得 null/缺键），
+// series 恒 7 点。前端看板模板裸读 by_org.length——全新部署首访曾因此 TypeError 白屏
+func TestStatsOverviewEmptyArraysContract(t *testing.T) {
+	gdb, err := database.Open(config.Database{Driver: "sqlite", Path: t.TempDir() + "/test.db"})
+	if err != nil {
+		t.Fatalf("打开测试库失败: %v", err)
+	}
+	if err := database.Migrate(gdb); err != nil {
+		t.Fatalf("迁移测试库失败: %v", err)
+	}
+	t.Cleanup(func() { sqlDB, _ := gdb.DB(); _ = sqlDB.Close() })
+
+	for _, sc := range []Scope{{}, {OrgID: ptrInt64(1)}, {UserID: ptrInt64(1)}} {
+		ov, err := StatsOverview(gdb, sc)
+		if err != nil {
+			t.Fatalf("空库 overview 不应报错: %v", err)
+		}
+		raw, _ := json.Marshal(ov)
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{"by_org", "by_user", "by_model", "series"} {
+			v, ok := m[key]
+			if !ok || string(v) == "null" {
+				t.Fatalf("scope%+v: %s 必须是数组而非缺键/null，got %q", sc, key, string(v))
+			}
+			var arr []json.RawMessage
+			if err := json.Unmarshal(v, &arr); err != nil {
+				t.Fatalf("scope%+v: %s 必须是数组: %v", sc, key, err)
+			}
+		}
+		if len(ov.Series) != 7 {
+			t.Fatalf("series 应恒为 7 点（含补零日），got %d", len(ov.Series))
+		}
+	}
+}
+
+func ptrInt64(v int64) *int64 { return &v }
