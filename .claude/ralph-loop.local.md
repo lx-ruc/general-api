@@ -1,6 +1,6 @@
 ---
 active: true
-iteration: 18
+iteration: 19
 session_id: a379c968-7f2d-491f-9af1-885267bb9c61
 max_iterations: 20
 completion_promise: "没有发现任何bug，所有功能全部可用，边界条件全部测到"
@@ -356,3 +356,23 @@ started_at: "2026-09-21T08:30:59Z"
 **收尾回归**：`go vet` ✓、`go test ./internal/...` 全 ok（service/gateway -count=1 复跑）、vitest 40/40；it17 worktree 已拆、:8081/:9102 已停、/tmp/it17_* 已清；生产 :9091 healthz 200、用户 :5173 存活。后端零改动，无需重建生产二进制。
 
 **累计：33 bug 已修（本轮 0）。下一迭代候选：curl.ts（用户 WIP 落库后）联动测试、deploy Caddy/systemd 实机验证（需装 caddy 或 docker）、Redis 协调器 PTTL 修复后的长时间 soak、月末真实翻月观察（10 月 1 日快照/归档/月度重置三 goroutine 同刻联动）。**
+
+## 迭代 18（2026-09-22）
+
+环境：deploy/docker-compose 实机（postgres:16 + redis:7 + 双网关 + caddy:2.11，macOS Docker Desktop）；首次具备 docker daemon 实跑整套 HA 栈。**本轮 5 个新 bug（#34~#38），全部修复。**
+
+**A) docker compose 全链路实机矩阵（H1~H7 全过）**：
+- 起手三连坑：go mod download 拉不动 proxy.golang.org 构建挂死（→#34 GOPROXY 构建参数）；镜像不带 config.yaml 容器 crash-loop（→#36 COPY example→config.yaml）；顺手加 .dockerignore 上下文瘦身防泄漏
+- H1 healthz 经 caddy 200；H2 轮询 3/3 严格交替；H3 SSE 分块间隔 1.01s（flush_interval -1 生效）；H5 跨节点缓存命中（同请求轮询双节点 1 miss + 5 hit，Redis 共享实证）；H6 跨节点 429 冷却（6 请求仅 1 次打上游）；H7 PG 不变量 15800==15800==15800；日志零 error、DSN 密码打码、-Server 头已藏
+- **H4 零 502 三步 saga**：docker stop 优雅停 → 2×502；加 fail_duration → 仍 1×502（caddy 日志揭 kill 是 DNS NXDOMAIN、stop 是拨号超时）；再加 request_buffers → 仍 1×502；根因 **Caddy ≥2.10 默认不再自动重试**，`lb_retries 1` 补上后 graceful + kill -9 两轮各 12/12 全部零 502（→#38）
+- 滚动发布烟测：up -d --no-deps --build gateway1/2 交替重建，全程 healthz/chat/login 200
+
+**B) 归档器×账期时区交互（it17 挂账项）**：crafted 行 2026-07-01T03:00Z（=7/1 11:00 SH、=6/30 23:00 NY），retention=1 下：NY 时区归档进 usage_logs-202606.jsonl.gz、SH 时区库内保留——归档月份归属与对账单口径同源（BillingLocation(tz)），**无 bug**；仅 config.example.yaml 保留期注释「含当月」与实现（当月+N 个完整历史月）差一个月（→#35 注释修正）。
+
+**安全加固**：config.example.yaml 的 jwt_secret 公开占位值 change-me-to-a-random-string 可静默启动，任何人可据此伪造管理员 JWT——加启动守卫（与 bootstrap 密码占位符守卫对称）+ 三态单测（占位拒绝/真值通过/占位+TG_JWT_SECRET 环境覆盖通过）（→#37）。
+
+**提交**：fbff03c（#37 jwt 占位守卫）、c943326（#38 Caddy 零 502 三件套）、f4e960b（#34/#35/#36 docker 构建/内置配置/瘦身/注释；config.example.yaml hunk 拆分暂存，用户品牌 WIP 未动，品牌检查 0）。
+
+**收尾回归**：go vet ✓、go test ./internal/... 13 包 ok、vitest 40/40；docker 栈 down -v 全清（用户自有容器未动）、worktree/mock/临时文件已清；生产 :9091 与用户 :5173/:8083/:8888 存活。生产二进制重建评估：config.go 变更仅为守卫新增，生产 jwt_secret 为真值行为不变，与 it17 同判——不重建。
+
+**累计：38 bug 已修。下一迭代候选：curl.ts 联动（等用户 WIP 落库）、Redis 协调器长时间 soak、月末真实翻月观察（10/1 三 goroutine 同刻联动）、e2e run.py 对重建二进制复跑。**
