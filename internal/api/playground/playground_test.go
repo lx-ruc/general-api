@@ -334,3 +334,17 @@ func TestChatOversizeDrainsBody(t *testing.T) {
 		t.Fatalf("超 1MB 应回 413，got %d", resp.StatusCode)
 	}
 }
+
+// 空 body 不是"请求体过大"：应与非法 JSON 同路径回 400——413 会让 OpenAI 兼容
+// 客户端误判为体积问题而放弃重试或错误裁剪请求
+func TestChatEmptyBodyReturns400(t *testing.T) {
+	e := newPGEnv(t)
+	tok := e.token(t, 3, "platform_admin", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/playground/chat", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	w := httptest.NewRecorder()
+	e.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("空 body 应 400，得 %d: %s", w.Code, w.Body.String())
+	}
+}
