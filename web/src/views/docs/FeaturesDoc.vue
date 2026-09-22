@@ -12,7 +12,8 @@
         <li><strong>优先级 + 权重负载均衡</strong>：最高优先级组内按权重加权随机分流，其余组按优先级顺序作为降级备用。</li>
         <li><strong>多 Key 池</strong>：一个渠道可配多把上游密钥（每行一把，可带 <code>:权重</code>），
           突破单 Key 的 RPM/TPM 限制；上游 429 自动冷却该 Key 并换下一把。</li>
-        <li><strong>熔断</strong>：单渠道连续失败达到阈值（默认 5 次）自动禁用并写备注，需在管理台手动恢复。</li>
+        <li><strong>熔断</strong>：单渠道连续失败达到阈值（默认 5 次）自动禁用并写备注；系统周期探测，
+          上游恢复后自动重新启用（管理员手动禁用的渠道不会被自动恢复）。</li>
         <li><strong>并发闸门</strong>：可对单渠道设最大并发，超出的请求有界排队等待（削峰），而非直接打爆上游。</li>
         <li><strong>透明可观测</strong>：响应头 <code>X-Tg-Channel-Id</code> 标识实际服务渠道；
           全部候选耗尽时，若仅剩限流类失败返回 <code>429 upstream_busy</code>（带 <code>Retry-After</code>），否则 <code>502</code>。</li>

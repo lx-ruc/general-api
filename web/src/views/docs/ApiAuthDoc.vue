@@ -78,6 +78,8 @@ const authExample = computed(() => `curl ${baseURL}/models \\
               <td>当前密钥未被授权使用该模型，联系客户管理员在「模型授权」中开通。</td></tr>
             <tr><td><code>403</code></td><td><code>insufficient_balance</code></td>
               <td>客户欠费停服（总额度耗尽自动置位）。联系系统管理员充值，到账自动恢复。</td></tr>
+            <tr><td><code>413</code></td><td><code>request_too_large</code></td>
+              <td>请求体超过大小上限。减小请求体后重试。</td></tr>
             <tr><td><code>429</code></td><td><code>insufficient_balance</code></td>
               <td>子账号或客户额度耗尽。子账号可在管理台发起「额度申请」。</td></tr>
             <tr><td><code>429</code></td><td><code>monthly_limit_exceeded</code></td>
@@ -88,6 +90,14 @@ const authExample = computed(() => `curl ${baseURL}/models \\
               <td>上游全部限流中，网关已自动换 Key / 换渠道重试后仍失败。带 <code>Retry-After</code> 头，稍后重试。</td></tr>
             <tr><td><code>502</code></td><td><code>upstream_error</code></td>
               <td>上游异常（5xx / 网络错误），已尝试全部候选渠道。可重试；持续出现请查看平台渠道状态。</td></tr>
+            <tr><td><code>503</code></td><td><code>no_available_channel</code></td>
+              <td>该模型没有任何启用中的渠道。属平台配置问题，联系系统管理员。</td></tr>
+            <tr><td><code>503</code></td><td><code>channel_key_missing</code></td>
+              <td>候选渠道均未配置（或已停用）上游密钥。属平台配置问题，联系系统管理员。</td></tr>
+            <tr><td><code>503</code></td><td><code>channel_key_invalid</code></td>
+              <td>上游拒绝了渠道配置的全部密钥（401/403），无效密钥已被自动停用。联系系统管理员更新密钥。</td></tr>
+            <tr><td><code>500</code></td><td><code>internal_error</code></td>
+              <td>网关内部错误（额度预检 / 渠道选择等失败）。可重试；持续出现请联系系统管理员。</td></tr>
           </tbody>
         </table>
       </div>
