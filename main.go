@@ -31,7 +31,7 @@ func main() {
 		os.Exit(1)
 	}
 	setupLogger(cfg.Log.Level)
-	slog.Info("token 中转站启动中", "addr", cfg.Server.Addr, "db", cfg.Database.Path)
+	slog.Info("token 中转站启动中", "addr", cfg.Server.Addr, "db", cfg.Database.LogDesc())
 
 	db, err := database.Open(cfg.Database)
 	if err != nil {

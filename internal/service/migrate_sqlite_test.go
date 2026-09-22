@@ -38,6 +38,10 @@ func TestMigrateFromSQLite(t *testing.T) {
 		`INSERT INTO orgs (id, name, quota_limit, status, created_at, updated_at) VALUES (1, 'o1', 1000, 1, 0, 0)`,
 		`INSERT INTO users (id, org_id, username, password_hash, role, status, created_at, updated_at) VALUES (1, 1, 'u1', 'h', 'member', 1, 0, 0)`,
 		`INSERT INTO settings (key, value) VALUES ('points_per_yuan', '1000000')`,
+		// 回归点：recharge_requests / audit_logs 曾漏在迁移清单外，
+		// 切 PG 搬数据会静默丢充值审批与操作审计流水
+		`INSERT INTO recharge_requests (id, org_id, amount, voucher, status, handled_by, handled_at, reply, created_at) VALUES (1, 1, 500, 'V1', 'approved', 1, 1, 'ok', 1)`,
+		`INSERT INTO audit_logs (id, actor_id, actor, method, path, status, detail, ip, created_at) VALUES (1, 1, 'u1', 'POST', '/api/x', 200, 'd', '127.0.0.1', 1)`,
 	}
 	for _, q := range seed {
 		if err := src.Exec(q).Error; err != nil {
@@ -64,6 +68,7 @@ func TestMigrateFromSQLite(t *testing.T) {
 
 	for _, tc := range []struct{ table string; want int64 }{
 		{"orgs", 1}, {"users", 1}, {"settings", 1},
+		{"recharge_requests", 1}, {"audit_logs", 1},
 	} {
 		var got int64
 		if err := dst.Table(tc.table).Count(&got).Error; err != nil {

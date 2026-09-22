@@ -43,6 +43,30 @@ type Database struct {
 	DSN    string `yaml:"dsn"`    // postgres 连接串
 }
 
+// LogDesc 启动日志用的数据库描述：postgres 模式若直接打 Path（sqlite 路径默认值）
+// 会让排障人员误以为跑在单机 SQLite 上；DSN 含密码，脱敏后才可入日志
+func (d Database) LogDesc() string {
+	if d.Driver != "postgres" {
+		return d.Driver + ":" + d.Path
+	}
+	// 仅保留 k=v 中的非密码项，未识别格式整体回退为长度提示
+	var parts []string
+	for _, kv := range strings.Fields(d.DSN) {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		if k == "password" {
+			v = "***"
+		}
+		parts = append(parts, k+"="+v)
+	}
+	if len(parts) == 0 && d.DSN != "" {
+		return "postgres:(非标准 DSN，已隐藏)"
+	}
+	return "postgres:" + strings.Join(parts, " ")
+}
+
 type Security struct {
 	JWTSecret              string   `yaml:"jwt_secret"`
 	JWTTTL                 Duration `yaml:"jwt_ttl"`
