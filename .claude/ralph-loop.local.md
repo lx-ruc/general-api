@@ -1,6 +1,6 @@
 ---
 active: true
-iteration: 8
+iteration: 9
 session_id: a379c968-7f2d-491f-9af1-885267bb9c61
 max_iterations: 20
 completion_promise: "没有发现任何bug，所有功能全部可用，边界条件全部测到"
@@ -148,3 +148,26 @@ started_at: "2026-09-21T08:30:59Z"
 **API 级 RBAC 矩阵（有效 token）**：member→org/mem 面 403/200；orgadm→platform 403、org 面 200；root→org 面 403（平台管理员只走平台面，与 UI 跳转口径一致）；无/假 token 401。三账号并发登录三 token 同时有效。登录限流 5/分/IP 两度自伤实证生效。
 
 **累计：21 bug 已修。下一迭代候选：多实例 PG 双网关全局协调器 fail-open 实测、playground 剩余模块、前端表单极端输入 fuzz。**
+
+## 第 9 轮（it9）— PostgreSQL 模式深测：e2e 全绿 + 迁移实测再抓 2 bug + 双网关全局协调器
+
+环境：一次性 PG 17 集群 :5433（/tmp/tg-pg/data，用户 tg trust）、PG 网关 :8092（admin/admin123456）、源 SQLite 网关 :8094（migadm，aes_key 用 base64(32B)）、mock 上游 :9102（回显上游实收模型名）/ :9103（恒 429+计数）、隔离 redis :6399。
+
+**PG 模式基线**：
+- schema.sql 模板替换（AUTOINCREMENT→IDENTITY 等）实测建 19 表成功；启动日志确认 postgres DSN
+- e2e 61/61 **全绿**（`TG_E2E_DB_DSN` 走 psql 只读断言；D 清理段的 db_exec 只支持 SQLite，/tmp 拷贝补 pg_exec 后 C/D 系列才可跑）——计费不变量、缓存零计费、超扣上界全部方言安全
+- stats overview PG 方言 to_char 分桶正确（7 点数组契约）
+
+**修复 #22**（commit 3f45cff）：postgres 模式启动日志打 `database.path`（sqlite 默认值 `data/token_.db`）——排障必被误导为单机部署。新增 `Database.LogDesc()`：postgres 打脱敏 DSN（password=***；非标准格式整体隐藏），4 用例单测锚定。
+
+**修复 #23**（commit 3f45cff，真实搬迁实测抓到）：`-migrate-from-sqlite` 的 migrateTables 漏 `recharge_requests` 与 `audit_logs`——切 PG 搬数据**静默丢充值审批流水与操作审计**（源库 1+10 行实测不达）。补表入清单+单测锚定；重跑搬迁 53→64 行。排查插叙：渠道创建 API 的映射是 per-ability `upstream_model_name` 字段而非 `model_mapping`（我先传错字段名，非 bug）。
+
+**迁移后全家桶 10/10 PASS**：三角色登录（bcrypt 原样达）、tgp_ 访问令牌跨库可用、迁移 API key /v1 200（渠道密文解密成功=同 aes_key 前提）、模型映射改写出站 mig-chat-upstream/回写对外名、充值单可见、**序列重置**（新建客户 id=2 无冲突；模型 id 跳号是 presets upsert 预耗序列，无害）、幂等重跑总行数=0、Σgrants==quota_limit（org 6,234,567==6,234,567、user 1M==1M）、双记账 quota_used==Σusage==2,400、缓存命中与 429 均零计费。
+
+**双网关同 PG + Redis 全局协调器**（TG_REDIS_ADDR=127.0.0.1:6399，:8092/:8095）：
+- N1 跨节点全局缓存：A 首打 miss、B 复打 `X-Tg-Cache: hit` ✓
+- N2/N3 跨节点全局冷却：A 打恒 429 渠道触发冷却（上游计数+1），B 立即同模型请求**不打上游**（计数不变）、回 429 upstream_busy（全冷却语义有 scheduling_test 锚定，我预期 503 属猜错非 bug）✓
+- N5 redis 出现 `tg:cd:ck:*`（冷却）与 `tg:cache:*`（缓存）键 ✓
+- **fail-open**：shutdown redis 后双节点 /v1 继续 200（redis client 连接池报错仅入日志），计费继续准确（+3×600 与调用一一对应）
+
+**累计：23 bug 已修（#22/#23 本轮）。下一迭代候选：playground 剩余模块深测、前端表单极端输入 fuzz、SSE 网关侧异常路径（上游断流/半包）。**
