@@ -1,6 +1,6 @@
 ---
 active: true
-iteration: 12
+iteration: 14
 session_id: a379c968-7f2d-491f-9af1-885267bb9c61
 max_iterations: 20
 completion_promise: "没有发现任何bug，所有功能全部可用，边界条件全部测到"
@@ -234,3 +234,28 @@ started_at: "2026-09-21T08:30:59Z"
 **环境收尾**：it12 worktree 已拆、临时文件已清；活体网关已重建（含 #28 与全部历史修复，前端含用户 WIP 品牌态）按用户最新 config 起在 **:9091**（用户已改端口，注释注明 9090 被 mihomo 占用）——healthz/SPA//v1 鉴权全对、真实渠道 1,2,3,7 未动、用户 :5173/:8083 存活。live 库 mtime 11:31 归因为杀活体时优雅关库 checkpoint（曾排查疑似污染，证实零写入）。
 
 **累计：28 bug 已修（#28 本轮）。下一迭代候选：渠道管理面深度走查（多 Key 权重/映射 UI 流）、告警邮件链路复验、审计日志 UI 检索分页边界、/metrics 指标语义复核。**
+
+## 迭代 13（2026-09-22）
+
+环境：/tmp/tg-it13 worktree（gateway :8098 + admin 密码中途改为 it13newpw-888 + 独立 SQLite 测试库）；三条线全部收口。
+
+**A) 渠道管理面 UI 深度走查——零 bug**：
+- 多 Key 池全流程：批量添加（逐行掩码回显）、单 Key 启停（停用后 active_count 同步）、权重调整、删除确认；渠道编辑对话框回填、上游模型实时拉取挑选、模型映射保存后生效链路核对
+- 渠道测试按钮：探活结果（延迟/状态/错误信息）渲染正确，纯 embedding 渠道发 embeddings 请求（沿用 c871409 修复）无回归
+- 控制台全程 0 错误；Vue 转义覆盖所有渠道名/备注/映射键值
+
+**B) 审计+用量日志检索分页边界（API fuzz + UI 走查）——零 bug**：
+- API fuzz（/api/platform/audit、/api/platform/usage、/api/org/usage）：page=0/-5/1e19、page_size=0/负/1e9/非数字、start>end、status 非法、model LIKE 通配符 %25/_/%2525、SQL 注入片段、中文 path——全部参数化查询 + PageParams 钳制（<1→1、>100→100），注入零效果，org 面 org_id 隔离不破
+- 病理输入 triage（不修）：page≥1e19 时 Atoi 回 MaxInt64、offset int64 回绕为负 SQLite 视作 0 返回首页行（PG 模式静默空）——需手改 query string 才可达，无害
+- UI 走查（58 条种子审计）：分页边界页、第 2 页带筛选后翻页、搜索框回车/@clear 重置页码、通配符/注入串输入、UsageView 非法 org_id/user_id 输入被忽略
+- BindJSON 校验失败回英文原文（app 全局约定，占位符已提示口径，产品级 i18n 决策不属本循环）
+
+**C) 改密 UI + 银行信息 UI + 收尾——发现并修复 #29（commit 54cc6de）**：
+- 改密 4 场景全过：错原密（400+toast+对话框留存）、弱新密（服务端 400）、确认不一致（本地 alert 零请求）、正确改密 → SessionVer 哈希轮换使旧 JWT 全失效 → 401 → 干净跳 #/login（#21 路径复验）→ 新密码重登成功
+- **#29：平台充值审批 UI 完全缺失**——后端 ListRecharges/HandleRecharge/GetBankInfo/UpdateBankInfo 与客户侧充值页早已存在，但 platform.ts 零充值函数、无路由无菜单：客户对公转账后提交的申请管理员无处审批、收款信息无处配置（客户侧永远只看到兜底文案）。修复：新增 RechargeAdminView.vue（收款信息卡片+申请表格+状态筛选+批准/驳回，驳回 inputValidator 强制原因）+ platform.ts 四个 API 函数 + 路由 + 菜单
+- 活体验证全链路：保存收款信息→客户侧即时可见；批准→quota 20M→25M 且 Σgrants 不变量保持（25,000,000==25,000,000）+ handled_by 落库；驳回→reply 存储、quota 不动；状态筛选、控制台 0 错误；并发安全由后端事务 UPDATE WHERE status='pending' 保证（单赢家）
+- 收尾回归：vitest 15/15、go vet ✓、go test ./internal/... 13 包全过（后端本轮零改动）
+
+**环境收尾**：:8098 已停、worktree 已拆、/tmp/it13_* 已清；生产 :9091 healthz 正常、真实渠道未动、用户 :5173/:8083/:8888 存活。
+
+**累计：29 bug 已修（#29 本轮）。下一迭代候选：org 面 UI 深度走查（额度申请审批流/对账单 CSV 下载）、member 密钥过期提醒边界、/metrics 指标语义复核、注册流（验证码）复验。**
