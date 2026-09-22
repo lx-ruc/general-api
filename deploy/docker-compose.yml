@@ -31,7 +31,11 @@ services:
       retries: 10
 
   gateway1: &gateway
-    build: ..
+    build:
+      # 国内网络构建拉不动 proxy.golang.org：.env 里设 TG_BUILD_GOPROXY=https://goproxy.cn,direct
+      context: ..
+      args:
+        GOPROXY: ${TG_BUILD_GOPROXY:-https://proxy.golang.org,direct}
     restart: always
     depends_on:
       postgres:

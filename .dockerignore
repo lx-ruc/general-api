@@ -1,0 +1,17 @@
+# 构建上下文瘦身与防泄漏：多阶段构建里前端与二进制都在镜像内重造，
+# 仓库里的这些内容进上下文只会拖慢构建（node_modules/数据文件）或泄漏敏感信息（config.yaml）
+.git
+.claude
+.playwright-mcp
+node_modules
+web/node_modules
+web/dist
+data
+docs
+deploy
+openspec
+config.yaml
+config-*.yaml
+*.db
+*.db-wal
+*.db-shm

@@ -11,6 +11,9 @@ RUN pnpm build
 # ---------- 阶段 2：Go ----------
 FROM golang:1.26-alpine AS build
 WORKDIR /src
+# 国内网络构建：docker compose build --build-arg GOPROXY=https://goproxy.cn,direct
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY}
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
@@ -22,7 +25,8 @@ FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata sqlite && adduser -D -u 10001 tg
 WORKDIR /app
 COPY --from=build /out/token-gateway ./token-gateway
-COPY config.example.yaml ./config.example.yaml
+# 镜像内置默认配置（与 example 一致）；敏感项一律由 TG_* 环境变量覆盖（见 docker-compose.yml）
+COPY config.example.yaml ./config.yaml
 USER tg
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --retries=3 \
