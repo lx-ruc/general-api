@@ -126,3 +126,25 @@ started_at: "2026-09-21T08:30:59Z"
 **修复 #18**：归档 `COALESCE(MIN(created_at), 0)` 把「表空」（NULL→0）与「存在 created_at=0 的 epoch 脏行」混为一谈——后者令归档**静默永久停摆**（每轮早退"无历史数据"，任何月份都不归档）。改 `sql.NullInt64` 按 Valid 判空 + 负时间戳早退。新边界测试先红后绿确认修复。commit fe759ba
 
 **下一迭代候选**：前端 views 层手工探查（Playwright 走查管理台各页）、gateway SSE 断流/客户端断连结算路径、playground 模块剩余覆盖、多实例 PG 模式（docker-compose 起双网关验全局协调器 fail-open）。
+
+## 第 8 轮续二（it8++）— 前端全角色 Playwright 走查，发现并修复 #19/#20/#21
+
+环境：/tmp/tg-ui 一次性网关 :9091（root/rootpw123）+ vite :5174 + mock 上游 :9110；渠道 mock-ch(id5)、模型 mock-model（2M/8M）、客户「走查客户」20M、orgadm1、mem001（5M+mock-model）。
+
+**修复 #19**（commit 906db9d）：SSE 流式客户端断开时 usage_logs 仍记 status=200（非流式记 499）——错误率统计把断连误算成成功。pipeSSE 错误块补 `ctx.Err() != nil → rec.Status=499`；红测 TestClientCancelDuringStreamLogged499 先失败后转绿（断言 499+no_usage=1+cost=0+不熔断）。
+
+**修复 #20**（commit 604576c）：空库/零调用时 StatsOverview 的 by_org/by_user 带 omitempty（缺键）、by_model 为 null——前端看板裸读 `.length` 直接 TypeError 白屏（全新部署必现）。Overview 三字段去 omitempty + 预置 `[]GroupPoint{}`；TestStatsOverviewEmptyArraysContract 锁三 scope JSON 契约。排查插曲：pkill -f '/tmp/tg-ui/gw' 匹配不到（进程 cmdline 是 `./gw -config ...`），旧二进制一直服务——`ps -o pid,lstart` 对时间戳定位后kill 重启才见修复生效。
+
+**修复 #21**（commit 23149ef）：JWT 过期后 axios 拦截器只清 localStorage，路由守卫读 Pinia store 内存 token——hash 推到 #/login 被守卫判「已登录访问 /login」弹回角色首页，过期用户困在持续 401 的破损页直到 F5。改为 401 时调 `useAuthStore().logout()` 双清（store 未初始化兜底）；Playwright 实证：换无效 token → 导航 → 干净落 #/login → 立即重登成功。
+
+**三角色 UI 全页走查（21 页零 console 错误）**：
+- platform 8 页：dashboard/orgs/org-detail/channels/models/usage/audit/demo-key + docs 站 + playground 对话（入100/出50 计费正确）
+- org 8 页：dashboard（接入向导✓、勾稽表对无期初快照优雅降级、期内授权+20M与流水一致）/members（mem001 5M）/requests/keys/cost-centers（未配收款信息优雅兜底）/usage/recharges/billing
+- member 5 页：models/keys/usage/quota/docs（文档带实时 key 前缀与授权模型）
+- 越权导航：orgadm→/platform 弹回 org home ✓；mem→/platform 与 /org 均弹回 member home ✓
+
+**UI 驱动的全链路闭环**：mem001 建 key（明文只显一次）→ curl /v1/chat 200（100/50）→ 我的用量扣减 600=100×2+50×8 ✓ → 发 1M 额度申请 → orgadm1 批准 → quota_limit 5M→6M、流水「额度申请 #1 审批通过」+1M、Σgrants==quota_limit ✓。充值申请 10M 入库（待确认+凭证回显）；空凭证提交被前端校验拦截。
+
+**API 级 RBAC 矩阵（有效 token）**：member→org/mem 面 403/200；orgadm→platform 403、org 面 200；root→org 面 403（平台管理员只走平台面，与 UI 跳转口径一致）；无/假 token 401。三账号并发登录三 token 同时有效。登录限流 5/分/IP 两度自伤实证生效。
+
+**累计：21 bug 已修。下一迭代候选：多实例 PG 双网关全局协调器 fail-open 实测、playground 剩余模块、前端表单极端输入 fuzz。**
