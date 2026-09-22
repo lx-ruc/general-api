@@ -1,6 +1,6 @@
 ---
 active: true
-iteration: 15
+iteration: 16
 session_id: a379c968-7f2d-491f-9af1-885267bb9c61
 max_iterations: 20
 completion_promise: "没有发现任何bug，所有功能全部可用，边界条件全部测到"
@@ -283,3 +283,30 @@ started_at: "2026-09-21T08:30:59Z"
 **环境收尾**：it14 worktree 已拆、:8081/:9102 已停、/tmp/it14_* 已清；生产 :9091 已含 #29+#30 重建（主仓 pnpm build → go build），healthz/SPA/登录错误路径验证通过、真实渠道 1,2,3,7 未动、DATA RACE=0；用户 :5173/:8083/:8888 存活未动。
 
 **累计：30 bug 已修（#30 本轮）。下一迭代候选：member 密钥过期提醒边界、/metrics 指标语义复核、注册流（验证码）复验、`-race` 纳入常规回归命令。**
+
+## 迭代 15（2026-09-22）
+
+环境：/tmp/tg-it15 worktree @ HEAD（网关 :8081 + admin/admin123456 + mock :9102 + dev 模式 SMTP）；三条线全部收口，**本轮零新 bug**。
+
+**A) 注册流+验证码在最新 HEAD 复验——19 项全过**：
+- send-code：dev 模式回 dev_code（6 位）；**同邮箱 60s 重发窗口**（换 XFF 排除 IP 因素证明按邮箱维度）429+retry_after；**IP 维度 3/min**（同 XFF 前 3 次 200 第 4 次 429，新 IP 复核 200×3+429 精确）
+- 错码 5 次 → 验证码作废（第 6 次对码也 400「请先获取」）；对码注册 200；**一次性消费**（重放 400）；**并发同码双注册恰 1×200+1×400**（原子 DELETE 单赢家）
+- 重名：重复客户名「客户名已被注册」/重复账号「账号或邮箱已被使用」——友好 400 无驱动原文泄漏（a4692db 修复完好）
+- 弱密码（<6）/短账号（<3）/缺字段/空码 400；非法邮箱 400；**过期码 400「已过期」**（DB 直改 expire_at）；新客户 quota 0/未耗/启用 + org_admin 可登录；XSS 客户名可注册（Vue 转义兜底，沿用既定口径）
+- triage（不修）：Verify 通过后注册失败（如重名）会烧掉验证码——用户需等 60s 重新获取；一码一次验证尝试的反滥用语义可辩护
+
+**B) 密钥/访问令牌过期边界——15 项全过**：
+- member API key 秒级边界：+8s 有效期建 key 200 → 过期前 /v1 200 → sleep 后 **401 "API key has expired"**；过期时刻在过去建 key 400；不带有效期=永久；**过期 key 仍留在列表可管理**
+- tgp_ 访问令牌：30 天创建 → DB 秒级改 expires_at → 过期后 401（auth.go:104 校验真实生效）；永久（expires_days=0 → expires_at=0）可用；org tgp_ 进平台面 403
+- UI：MyKeysView 过期渲染完备——已过期红 tag / **≤7 天黄 tag 提醒** / 永久；triage（不修）：nowSec 是 setup 常量，长开页面标签不自动翻新（外观项，密钥实际使用有明确 401）
+
+**C) 新维度：负载 soak + kill -9 崩溃恢复 + 资源泄漏检查——零 bug**：
+- 首轮 soak 意外变成 429 风暴：mockupstream 默认 `-rpm 120` 按 key 限速（工具既定行为）→ 意外充分验证了 429 路径：9095 行 429 计量日志 cost=0、不变量精确
+- 真吞吐 soak（TG_PER_KEY_RPM=100000 + mock -rpm 0）：非流式 24.4rps + 流式 7.2rps × 100s，**3173 笔 100% 成功 0 传输错误**；RSS 43.9→46.0MB 压测后走平（T2==T3 零增长）、threads 18 恒定——无泄漏信号；错误路径搅动（坏 key 401/未知模型 404/models 列表）并行穿插无异常
+- **kill -9 崩溃恢复**：流量中（642 发出/203 已交付）SIGKILL → 重启 healthz ok、日志 0 error/panic；**usage 行数增量 203 == 客户端已交付数**（已交付响应的结算全部落库、在飞请求整笔丢弃）；**quota_used == Σusage_logs.cost == 799976 三侧精确相等**——Settle 单事务原子性在暴力杀下保持，无双重计费无半提交；soak 渠道未被误熔断；presets 渠道 status=0 系出厂设计（注释明示需填 key 后启用，auto_disabled_at=0 永不探测）
+- 成本逐行差异复核：mock usage 随机（prompt 32-95/completion 24-119）→ cost 非整数倍属正常，不变量才是硬校验
+- 工具限制记录：macOS 无 root 时 lsof 拿不到他进程 FD 计数（fd=0），以 RSS+threads 稳定性替代泄漏判据
+
+**收尾回归**：`go vet` ✓、`go test ./internal/...` 13 包 ok、vitest 15/15；it15 worktree 已拆、:8081/:9102 已停、/tmp/it15_* 已清；生产 :9091 healthz 正常、用户 :5173/:8083/:8888 存活未动。
+
+**累计：30 bug 已修（本轮 0）。下一迭代候选：浏览器工具恢复探测后 UI 盲区补查、docs 站内容与当前 API 口径核对、前端 vitest 覆盖扩面、deploy Caddy/systemd 实机验证。**
