@@ -13,6 +13,13 @@
 		health_timeout 2s
 		# SSE 流式：关闭响应缓冲，透传 flush
 		flush_interval -1
+		# 节点失效零 502 三件套（实测 Caddy 2.11）：
+		# request_buffers 缓冲请求体使其可重放（网关请求体上限 10MB）；
+		# lb_retries 显式开启重试（Caddy ≥2.10 默认不再自动重试）——拨号失败的那笔
+		# 转投下一节点而非回 502；fail_duration 被动健康：一次拨号失败立即摘除该节点
+		request_buffers 12MB
+		lb_retries 1
+		fail_duration 10s
 	}
 
 	# 指标端口可单独限制内网访问（按需解开）
