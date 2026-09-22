@@ -86,6 +86,12 @@ func (h *Handler) CreateMember(c *gin.Context) {
 	if !httpx.BindJSON(c, &req) {
 		return
 	}
+	// 负初始额度 = 子账号一出生即欠费态（precheck quota_used>=limit 恒真），
+	// 且会写入负数 grant；与更新路径的 monthly_quota>=0 校验口径一致
+	if req.QuotaAmount < 0 {
+		httpx.Fail(c, http.StatusBadRequest, "初始额度不能为负（0=不限）")
+		return
+	}
 	var cnt int64
 	_ = h.DB.Model(&model.User{}).Where("username = ?", req.Username).Count(&cnt).Error
 	if cnt > 0 {

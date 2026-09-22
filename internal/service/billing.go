@@ -213,6 +213,9 @@ func BuildBillStatement(db *gorm.DB, loc *time.Location, orgID int64, period str
 	if detailLimit <= 0 {
 		detailLimit = 500
 	}
+	if detailLimit > 2000 {
+		detailLimit = 2000 // 明细行数上限：防 ?limit=1e9 一笔拉爆内存/带宽（前端固定 500）
+	}
 	st := &BillStatement{Month: period, Timezone: loc.String(), StartUnix: s, EndUnix: e}
 
 	// ---- 勾稽段：期初 = snapshot[M-1]，期末 = snapshot[M]（缺则实时） ----

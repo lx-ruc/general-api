@@ -278,3 +278,19 @@ func TestCreateMemberConcurrentDuplicateFriendly(t *testing.T) {
 		t.Fatalf("库中应恰 1 行，得 %d", cnt)
 	}
 }
+
+// 负初始额度必须 400 拒绝：负值 = 子账号一出生即欠费态（precheck 恒拒），
+// 且会写入负数 grant；与 UpdateMember 的 monthly_quota>=0 校验口径一致
+func TestCreateMemberRejectNegativeQuota(t *testing.T) {
+	e := newOrgEnv(t)
+	w := e.do(http.MethodPost, "/api/org/members", `{"username":"negmem","password":"pass123","quota_amount":-1}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("负初始额度应 400，得 %d: %s", w.Code, w.Body.String())
+	}
+	var users, negGrants int64
+	_ = e.db.Raw(`SELECT COUNT(*) FROM users WHERE username='negmem'`).Scan(&users).Error
+	_ = e.db.Raw(`SELECT COUNT(*) FROM quota_grants WHERE amount < 0`).Scan(&negGrants).Error
+	if users != 0 || negGrants != 0 {
+		t.Fatalf("拒绝后不应落库：users=%d neg_grants=%d", users, negGrants)
+	}
+}

@@ -81,6 +81,12 @@ func (h *Handler) CreateOrg(c *gin.Context) {
 	if !httpx.BindJSON(c, &req) {
 		return
 	}
+	// 初始额度是"预算上限"语义：负值会让客户一出生就处于欠费态
+	//（quota_used=0 >= 负 limit），且写入负数 grant 污染流水口径
+	if req.QuotaAmount < 0 {
+		httpx.Fail(c, http.StatusBadRequest, "初始额度不能为负（0=先不设置）")
+		return
+	}
 	var cnt int64
 	_ = h.DB.Model(&model.Org{}).Where("name = ?", req.Name).Count(&cnt).Error
 	if cnt > 0 {

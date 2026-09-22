@@ -388,3 +388,24 @@ func TestHandleRechargeOverflowRejected(t *testing.T) {
 		t.Fatalf("不得留流水，got %d", grants)
 	}
 }
+
+// 负初始额度必须 400 拒绝：额度是"预算上限"语义，负值 = 客户一出生即欠费态
+// （quota_used=0 >= 负 limit），且会写入负数 grant 污染 Σgrants==quota_limit 流水口径
+func TestCreateOrgRejectNegativeQuota(t *testing.T) {
+	engine, db, token := newPlatformEnv(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/platform/orgs", strings.NewReader(
+		`{"name":"neg","admin_username":"boss2","admin_password":"pass123","quota_amount":-5}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("负初始额度应 400，得 %d: %s", w.Code, w.Body.String())
+	}
+	var orgs, negGrants int64
+	_ = db.Raw(`SELECT COUNT(*) FROM orgs WHERE name='neg'`).Scan(&orgs).Error
+	_ = db.Raw(`SELECT COUNT(*) FROM quota_grants WHERE amount < 0`).Scan(&negGrants).Error
+	if orgs != 0 || negGrants != 0 {
+		t.Fatalf("拒绝后不应落库：orgs=%d neg_grants=%d", orgs, negGrants)
+	}
+}
