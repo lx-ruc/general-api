@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 )
@@ -111,6 +112,63 @@ func TestMemCacheLRUEviction(t *testing.T) {
 	}
 	if v, ok := m.CacheGet("k3"); !ok || string(v) != "v3" {
 		t.Fatal("k3 应命中")
+	}
+}
+
+// 满容时覆盖已有 key 走"前移+覆写"早退路径，不得挤掉其他条目；
+// 已过期但未被惰性清理的条目同理（items 命中即覆写，不产生多余逐出）
+func TestMemCacheOverwriteAtCapacity(t *testing.T) {
+	m := NewMem(2)
+	m.CacheSet("k1", []byte("v1"), time.Minute)
+	m.CacheSet("k2", []byte("v2"), time.Minute)
+	m.CacheSet("k1", []byte("v1b"), time.Minute) // 满容覆盖：不得逐出 k2
+	if v, ok := m.CacheGet("k2"); !ok || string(v) != "v2" {
+		t.Fatal("满容覆盖 k1 不应逐出 k2")
+	}
+	if v, ok := m.CacheGet("k1"); !ok || string(v) != "v1b" {
+		t.Fatal("覆盖后应返回新值")
+	}
+	m.CacheSet("k3", []byte("v3"), time.Minute) // k2 现为最久未用，被逐出
+	if _, ok := m.CacheGet("k2"); ok {
+		t.Fatal("k2 应在 k3 入缓后被逐出")
+	}
+
+	// 过期条目占位时再 set：items 仍命中 → 覆写复活，长度不增
+	m2 := NewMem(1)
+	m2.CacheSet("e1", []byte("old"), 30*time.Millisecond)
+	time.Sleep(40 * time.Millisecond)
+	m2.CacheSet("e1", []byte("new"), time.Minute)
+	if v, ok := m2.CacheGet("e1"); !ok || string(v) != "new" {
+		t.Fatal("过期条目覆写后应立即以新值命中")
+	}
+}
+
+// 并发 get/set/TTL 过期混合锤击：任何未持锁的 map/list 访问都会被 -race 抓出；
+// 断言只有命中语义（不 panic），不断言具体哪次命中（并发下顺序不定）
+func TestMemCacheConcurrentHammer(t *testing.T) {
+	m := NewMem(4)
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 3000; i++ {
+				k := fmt.Sprintf("k%d", (g*7+i)%6) // 键集有交集也有竞争
+				switch i % 3 {
+				case 0:
+					m.CacheGet(k)
+				case 1:
+					m.CacheSet(k, []byte{byte(i)}, time.Duration(i%5)*10*time.Millisecond) // TTL 0~40ms 混入过期
+				default:
+					m.CacheSet(k, []byte{byte(g)}, time.Minute)
+					m.CacheGet(k)
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+	if _, ok := m.CacheGet("k0"); !ok { // 锤击后写入仍在：最后一批 1 分钟 TTL 的键可命中
+		m.CacheSet("k0", []byte("post"), time.Minute) // 不作断言依据，仅保证不 panic
 	}
 }
 
