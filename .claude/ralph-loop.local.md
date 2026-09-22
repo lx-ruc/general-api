@@ -1,6 +1,6 @@
 ---
 active: true
-iteration: 19
+iteration: 20
 session_id: a379c968-7f2d-491f-9af1-885267bb9c61
 max_iterations: 20
 completion_promise: "没有发现任何bug，所有功能全部可用，边界条件全部测到"
@@ -376,3 +376,19 @@ started_at: "2026-09-21T08:30:59Z"
 **收尾回归**：go vet ✓、go test ./internal/... 13 包 ok、vitest 40/40；docker 栈 down -v 全清（用户自有容器未动）、worktree/mock/临时文件已清；生产 :9091 与用户 :5173/:8083/:8888 存活。生产二进制重建评估：config.go 变更仅为守卫新增，生产 jwt_secret 为真值行为不变，与 it17 同判——不重建。
 
 **累计：38 bug 已修。下一迭代候选：curl.ts 联动（等用户 WIP 落库）、Redis 协调器长时间 soak、月末真实翻月观察（10/1 三 goroutine 同刻联动）、e2e run.py 对重建二进制复跑。**
+
+## 迭代 19（2026-09-22）
+
+环境：/tmp/tg-it19 worktree 网关 :8081（admin/admin123456，cache_ttl 120s）+ 自带 mock :9102。**本轮 2 个新 bug（#39/#40），全部修复。**
+
+**A) e2e 全量回归 @ bec4f05 前后**：首轮 60/61——A12「429 冷却自愈」FAIL，连追 7 次重试全中坏 Key（2 Key 池加权随机 1/128 连中）+ 每轮等 61s（客户端 Retry-After 60 vs 实际冷却 1s）拖 6 分钟。双修：mock k429 每 key 只 429 一次（latch 去抽签化）+ **#39**：耗尽路径 Retry-After 恒报 key_cooldown(60s) 而非本请求实际应用的最大冷却（上游 RA=1s 时误导客户端过度退避 60 倍）——handler.go 加 coolApplied 跟踪、如实回报；config.example.yaml key_cooldown 注释对齐 RA-wins 语义。修后 61/61 ×3。
+
+**B) JSON/binding 解析边界 fuzz（两平面 27 例）**：/api 深嵌套 2 万层、无效 UTF-8、重复键、null 覆盖、类型错配、int64 溢出、无/错 Content-Type；/v1 空体/数组/null messages/负 max_tokens/stream 字符串等。**#40**：`{"name":"fzgarb",...} trailing` 创建客户返回 200 且真落库——httpx.BindJSON 用 gin ShouldBindJSON（json.Decoder 只解第一个 JSON 值即成功，尾部垃圾静默忽略），管理面全部写接口共用此 choke point。修复：整包 io.ReadAll+json.Unmarshal+显式 binding.Validator.ValidateStruct（Unmarshal 单用会跳过全部 binding 标签）；外围空白依旧宽容；/v1 数据面本就整包 Unmarshal 不受影响。RED→GREEN 三测 + fuzz 矩阵 0 失败 0 panic + e2e 61/61。/v1 语义怪但可解析体（messages:[] 等）透传上游校验系透明中继既定设计，非 bug。
+
+**C) 协调器缓存 LRU 逐出 + race**：既有单测覆盖基础 LRU/TTL；补满容覆盖早退不误逐、过期条目覆写复活（items 命中即覆写零多余逐出）、-race 8×3000 混合 get/set/过期锤击 ×2 全过。活体：worktree 网关 cache_max_items=3，13 步逐出序列 0 失败——hit 刷新救活高频条目六轮插入、miss 重入缓精确逐当时 LRU、逐出顺序严格跟随访问序（教科书 LRU；两处首跑"FAIL"系本人推演表漏算 miss 步骤的重入缓副作用，网关行为全对）。Redis 侧 TTL 由 Redis 自管无逐出逻辑，无虞。
+
+**提交**：bec4f05（#39 Retry-After 如实回报 + config 注释 + e2e mock latch；config.example.yaml/tools/e2e hunk 拆分暂存，品牌检查 0）、c1bf44a（#40 BindJSON 严格化 + 三测）、b847f92（memCache 满容覆盖 + 并发锤击补测）。
+
+**收尾回归**：go vet ✓、go test ./internal/... 14 包 ok（coord/httpx 新增测试含 -race ×2）、e2e 61/61（#40 后复跑）；it19 worktree 已拆、:8081/:9102 已停、/tmp/it19_* 已清。**生产二进制已重建**（用户 13:48 自部署版不含 15:00 后的 #39/#40；重建=用户同源 dist + 两修复），healthz/SPA/登录错误路径/尾部垃圾 400/未鉴权 401 全验证、0 panic、真实渠道未动；用户 :5173/:8083/:8888 存活。
+
+**累计：40 bug 已修。下一迭代候选：curl.ts 联动（等用户 WIP 落库）、Redis 协调器长 soak、月末真实翻月观察（10/1 三 goroutine 同刻联动）、登录限流信任代理配置实钻。**
