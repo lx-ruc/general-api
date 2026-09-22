@@ -3,6 +3,7 @@ package service
 import (
 	"bufio"
 	"compress/gzip"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -54,15 +55,16 @@ func ArchiveUsageOnce(db *gorm.DB, retentionMonths int, archiveDir string, loc *
 	if retentionMonths <= 0 {
 		return 0, nil
 	}
-	// COALESCE：空表 MIN 为 NULL，直接 Scan 进 int64 会报 converting NULL 错
-	// （启用归档的全新部署每次启动都会走到这里）
-	var minTS int64
-	if err := db.Raw("SELECT COALESCE(MIN(created_at), 0) FROM usage_logs").Scan(&minTS).Error; err != nil {
+	// 空表 MIN 为 NULL，用 NullInt64 区分「无数据」与「created_at=0 的 epoch 脏行」——
+	// 后者若被当成空表会让归档静默停摆（每轮都早退，任何月份都不归档）
+	var minNull sql.NullInt64
+	if err := db.Raw("SELECT MIN(created_at) FROM usage_logs").Scan(&minNull).Error; err != nil {
 		return 0, fmt.Errorf("查最早 usage_log: %w", err)
 	}
-	if minTS == 0 {
-		return 0, nil // 无历史数据
+	if !minNull.Valid || minNull.Int64 < 0 {
+		return 0, nil // 无历史数据（或时间戳非法的脏行，无从按月切分）
 	}
+	minTS := minNull.Int64
 	// 归档线 = 当月前推 retention 个月的首日；早于该日的自然月全部归档
 	now := time.Now().In(loc)
 	cutoff := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc).AddDate(0, -retentionMonths, 0)

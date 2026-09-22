@@ -161,6 +161,58 @@ func TestArchiveDisabled(t *testing.T) {
 	}
 }
 
+// insertUsageTS 按 unix 秒直接造一行（边界测试用精确时间戳）
+func insertUsageTS(f *dbFixture2, id int64, ts int64) {
+	f.t.Helper()
+	if err := f.db.Exec(`INSERT INTO usage_logs (id, request_id, org_id, user_id, api_key_id, model_name,
+		prompt_tokens, completion_tokens, cost, status, created_at)
+		VALUES (?, 'r', 1, 1, 1, 'm', 1, 1, 1, 200, ?)`, id, ts).Error; err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// 边界精确性：retention=1 时归档线 = 上月 1 日 00:00（账期时区）。
+// 线前一秒（上上月最后一秒）必须归档，线上那一秒（保留窗首秒）必须保留——
+// 半开区间 [start, end)，保留窗首行误删就是资金数据丢失
+func TestArchiveBoundaryExact(t *testing.T) {
+	f := newMonthlyDB(t)
+	loc := BillingLocation("Asia/Shanghai")
+	now := time.Now().In(loc)
+	lastMonthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc).AddDate(0, -1, 0)
+	insertUsageTS(f, 10, lastMonthStart.Add(-time.Second).Unix()) // 上上月最后一秒 → 归档
+	insertUsageTS(f, 11, lastMonthStart.Unix())                   // 上月首秒 → 保留
+
+	n, err := ArchiveUsageOnce(f.db, 1, t.TempDir(), loc)
+	if err != nil || n != 1 {
+		t.Fatalf("应只归档边界前 1 行，got n=%d err=%v", n, err)
+	}
+	var remain int64
+	_ = f.db.Raw("SELECT COUNT(*) FROM usage_logs WHERE id = 11").Scan(&remain).Error
+	if remain != 1 {
+		t.Fatal("保留窗首秒（上月 1 日 00:00:00）的行不得被归档")
+	}
+}
+
+// 脏数据：created_at=0（epoch）不报错，行落入 197001 归档；
+// 中间六百多个空月逐月扫过（count==0 早退），库内不残留
+func TestArchiveEpochRow(t *testing.T) {
+	f := newMonthlyDB(t)
+	insertUsageTS(f, 1, 0)
+
+	dir := t.TempDir()
+	loc := BillingLocation("Asia/Shanghai")
+	n, err := ArchiveUsageOnce(f.db, 1, dir, loc)
+	if err != nil || n != 1 {
+		t.Fatalf("epoch 行应被归档，got n=%d err=%v", n, err)
+	}
+	if got := countUsage(f); got != 0 {
+		t.Fatalf("库内应清空，got %d", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "usage_logs-197001.jsonl.gz")); err != nil {
+		t.Fatalf("应产出 197001 归档文件: %v", err)
+	}
+}
+
 // monthFile 递推 monthsAgo 个月的归档文件名（与 ArchiveUsageOnce 的命名一致）
 func monthFile(f *dbFixture2, monthsAgo int) string {
 	f.t.Helper()
