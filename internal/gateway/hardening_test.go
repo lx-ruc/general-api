@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -152,6 +153,92 @@ func TestClientCancelDuringStreamLogged499(t *testing.T) {
 	_ = e.f.db.Raw("SELECT status FROM channels WHERE id = 1").Scan(&status).Error
 	if status != 1 {
 		t.Fatalf("流式断连不应计入熔断：渠道被误禁用（status=%d）", status)
+	}
+}
+
+// B7：上游流式响应中途硬断（读错误，非客户端断开）必须计入渠道失败——
+// 否则持续断流的坏渠道永远不被熔断，客户端一直收到截断流（非流式同错已计数，口径须一致）。
+// 对照：上游干净关连接（无 [DONE] 的 EOF）是 SSE 合法结束方式，不计失败。
+func TestStreamUpstreamResetCountsChannelFailure(t *testing.T) {
+	e := newTestEnv(t)
+	e.h.Breaker = NewBreaker(3)
+	before := e.m.UpstreamErrors.Value()
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"A\"}}]}\n\n"))
+		w.(http.Flusher).Flush()
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("httptest 不支持 Hijack")
+			return
+		}
+		conn, _, _ := hj.Hijack()
+		tcp, ok := conn.(*net.TCPConn)
+		if !ok {
+			_ = conn.Close()
+			return
+		}
+		_ = tcp.SetLinger(0)
+		_ = tcp.Close() // RST：网关侧读到 read: connection reset
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, nil, 10)
+
+	for i := 0; i < 3; i++ { // 连续 3 次中途断流 == 熔断阈值
+		w := e.post(chatBody("rst-me", `,"stream":true`))
+		if w.Code != http.StatusOK {
+			t.Fatalf("首块已写出，状态码应保持 200，got %d", w.Code)
+		}
+	}
+	waitFor(t, 2*time.Second, func() bool { return e.m.UpstreamErrors.Value()-before >= 3 })
+	var status int64
+	waitFor(t, 2*time.Second, func() bool { // DisableChannel 异步执行
+		_ = e.f.db.Raw("SELECT status FROM channels WHERE id = 1").Scan(&status).Error
+		return status == 0
+	})
+	if status != 0 {
+		t.Fatalf("连续中途断流应触发熔断自动禁用（status=%d）", status)
+	}
+	// 禁用后的第 4 笔：无候选渠道 → 503，客户端不再收到截断流
+	if w := e.post(chatBody("rst-me", `,"stream":true`)); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("渠道熔断后应 503，got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// B7 对照组：上游写完事件后干净关连接（无 [DONE]）——SSE 允许的结束方式，
+// 不计渠道失败、不熔断；usage 未达 → no_usage 不计量
+func TestStreamUpstreamCleanEOFNotFailure(t *testing.T) {
+	e := newTestEnv(t)
+	e.h.Breaker = NewBreaker(3)
+	before := e.m.UpstreamErrors.Value()
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"A\"}}]}\n\n"))
+		w.(http.Flusher).Flush()
+		// 正常 return：TCP FIN，网关读到干净 EOF（无 [DONE]）
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, nil, 10)
+
+	for i := 0; i < 5; i++ {
+		w := e.post(chatBody("eof-me", `,"stream":true`))
+		if w.Code != http.StatusOK {
+			t.Fatalf("EOF 收流应保持 200，got %d", w.Code)
+		}
+	}
+	time.Sleep(150 * time.Millisecond) // 给可能的误计数留出时间
+	if got := e.m.UpstreamErrors.Value() - before; got != 0 {
+		t.Fatalf("干净 EOF 不应计渠道失败，upstream_errors +%d", got)
+	}
+	var status int64
+	_ = e.f.db.Raw("SELECT status FROM channels WHERE id = 1").Scan(&status).Error
+	if status != 1 {
+		t.Fatalf("干净 EOF 不应熔断（status=%d）", status)
+	}
+	var row struct{ NoUsage, Cost int64 }
+	_ = e.f.db.Raw("SELECT no_usage, cost FROM usage_logs WHERE is_stream = 1").Scan(&row).Error
+	if row.NoUsage != 1 || row.Cost != 0 {
+		t.Fatalf("无 [DONE] 无 usage 应不计量: %+v", row)
 	}
 }
 

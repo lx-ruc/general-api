@@ -502,10 +502,10 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			return attemptNextChannel
 		}
 
-		// 该渠道应答（2xx 成功或 4xx 客户端错透传）。仅 2xx 计熔断成功
-		if resp.StatusCode < 300 {
-			h.Breaker.RecordSuccess(cand.ChannelID)
-		}
+		// 该渠道应答（2xx 成功或 4xx 客户端错透传）。
+		// 熔断成功计数刻意后置：2xx 只代表响应头健康，body 中途断流的渠道
+		// 不应被计为成功——否则每次"头 200 + 体断"净计数恒 1，永远到不了熔断阈值。
+		// 流式在 pipeSSE 干净收流后、非流式在读全体后各自 RecordSuccess
 
 		rec.ChannelID = &cand.ChannelID
 		rec.Status = resp.StatusCode
@@ -539,10 +539,18 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 				// 与非流式路径同口径——否则错误率统计把断连误算成成功 200
 				if c.Request.Context().Err() != nil {
 					rec.Status = 499
+				} else {
+					// 上游中途断流（读错误，非干净 EOF）：与非流式读体失败同口径计入
+					// 渠道失败——否则持续断流的坏渠道永远不被熔断，客户端一直收截断流。
+					// 已写出字节无法换渠道重试，这里只为后续路由健康记账
+					h.noteChannelFailure(cand)
 				}
 				if usage == nil {
 					rec.Error = truncateStr(perr.Error(), 500)
 				}
+			}
+			if perr == nil && resp.StatusCode < 300 {
+				h.Breaker.RecordSuccess(cand.ChannelID) // 干净收流（含合法 EOF）才算渠道成功
 			}
 			applyUsage(rec, usage, m)
 			return attemptDone
@@ -590,6 +598,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			Usage *Usage `json:"usage"`
 		}
 		_ = json.Unmarshal(data, &ur)
+		h.Breaker.RecordSuccess(cand.ChannelID) // 2xx 且读全体成功
 		applyUsage(rec, ur.Usage, m)
 		return attemptDone
 	}
