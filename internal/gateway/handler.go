@@ -29,10 +29,28 @@ import (
 	"token-gateway/internal/service"
 )
 
-// Usage OpenAI 兼容 usage 结构（只取计费需要的两个字段）
+// Usage OpenAI 兼容 usage 结构（计费需要的字段）。缓存命中 tokens 兼容两种方言：
+// DeepSeek 风格 prompt_cache_hit_tokens / OpenAI 风格 usage.prompt_tokens_details.cached_tokens
 type Usage struct {
 	PromptTokens     int64 `json:"prompt_tokens"`
 	CompletionTokens int64 `json:"completion_tokens"`
+	// DeepSeek 方言：命中/未命中的输入 tokens（两者之和 = prompt_tokens）
+	PromptCacheHitTokens int64 `json:"prompt_cache_hit_tokens"`
+	PromptCacheMissTokens int64 `json:"prompt_cache_miss_tokens"`
+	// OpenAI 方言：prompt_tokens_details.cached_tokens
+	PromptTokensDetails *struct {
+		CachedTokens int64 `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+}
+
+// CachedTokens 归一化取缓存命中输入 tokens：两种方言都可能出现，取较大者；
+// 调用方负责夹到 [0, prompt_tokens]（缓存命中是 prompt_tokens 的一部分）
+func (u Usage) CachedTokens() int64 {
+	c := u.PromptCacheHitTokens
+	if u.PromptTokensDetails != nil && u.PromptTokensDetails.CachedTokens > c {
+		c = u.PromptTokensDetails.CachedTokens
+	}
+	return c
 }
 
 type Handler struct {
@@ -129,10 +147,26 @@ func clampPrice(p int64) int64 {
 // CalcCost 全整数计费：cost = ceil((pt×ip + ct×op) / 1M)，向上取整避免零成本刷量。
 // 输入先钳制到安全域，再以 128 位精确乘除——裸 int64 乘法在 tokens×价格上
 // 可回绕为负（免费放行）或任意值（错误计费），ceil 的 +999_999 也可回绕出负成本。
+// 无缓存命中语义的等价入口（cachedTokens=0、缓存价 0=同输入价），历史调用方与测试不变。
 func CalcCost(promptTokens, completionTokens, inputPrice, outputPrice int64) int64 {
+	return CalcCostCached(promptTokens, 0, completionTokens, inputPrice, 0, outputPrice)
+}
+
+// CalcCostCached 缓存计费内核：输入 tokens 拆成「未命中×输入价 + 命中×缓存价」两段，
+// cost = ceil(((pt-hit)×ip + hit×chp + ct×op) / 1M)。
+// cacheHitPrice=0 表示未配置缓存价 → 命中段按输入价计（与旧计费完全一致）。
+// cachedTokens 超出 promptTokens 时按 promptTokens 计（上游脏数据不放大账单）。
+func CalcCostCached(promptTokens, cachedTokens, completionTokens, inputPrice, cacheHitPrice, outputPrice int64) int64 {
 	pt, ct := clampTokens(promptTokens), clampTokens(completionTokens)
-	ip, op := clampPrice(inputPrice), clampPrice(outputPrice)
-	hi, lo := mulAdd128(pt, ip, ct, op)
+	hit := clampTokens(cachedTokens)
+	if hit > pt {
+		hit = pt
+	}
+	ip, chp, op := clampPrice(inputPrice), clampPrice(cacheHitPrice), clampPrice(outputPrice)
+	if chp == 0 {
+		chp = ip // 0=同输入单价：未配置缓存价的模型计费零变化
+	}
+	hi, lo := mulAdd128(pt-hit, ip, hit, chp, ct, op)
 	if hi >= 1_000_000 { // 商超出 64 位，必然远超单笔天花板
 		return maxUsagePoints
 	}
@@ -146,16 +180,21 @@ func CalcCost(promptTokens, completionTokens, inputPrice, outputPrice int64) int
 	return int64(q)
 }
 
-// mulAdd128 计算 pt×ip + ct×op 的 128 位结果（高位，低位），全程无回绕
-func mulAdd128(pt, ip, ct, op int64) (hi, lo uint64) {
-	hi1, lo1 := bits.Mul64(uint64(pt), uint64(ip))
-	hi2, lo2 := bits.Mul64(uint64(ct), uint64(op))
+// mulAdd128 计算 a×b + c×d + e×f 的 128 位结果（高位，低位），全程无回绕
+func mulAdd128(a, b, c, d, e, f int64) (hi, lo uint64) {
+	hi1, lo1 := bits.Mul64(uint64(a), uint64(b))
+	hi2, lo2 := bits.Mul64(uint64(c), uint64(d))
+	hi3, lo3 := bits.Mul64(uint64(e), uint64(f))
 	lo = lo1 + lo2
 	carry := uint64(0)
 	if lo < lo1 { // lo1+lo2 进位
 		carry = 1
 	}
-	hi = hi1 + hi2 + carry
+	lo += lo3
+	if lo < lo3 { // +lo3 再进位
+		carry++
+	}
+	hi = hi1 + hi2 + hi3 + carry
 	return
 }
 
@@ -338,8 +377,13 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			if ur.Usage != nil {
 				rec.PromptTokens = ur.Usage.PromptTokens
 				rec.CompletionTokens = ur.Usage.CompletionTokens
+				rec.CachedTokens = ur.Usage.CachedTokens()
+				if rec.CachedTokens > rec.PromptTokens {
+					rec.CachedTokens = rec.PromptTokens
+				}
 				rec.InputPrice = m.InputPrice
 				rec.OutputPrice = m.OutputPrice
+				rec.InputCacheHitPrice = m.InputCacheHitPrice
 			} else {
 				rec.NoUsage = 1
 			}
@@ -866,6 +910,7 @@ func (h *Handler) noteChannelFailure(cand Candidate) {
 
 // applyUsage 把 usage 折算为成本快照（售卖价扣客户 + 成本价记厂商成本）；上游未回 usage 则标记 no_usage、不计费。
 // tokens 来自不可信的上游响应体：负值/超限一律钳制后再入库，防统计被污染与计费回绕。
+// 输入 tokens 按缓存命中/未命中分段计价（缓存价 0=同输入价，未配置的模型计费不变）。
 func applyUsage(rec *model.UsageLog, u *Usage, m model.Model) {
 	if u == nil {
 		rec.NoUsage = 1
@@ -873,12 +918,18 @@ func applyUsage(rec *model.UsageLog, u *Usage, m model.Model) {
 	}
 	rec.PromptTokens = clampTokens(u.PromptTokens)
 	rec.CompletionTokens = clampTokens(u.CompletionTokens)
+	rec.CachedTokens = clampTokens(u.CachedTokens())
+	if rec.CachedTokens > rec.PromptTokens { // 命中是 prompt_tokens 的一部分，脏数据不放大账单
+		rec.CachedTokens = rec.PromptTokens
+	}
 	rec.InputPrice = m.InputPrice
 	rec.OutputPrice = m.OutputPrice
+	rec.InputCacheHitPrice = m.InputCacheHitPrice
 	rec.CostInputPrice = m.CostInputPrice
 	rec.CostOutputPrice = m.CostOutputPrice
-	rec.Cost = CalcCost(rec.PromptTokens, rec.CompletionTokens, m.InputPrice, m.OutputPrice)
-	rec.VendorCost = CalcCost(rec.PromptTokens, rec.CompletionTokens, m.CostInputPrice, m.CostOutputPrice)
+	rec.CostInputCacheHitPrice = m.CostInputCacheHitPrice
+	rec.Cost = CalcCostCached(rec.PromptTokens, rec.CachedTokens, rec.CompletionTokens, m.InputPrice, m.InputCacheHitPrice, m.OutputPrice)
+	rec.VendorCost = CalcCostCached(rec.PromptTokens, rec.CachedTokens, rec.CompletionTokens, m.CostInputPrice, m.CostInputCacheHitPrice, m.CostOutputPrice)
 }
 
 func rawString(raw json.RawMessage) string {

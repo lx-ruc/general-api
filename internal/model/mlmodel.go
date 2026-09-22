@@ -8,8 +8,10 @@ type Model struct {
 	Vendor      string `json:"vendor"`
 	InputPrice  int64  `json:"input_price"`  // 售卖价 / 1M prompt tokens（客户扣减）
 	OutputPrice int64  `json:"output_price"` // 售卖价 / 1M completion tokens
+	InputCacheHitPrice int64 `json:"input_cache_hit_price"`  // 缓存命中输入单价（0=同 input_price，未配置的存量模型计费不变）
 	CostInputPrice  int64 `json:"cost_input_price"`  // 厂商成本价（毛利核算）
 	CostOutputPrice int64 `json:"cost_output_price"`
+	CostInputCacheHitPrice int64 `json:"cost_input_cache_hit_price"` // 成本侧缓存命中价（0=同成本输入价）
 	Status      int    `json:"status"`
 	Remark      string `json:"remark"`
 	CreatedAt   int64  `gorm:"autoCreateTime" json:"created_at"`

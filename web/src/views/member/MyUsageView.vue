@@ -87,7 +87,12 @@ const cards = computed(() => {
           <template #default="{ row }">{{ row.is_stream ? '是' : '否' }}</template>
         </el-table-column>
         <el-table-column label="tokens（入 / 出）" width="130" align="right">
-          <template #default="{ row }"><span class="num">{{ row.prompt_tokens }} / {{ row.completion_tokens }}</span></template>
+          <template #default="{ row }">
+            <span class="num" :title="row.cached_tokens > 0 ? `输入中 ${row.cached_tokens} 为缓存命中（已按命中价计费）` : ''">
+              {{ row.prompt_tokens }} / {{ row.completion_tokens }}
+            </span>
+            <span v-if="row.cached_tokens > 0" class="cache-mark">⚡{{ row.cached_tokens }}</span>
+          </template>
         </el-table-column>
         <el-table-column label="扣减额度" width="110" align="right">
           <template #default="{ row }">
@@ -119,4 +124,6 @@ const cards = computed(() => {
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .green { color: var(--tg-green-ink); }
 .warn { color: var(--tg-amber); font-size: 12px; }
+/* 缓存命中 tokens 角标（输入的一部分，按命中价计费） */
+.cache-mark { margin-left: 4px; font-size: 11px; color: var(--tg-amber); }
 </style>

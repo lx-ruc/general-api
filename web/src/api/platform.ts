@@ -106,8 +106,11 @@ export interface MModel {
   vendor: string
   input_price: number
   output_price: number
+  /** 缓存命中输入单价（点/M）；0=同 input_price */
+  input_cache_hit_price: number
   cost_input_price: number
   cost_output_price: number
+  cost_input_cache_hit_price: number
   status: number
   remark: string
 }

@@ -83,8 +83,10 @@ CREATE TABLE IF NOT EXISTS models (
   vendor       TEXT    NOT NULL DEFAULT '',
   input_price  INTEGER NOT NULL DEFAULT 0,
   output_price INTEGER NOT NULL DEFAULT 0,
+  input_cache_hit_price  INTEGER NOT NULL DEFAULT 0,  -- 缓存命中输入单价（0=同 input_price）
   cost_input_price  INTEGER NOT NULL DEFAULT 0,   -- 厂商成本价（毛利核算）
   cost_output_price INTEGER NOT NULL DEFAULT 0,
+  cost_input_cache_hit_price INTEGER NOT NULL DEFAULT 0, -- 成本侧缓存命中价（0=同成本输入价）
   status       INTEGER NOT NULL DEFAULT 1,
   remark       TEXT    NOT NULL DEFAULT '',
   created_at   INTEGER NOT NULL,
@@ -150,10 +152,13 @@ CREATE TABLE IF NOT EXISTS usage_logs (
   is_stream         INTEGER NOT NULL DEFAULT 0,
   prompt_tokens     INTEGER NOT NULL DEFAULT 0,
   completion_tokens INTEGER NOT NULL DEFAULT 0,
+  cached_tokens     INTEGER NOT NULL DEFAULT 0,  -- 上游提示缓存命中的输入 tokens（计入 prompt_tokens）
   input_price       INTEGER NOT NULL DEFAULT 0,  -- 结算时快照（售卖价）
   output_price      INTEGER NOT NULL DEFAULT 0,
+  input_cache_hit_price INTEGER NOT NULL DEFAULT 0, -- 快照（0=同输入价）
   cost_input_price  INTEGER NOT NULL DEFAULT 0,  -- 成本价快照
   cost_output_price INTEGER NOT NULL DEFAULT 0,
+  cost_input_cache_hit_price INTEGER NOT NULL DEFAULT 0,
   vendor_cost       INTEGER NOT NULL DEFAULT 0,  -- 厂商成本（毛利 = cost - vendor_cost）
   cost              INTEGER NOT NULL DEFAULT 0,  -- 客户扣减（= 平台营收）
   no_usage          INTEGER NOT NULL DEFAULT 0,

@@ -1055,15 +1055,18 @@ func (h *Handler) UpstreamModels(c *gin.Context) {
 // ---------------- 模型与定价 ----------------
 
 type modelReq struct {
-	Name            string `json:"name" binding:"required"`
-	DisplayName     string `json:"display_name"`
-	Vendor          string `json:"vendor"`
-	InputPrice      int64  `json:"input_price"`
-	OutputPrice     int64  `json:"output_price"`
-	CostInputPrice  int64  `json:"cost_input_price"`
-	CostOutputPrice int64  `json:"cost_output_price"`
-	Status          *int   `json:"status"`
-	Remark          string `json:"remark"`
+	Name        string `json:"name" binding:"required"`
+	DisplayName string `json:"display_name"`
+	Vendor      string `json:"vendor"`
+	InputPrice  int64  `json:"input_price"`
+	OutputPrice int64  `json:"output_price"`
+	// 缓存命中输入单价（0=同 input_price，未配置的存量模型计费不变）及其成本侧对应
+	InputCacheHitPrice     int64  `json:"input_cache_hit_price"`
+	CostInputPrice         int64  `json:"cost_input_price"`
+	CostOutputPrice        int64  `json:"cost_output_price"`
+	CostInputCacheHitPrice int64  `json:"cost_input_cache_hit_price"`
+	Status                 *int   `json:"status"`
+	Remark                 string `json:"remark"`
 }
 
 // ListModels GET /api/platform/models
@@ -1082,7 +1085,8 @@ func (h *Handler) CreateModel(c *gin.Context) {
 	if !httpx.BindJSON(c, &req) {
 		return
 	}
-	if req.InputPrice < 0 || req.OutputPrice < 0 || req.CostInputPrice < 0 || req.CostOutputPrice < 0 {
+	if req.InputPrice < 0 || req.OutputPrice < 0 || req.InputCacheHitPrice < 0 ||
+		req.CostInputPrice < 0 || req.CostOutputPrice < 0 || req.CostInputCacheHitPrice < 0 {
 		httpx.Fail(c, http.StatusBadRequest, "价格不能为负")
 		return
 	}
@@ -1099,8 +1103,10 @@ func (h *Handler) CreateModel(c *gin.Context) {
 	m := model.Model{
 		Name: req.Name, DisplayName: req.DisplayName, Vendor: req.Vendor,
 		InputPrice: req.InputPrice, OutputPrice: req.OutputPrice,
-		CostInputPrice: req.CostInputPrice, CostOutputPrice: req.CostOutputPrice,
-		Status: status, Remark: req.Remark,
+		InputCacheHitPrice: req.InputCacheHitPrice,
+		CostInputPrice:     req.CostInputPrice, CostOutputPrice: req.CostOutputPrice,
+		CostInputCacheHitPrice: req.CostInputCacheHitPrice,
+		Status:                 status, Remark: req.Remark,
 	}
 	if err := h.DB.Create(&m).Error; err != nil {
 		// 并发同模型名：映射回与预检查一致的 400（原为 500 泛化错误）
@@ -1121,14 +1127,16 @@ func (h *Handler) UpdateModel(c *gin.Context) {
 		return
 	}
 	var req struct {
-		DisplayName     *string `json:"display_name"`
-		Vendor          *string `json:"vendor"`
-		InputPrice      *int64  `json:"input_price" binding:"required,min=0"`
-		OutputPrice     *int64  `json:"output_price" binding:"required,min=0"`
-		CostInputPrice  *int64  `json:"cost_input_price" binding:"omitempty,min=0"`
-		CostOutputPrice *int64  `json:"cost_output_price" binding:"omitempty,min=0"`
-		Status          *int    `json:"status"`
-		Remark          *string `json:"remark"`
+		DisplayName            *string `json:"display_name"`
+		Vendor                 *string `json:"vendor"`
+		InputPrice             *int64  `json:"input_price" binding:"required,min=0"`
+		OutputPrice            *int64  `json:"output_price" binding:"required,min=0"`
+		InputCacheHitPrice     *int64  `json:"input_cache_hit_price" binding:"omitempty,min=0"`
+		CostInputPrice         *int64  `json:"cost_input_price" binding:"omitempty,min=0"`
+		CostOutputPrice        *int64  `json:"cost_output_price" binding:"omitempty,min=0"`
+		CostInputCacheHitPrice *int64  `json:"cost_input_cache_hit_price" binding:"omitempty,min=0"`
+		Status                 *int    `json:"status"`
+		Remark                 *string `json:"remark"`
 	}
 	if !httpx.BindJSON(c, &req) {
 		return
@@ -1147,11 +1155,17 @@ func (h *Handler) UpdateModel(c *gin.Context) {
 	if req.Remark != nil {
 		updates["remark"] = *req.Remark
 	}
+	if req.InputCacheHitPrice != nil {
+		updates["input_cache_hit_price"] = *req.InputCacheHitPrice
+	}
 	if req.CostInputPrice != nil {
 		updates["cost_input_price"] = *req.CostInputPrice
 	}
 	if req.CostOutputPrice != nil {
 		updates["cost_output_price"] = *req.CostOutputPrice
+	}
+	if req.CostInputCacheHitPrice != nil {
+		updates["cost_input_cache_hit_price"] = *req.CostInputCacheHitPrice
 	}
 	if req.Status != nil {
 		updates["status"] = *req.Status

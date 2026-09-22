@@ -80,7 +80,12 @@ function reset() {
       <el-table-column prop="username" label="用户" width="100" />
       <el-table-column prop="model_name" label="模型" width="130" />
       <el-table-column label="tokens（入 / 出）" width="130" align="right">
-        <template #default="{ row }"><span class="num">{{ row.prompt_tokens }} / {{ row.completion_tokens }}</span></template>
+        <template #default="{ row }">
+          <span class="num" :title="row.cached_tokens > 0 ? `输入中 ${row.cached_tokens} 为缓存命中（已按命中价计费）` : ''">
+            {{ row.prompt_tokens }} / {{ row.completion_tokens }}
+          </span>
+          <span v-if="row.cached_tokens > 0" class="cache-mark">⚡{{ row.cached_tokens }}</span>
+        </template>
       </el-table-column>
       <el-table-column label="扣减额度" width="130" align="right">
         <template #default="{ row }">
@@ -117,4 +122,6 @@ function reset() {
 <style scoped>
 .warn { color: var(--tg-amber); font-size: 12px; }
 .green { color: var(--tg-green-ink); }
+/* 缓存命中 tokens 角标（输入的一部分，按命中价计费） */
+.cache-mark { margin-left: 4px; font-size: 11px; color: var(--tg-amber); }
 </style>

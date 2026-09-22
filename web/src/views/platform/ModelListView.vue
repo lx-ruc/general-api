@@ -22,12 +22,13 @@ const editVisible = ref(false)
 const isEdit = ref(false)
 const form = reactive({
   id: 0, name: '', display_name: '', vendor: '',
-  input_price: 0, output_price: 0, cost_input_price: 0, cost_output_price: 0, status: 1, remark: '',
+  input_price: 0, output_price: 0, input_cache_hit_price: 0,
+  cost_input_price: 0, cost_output_price: 0, status: 1, remark: '',
 })
 
 function openCreate() {
   isEdit.value = false
-  Object.assign(form, { id: 0, name: '', display_name: '', vendor: '', input_price: 0, output_price: 0, cost_input_price: 0, cost_output_price: 0, status: 1, remark: '' })
+  Object.assign(form, { id: 0, name: '', display_name: '', vendor: '', input_price: 0, output_price: 0, input_cache_hit_price: 0, cost_input_price: 0, cost_output_price: 0, status: 1, remark: '' })
   editVisible.value = true
 }
 function openEdit(m: MModel) {
@@ -35,6 +36,7 @@ function openEdit(m: MModel) {
   Object.assign(form, {
     id: m.id, name: m.name, display_name: m.display_name, vendor: m.vendor,
     input_price: m.input_price, output_price: m.output_price,
+    input_cache_hit_price: m.input_cache_hit_price,
     cost_input_price: m.cost_input_price, cost_output_price: m.cost_output_price,
     status: m.status, remark: m.remark,
   })
@@ -50,6 +52,7 @@ async function submit() {
     await apiUpdateModel(form.id, {
       display_name: form.display_name, vendor: form.vendor,
       input_price: form.input_price, output_price: form.output_price,
+      input_cache_hit_price: form.input_cache_hit_price,
       cost_input_price: form.cost_input_price, cost_output_price: form.cost_output_price,
       status: form.status, remark: form.remark,
     })
@@ -125,6 +128,7 @@ async function savePrice(row: MModel) {
           <template v-else-if="row.input_price > 0">
             <span class="price-edit num green" title="点击修改" @click="startEdit(row, 'input')">{{ fmtPrice(row.input_price, PPY) }}</span>
             <span class="dim">/M · {{ fmtPrice1K(row.input_price, PPY) }}/千</span>
+            <span v-if="row.input_cache_hit_price > 0" class="cache-sub" title="提示缓存命中的输入单价">命中 {{ fmtPrice(row.input_cache_hit_price, PPY) }}</span>
           </template>
           <span v-else class="price-edit zero" title="点击定价" @click="startEdit(row, 'input')">未定价</span>
         </template>
@@ -171,6 +175,10 @@ async function savePrice(row: MModel) {
         <el-input-number v-model="form.input_price" :min="0" :step="500000" />
         <span class="tip">= {{ fmtPrice(form.input_price, PPY) }}/M ·{{ fmtPrice1K(form.input_price, PPY) }}/千</span>
       </el-form-item>
+      <el-form-item label="缓存命中（token/M）">
+        <el-input-number v-model="form.input_cache_hit_price" :min="0" :step="500000" />
+        <span class="tip">提示缓存命中的输入 tokens 按此价计；0 = 同输入单价</span>
+      </el-form-item>
       <el-form-item label="输出单价（token/M）">
         <el-input-number v-model="form.output_price" :min="0" :step="500000" />
         <span class="tip">= {{ fmtPrice(form.output_price, PPY) }}/M ·{{ fmtPrice1K(form.output_price, PPY) }}/千</span>
@@ -191,6 +199,7 @@ async function savePrice(row: MModel) {
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .tip { margin-left: 8px; font-size: 12px; color: #909399; }
 .dim { color: var(--tg-muted); font-size: 11px; }
+.cache-sub { display: block; font-size: 11px; color: var(--tg-amber); line-height: 1.4; }
 .green { color: var(--tg-green-ink); }
 .zero { color: var(--tg-amber); font-size: 11px; margin-left: 3px; }
 /* 行内改价：hover 提示可点 */

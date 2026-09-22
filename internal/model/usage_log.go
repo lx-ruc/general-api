@@ -13,10 +13,13 @@ type UsageLog struct {
 	IsStream         int    `json:"is_stream"`
 	PromptTokens     int64  `json:"prompt_tokens"`
 	CompletionTokens int64  `json:"completion_tokens"`
+	CachedTokens     int64  `json:"cached_tokens"`    // 上游提示缓存命中的输入 tokens（已含在 prompt_tokens 里）
 	InputPrice       int64  `json:"input_price"`  // 结算时快照（售卖价）
 	OutputPrice      int64  `json:"output_price"` // 结算时快照
+	InputCacheHitPrice int64 `json:"input_cache_hit_price"` // 快照（0=同输入价）
 	CostInputPrice   int64  `json:"cost_input_price"`
 	CostOutputPrice  int64  `json:"cost_output_price"`
+	CostInputCacheHitPrice int64 `json:"cost_input_cache_hit_price"`
 	VendorCost       int64  `json:"vendor_cost"` // 厂商成本；毛利 = Cost - VendorCost
 	Cost             int64  `json:"cost"`        // 客户扣减（= 平台营收）
 	NoUsage          int    `json:"no_usage"`     // 1=上游未回 usage，本次未计费
