@@ -1,6 +1,6 @@
 ---
 active: true
-iteration: 14
+iteration: 15
 session_id: a379c968-7f2d-491f-9af1-885267bb9c61
 max_iterations: 20
 completion_promise: "没有发现任何bug，所有功能全部可用，边界条件全部测到"
@@ -259,3 +259,27 @@ started_at: "2026-09-21T08:30:59Z"
 **环境收尾**：:8098 已停、worktree 已拆、/tmp/it13_* 已清；生产 :9091 healthz 正常、真实渠道未动、用户 :5173/:8083/:8888 存活。
 
 **累计：29 bug 已修（#29 本轮）。下一迭代候选：org 面 UI 深度走查（额度申请审批流/对账单 CSV 下载）、member 密钥过期提醒边界、/metrics 指标语义复核、注册流（验证码）复验。**
+
+## 迭代 14（2026-09-22）
+
+环境：/tmp/tg-it14 worktree（gateway :8081 **race 构建** + admin/admin123456 + TG_CACHE_TTL=120s + mock :9102）；三条线全部收口。主线：首次全链路 race 检测 → #30；Playwright 中途死亡降级 API+代码走查。
+
+**A) race 检测首跑（单测全量 + 活体）→ 【修复 #30】（commit d4f2856）**：
+- `go test -race ./internal/...` 单测层全绿；升级为 `go build -race` 活体网关跑 e2e 61/61 通过，但网关日志 `grep -c "DATA RACE"` = **4**
+- **#30：审计中间件异步落库与 gin 对象池复用竞争 + 审计串台**——Audit 的 goroutine 里直接读 `c *gin.Context`（Writer.Status/GetRole/Request.Method/Path/ClientIP）；gin 在 ServeHTTP 结束后把 Context+ResponseWriter 放回 sync.Pool 供下一请求 reset() 复用，异步读与复用写竞争，且审计行可能把**下一个请求**的 method/path/status/角色/IP 记进本条审计（审计正确性缺陷，非检测器噪音）。修复：全部字段在同步段取值，goroutine 只拿纯值；同类位点复核（apiauth.go:87、gateway/handler.go:803 结算、notifier.go:72）均为纯值捕获，安全
+- TDD：TestAuditAsyncWriteOwnRequestAttributes（4 路径×100 轮并发，路径绑不同状态码查串台）先红（-race 报竞争 + `path=/api/d status=404 不是该路径注册的状态`）后绿；修复后 race 构建 e2e 61/61 + DATA RACE=0
+
+**B) org 面 UI 深走查（对账单月边界/CSV/驳回原因/成本中心改派）——零 bug**（浏览器工具中途死亡，降级为 API 契约测试 + 视图代码走查，覆盖面不缩水）：
+- 对账单月边界：合法 YYYY-MM 全 200（过去/未来月均可）；非法（2026-13/abc/空串/2026-9）统一 400「month 格式应为 YYYY-MM」；chain_ok 三态（✓/✗/无期初快照）渲染正确；CSV 契约：RFC5987 UTF-8 文件名 + BOM + text/csv;charset=utf-8、凭证字段 `[,\n]` 清洗、导出失败有 toast
+- 额度审批：驳回回复可选（前端「审批回复（可选）」与后端一致——triage 非 bug）；批准预填「已批准」；`quota-requests-changed` 事件刷新角标（#12 修复完好）；驳回原因 member 侧可见
+- 成本中心改派：改派只影响未来消耗，历史行锚定结算时快照（实测 row 1-32 NULL 保持、row 33 → center 1）；重命名 1-64 字校验；归档中心从新钥匙下拉剔除；报表 unallocated 占比披露
+- 插曲：Playwright 彻底 wedge（location.reload 挂起 → close 留锁 → 杀本会话 backend 后宿主不重生 stdio MCP），后续迭代浏览器工具可能仍不可用，走 API+代码路径即可
+
+**C) 多账号并发会话 + 收尾回归**：
+- 10 线程并发审批同一额度申请：恰 1×200 + 9×404，quota +500k 只加一次、grant 流水单行（事务 `UPDATE ... WHERE status='pending'` 单赢家，充值审批同构）
+- 3 令牌（平台/客户管理员/成员）混合并发打各面：0 错误、org 隔离不破；Σgrants == quota_limit 不变量贯穿审批（5M→6M）与充值（20M→25M，25,000,000==25,000,000）
+- 收尾回归：`go vet` ✓、`go test ./internal/...` 13 包 ok、vitest 15/15、e2e 61/61（race 构建下 0 race）
+
+**环境收尾**：it14 worktree 已拆、:8081/:9102 已停、/tmp/it14_* 已清；生产 :9091 已含 #29+#30 重建（主仓 pnpm build → go build），healthz/SPA/登录错误路径验证通过、真实渠道 1,2,3,7 未动、DATA RACE=0；用户 :5173/:8083/:8888 存活未动。
+
+**累计：30 bug 已修（#30 本轮）。下一迭代候选：member 密钥过期提醒边界、/metrics 指标语义复核、注册流（验证码）复验、`-race` 纳入常规回归命令。**
