@@ -21,11 +21,13 @@ export function fmtTokenCompact(n: number | null | undefined): string {
   const exp = Math.min(Math.floor(Math.log10(abs) / 3), units.length) // 1=k … 4=T
   const v = n / 10 ** (3 * exp)
   const s = Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2)
+  // 尾零只对小数部分有意义（'1.50'→'1.5'）；纯整数 '200' 不能剥成 '2'
+  const stripTail = (x: string) => (x.includes('.') ? x.replace(/\.?0+$/, '') : x)
   // 四舍五入顶到 1000（如 999,999 → 1000k）时进一档
   if (Math.abs(Number(s)) >= 1_000 && exp < units.length) {
-    return `${(Number(s) / 1_000).toString().replace(/\.?0+$/, '')}${units[exp]}`
+    return `${stripTail((Number(s) / 1_000).toString())}${units[exp]}`
   }
-  return `${s.replace(/\.?0+$/, '')}${units[exp - 1]}`
+  return `${stripTail(s)}${units[exp - 1]}`
 }
 
 // 单价 → 元/M token
