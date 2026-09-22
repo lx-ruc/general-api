@@ -1,6 +1,6 @@
 ---
 active: true
-iteration: 17
+iteration: 18
 session_id: a379c968-7f2d-491f-9af1-885267bb9c61
 max_iterations: 20
 completion_promise: "没有发现任何bug，所有功能全部可用，边界条件全部测到"
@@ -336,3 +336,23 @@ started_at: "2026-09-21T08:30:59Z"
 **收尾回归**：`go vet` ✓、`go test ./internal/...` 全 ok（gateway/service 强制 -count=1 复跑）、vitest 40/40、`pnpm build` ✓；生产 :9091 已重建二进制（dist 内嵌 #31/#32 前端修复 + #33 后端）并重启 healthz 200，真实渠道 1/2/3/7 未动，用户 :5173/:8083/:8888 存活；it16 worktree 已拆、:8081/:9102 已停、/tmp 密钥与补丁文件已清。
 
 **累计：33 bug 已修（本轮 3）。下一迭代候选：浏览器 UI 盲区补查、curl.ts（用户 WIP 落库后）联动测试、deploy Caddy/systemd 实机验证、月末账期/归档 goroutine 时序专项。**
+## 迭代 17（2026-09-22）
+
+环境：/tmp/tg-it17 worktree @ HEAD（网关 :8081 + mock :9102，billing.timezone 在 America/New_York ↔ Asia/Shanghai 间切换对照）；四条线收口，**本轮零新 bug**。
+
+**A) settings 管理面清点**：settings 表全部写入方 = bank_info（it13 已测）、demo key（it8/it12 已测）、快照 CAS 标记；**points_per_yuan 无任何写入 API**（仅 DB 直改），读取路径 PointsPerYuan 全加固（非数字/超长回绕/≤0 一律回退默认 1M，quota_test.go 有溢出用例）——前端 ppy 恒 ≥1，fmtPrice 除法安全，无 bug 面。
+
+**B) 账期时区边界——配置真实贯穿全链（live 双时区对照）**：
+- B1 期界换算 3/3：statement 2026-10/11/03 的 start/end_unix 与 zoneinfo 期望值精确相等（含 11 月 fall-back、3 月 spring-forward 两个 DST 切换月——ParseInLocation+AddDate 墙钟月加法处理正确），timezone 字段如实回显
+- B2 跨界归期：crafted 两行 usage（t1=9/30 23:59:59 SH、t2=10/1 00:30 SH=9/30 12:30 NY）——NY 时区下 t1+t2 均归 9 月（258=198+30+30）；切 Shanghai 重启后 t2 翻转归 10 月（9 月 228 / 10 月 30）——同一行数据归属随账期时区精确翻转
+- 月度惰性重置经 CurrentPeriod()=PeriodOf(BillingLoc()) 同源注入（quota.go:29 → CASE WHEN lazy reset），机制与 B1/B2 同链已证；当日两时区同月无差异可观测，如实记录
+- 插曲：首轮 epoch 手算错位（把 4 月当 9 月），用 B1 锚点反推修正后复测
+
+**C) 月末快照自愈实钻 + 备份恢复演练（首次覆盖恢复侧）**：
+- 快照：fresh 启动自愈写 2026-08（时区回显 NY）；标记复位 → 重启补写，end_used 重构算术验证（quota_used − Σ期内后 usage）；CAS 幂等（标记已写时重启 0 写入、行数不增）；中途 -60 负值系我直插 usage 行破坏 Σusage==quota_used 不变量所致（生产该式恒 ≥0 且 UI 可见+chain_ok 自曝），非产品 bug
+- 备份：backup.sh 在线库运行产出 220K 完整备份；immutable=1 打开 integrity_check=ok、orgs/usage/users 行数与源库一致；**恢复演练**——备份换入当 live 库（连带清 -wal/-shm）→ 重启 healthz 200 零报错 → 旧 JWT 有效（同 secret+session_ver）、账单三段（期初快照存活 opening_missing=false）、/v1 数据面 200 全通；轮转 KEEP=7 精确（10 份→删 3 旧留 7）
+- 工具记录：sqlite3 -readonly 打不开无 -shm 的独立 WAL 快照库（macOS SQLite 行为），恢复演练用 immutable=1 或直接换入
+
+**收尾回归**：`go vet` ✓、`go test ./internal/...` 全 ok（service/gateway -count=1 复跑）、vitest 40/40；it17 worktree 已拆、:8081/:9102 已停、/tmp/it17_* 已清；生产 :9091 healthz 200、用户 :5173 存活。后端零改动，无需重建生产二进制。
+
+**累计：33 bug 已修（本轮 0）。下一迭代候选：curl.ts（用户 WIP 落库后）联动测试、deploy Caddy/systemd 实机验证（需装 caddy 或 docker）、Redis 协调器 PTTL 修复后的长时间 soak、月末真实翻月观察（10 月 1 日快照/归档/月度重置三 goroutine 同刻联动）。**
