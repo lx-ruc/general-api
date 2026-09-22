@@ -1,6 +1,6 @@
 ---
 active: true
-iteration: 10
+iteration: 11
 session_id: a379c968-7f2d-491f-9af1-885267bb9c61
 max_iterations: 20
 completion_promise: "没有发现任何bug，所有功能全部可用，边界条件全部测到"
@@ -192,3 +192,25 @@ started_at: "2026-09-21T08:30:59Z"
 **playground 深测 → #26**：demo key 模块已有 5 测试（幂等/轮换吊销/配置/非法配置/鉴权）覆盖充分。主链路 9 测试外补盲区：**空 body 回 413 request_too_large**（空≠过大，误导 OpenAI 兼容客户端重试策略）——`len(body)==0` 从 413 分支摘出，落 JSON 解析回 400，与数据面 /v1 口径一致。红测先行。commit a8415b0。顺带核阅：限流共享桶 key:0 是文档化设计；org_admin 授权并集含停用成员的授权（低危，记录不修）。
 
 **累计：26 bug 已修（#24/#25/#26 本轮）。下一迭代候选：前端表单极端输入 fuzz（Playwright）、audit_logs 完整性抽查、并发充值/额度申请审批压测。**
+
+## 迭代 11（2026-09-22）
+
+环境：/tmp/tg-it11 worktree（HEAD=71b5182 干净态，避开用户 web WIP）+ 嵌入式 SPA，网关 :8097。三条线：
+
+**① audit_logs 完整性活体探针（全部通过，无 bug）**：
+- 成功/失败变更均落审计（status=200/400/404 如实记录）；GET 不落；排除路径（login/send-code/playground-chat）不落；密码/upstream_key 脱敏 `***` ✓
+- tgp_ 访问令牌做的变更归属属主：actor_id=2/actor=org_admin（uid 正确）✓
+- 401 未认证不落审计 = JWTAuth 先于 Audit abort（认证层事件不归审计管，设计如此，非盲区）
+- 代码面：中间件 path-agnostic 覆盖全部 /api 非 GET，无逐端点遗漏
+
+**② config 启动校验负值扫描（阴性结论）**：RateLimiter/AcquireSlot/Breaker.Enabled/prober 阈值/keyBurst/memCache maxItems/MaxBodyMB 全部 `<=0`=禁用或回退语义，无除零/panic 路径。
+
+**③ 前端表单极端输入 fuzz（Playwright 嵌入式 SPA + API 直发）→ #27**：
+- 渠道表单：XSS 渠道名/SQL 片段厂商/javascript: base_url/负权重——Vue 全量转义（纯文本渲染）、无动态 href（javascript: 无点击向量）、weight 服务端 maxInt 钳 1、负 priority 语义无害；控制台 0 错误
+- **模型定价对话框单位标签错误 → #27**：标签写「输入单价（元/M token）」但 v-model 绑定、step=500000（点数步进）、提交直传的都是**点数**，tip 再把点折算成元。照标签输 2 = 设成 2 点/M（¥0.000002），资损级误导；git 考古确认 4b4640e「计价单位统一为元」改造只改了标签没改绑定。修复：对话框/页头/行内改价三处单位标注改为 token 口径（与全站「1 元 = 1,000,000 token」措辞一致），折算 tip 保留双口径。commit e638514，嵌入式 SPA 重建后 Playwright 复核生效
+- 天价单价值得注意的行为链：el-input-number 静默钳到 2^53-1（JS 精度上限）落库 ¥90 亿/M——CalcCost 已有 128 位乘加+maxUsagePoints 封顶（早期迭代修过），计费不炸不回绕，属荒谬但安全，不修
+- 客户/子账号表单：UI 层 el-input-number :min=0 钳负数（-5→0 落库）；API 直发负额度被 #25 服务端 400 兜底——双层防线闭环
+- 客户面 API 边界：充值 0/负/超 1e15 全 400；跨客户改成员 404；org admin 访平台面 403；int64 max 建号额度受 org 层约束无害
+- 前端 vitest 15/15 过
+
+**累计：27 bug 已修（#27 本轮）。下一迭代候选：member 面前端表单 fuzz、demo key UI 配置流、E2E 全回归跑一遍（tools/e2e/run.py 对新二进制）。**
