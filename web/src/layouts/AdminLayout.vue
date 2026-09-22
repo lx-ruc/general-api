@@ -37,6 +37,7 @@ const menus = computed<MenuItem[]>(() => {
         { index: '/platform/models', title: '模型定价', icon: 'PriceTag' },
         { index: '/platform/usage', title: '调用日志', icon: 'Document' },
         { index: '/platform/audit', title: '审计日志', icon: 'List' },
+        { index: '/platform/demo-key', title: '在线体验', icon: 'Promotion' },
       ]
     case 'org_admin':
       return [

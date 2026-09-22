@@ -181,6 +181,9 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		plat.GET("/audit", ph.ListAudit)
 		plat.GET("/bank-info", ph.GetBankInfo)
 		plat.PUT("/bank-info", ph.UpdateBankInfo)
+		plat.GET("/demo-key", ph.GetDemoKey)
+		plat.PUT("/demo-key", ph.ConfigureDemoKey)
+		plat.POST("/demo-key/rotate", ph.RotateDemoKey)
 	}
 
 	// 客户管理员（org 隔离：handler 内强制 WHERE org_id）
