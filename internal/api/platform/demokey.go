@@ -312,6 +312,13 @@ func (h *Handler) RotateDemoKey(c *gin.Context) {
 		httpx.Fail(c, http.StatusInternalServerError, "生成密钥失败")
 		return
 	}
+	// 新钥继承现钥的有效期：有效期是持久配置（模型授权/额度挂在账号上本就不丢），
+	// 落在 key 行上，轮换若不带过来会静默丢失变永久——应急轮换恰恰最需要保留期限
+	var inheritExp *int64
+	var cur model.APIKey
+	if keyID := getSettingInt(h.DB, settingDemoKeyID); keyID > 0 && h.DB.First(&cur, keyID).Error == nil {
+		inheritExp = cur.ExpiredAt
+	}
 	err = h.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Exec("UPDATE api_keys SET status = 0 WHERE user_id = ? AND status = 1", uid).Error; err != nil {
 			return err
@@ -319,6 +326,7 @@ func (h *Handler) RotateDemoKey(c *gin.Context) {
 		k := model.APIKey{
 			OrgID: orgID, UserID: uid, Name: demoKeyName,
 			KeyPrefix: prefix, KeyHash: hash, Status: 1,
+			ExpiredAt: inheritExp,
 		}
 		if err := tx.Create(&k).Error; err != nil {
 			return err

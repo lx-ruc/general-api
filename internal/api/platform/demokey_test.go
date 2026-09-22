@@ -226,6 +226,33 @@ func TestDemoKeyConfigure(t *testing.T) {
 	}
 }
 
+// 轮换继承有效期：有效期是持久配置，不应随轮换静默丢失变永久（应急轮换恰恰最需要保留期限）
+func TestDemoKeyRotatePreservesExpiry(t *testing.T) {
+	engine, db, token := newDemoEnv(t)
+	_ = demoCall(t, engine, token, http.MethodPost, "/api/platform/demo-key/rotate", "")
+
+	expire := time.Now().Unix() + 86400
+	r := demoCall(t, engine, token, http.MethodPut, "/api/platform/demo-key",
+		`{"expires_at":`+strconv.FormatInt(expire, 10)+`}`)
+	if got, _ := r["expires_at"].(float64); got != float64(expire) {
+		t.Fatalf("保存后回显 expires_at 应 %d，得 %v", expire, got)
+	}
+
+	// 轮换后新 key 必须继承同一有效期
+	_ = demoCall(t, engine, token, http.MethodPost, "/api/platform/demo-key/rotate", "")
+	r2 := demoCall(t, engine, token, http.MethodGet, "/api/platform/demo-key", "")
+	if got, _ := r2["expires_at"].(float64); got != float64(expire) {
+		t.Fatalf("轮换后 expires_at 应保持 %d，得 %v（有效期被重置为永久）", expire, got)
+	}
+	var keyID int64
+	_ = db.Raw("SELECT CAST(value AS INTEGER) FROM settings WHERE key = 'demo.key_id'").Scan(&keyID).Error
+	var exp *int64
+	_ = db.Raw("SELECT expired_at FROM api_keys WHERE id = ?", keyID).Scan(&exp).Error
+	if exp == nil || *exp != expire {
+		t.Fatalf("新 key 落库 expired_at 应 %d，得 %v", expire, exp)
+	}
+}
+
 // 非法配置：负额度 / 额度低于已耗 / 模型不存在——400 且不落库
 func TestDemoKeyConfigureInvalid(t *testing.T) {
 	engine, db, token := newDemoEnv(t)
