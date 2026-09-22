@@ -1,10 +1,13 @@
 package httpx
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 )
 
 // OK 成功响应
@@ -17,9 +20,22 @@ func Fail(c *gin.Context, status int, msg string) {
 	c.JSON(status, gin.H{"error": gin.H{"message": msg, "type": "api_error"}})
 }
 
-// BindJSON 绑定请求体；失败时已自动响应 400
+// BindJSON 绑定请求体；失败时已自动响应 400。
+// 严格模式：整包 json.Unmarshal 而非 json.Decoder——Decoder 只解出第一个 JSON 值
+// 即报成功，尾部垃圾（`{...} junk` / 拼接双对象）被静默忽略，坏请求体被当合法
+// 部分解析落库；Unmarshal 对外围空白依旧宽容。校验语义与 ShouldBindJSON 一致
+// （Unmarshal 后显式跑 binding 规则）。
 func BindJSON(c *gin.Context, obj any) bool {
-	if err := c.ShouldBindJSON(obj); err != nil {
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		Fail(c, http.StatusBadRequest, "请求体读取失败: "+err.Error())
+		return false
+	}
+	if err := json.Unmarshal(body, obj); err != nil {
+		Fail(c, http.StatusBadRequest, "请求参数错误: "+err.Error())
+		return false
+	}
+	if err := binding.Validator.ValidateStruct(obj); err != nil {
 		Fail(c, http.StatusBadRequest, "请求参数错误: "+err.Error())
 		return false
 	}
