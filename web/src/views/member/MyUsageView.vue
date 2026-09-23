@@ -36,9 +36,9 @@ const bd = ref<Breakdown | null>(null) // 多维统计（今日/当月/区间 + 
 const list = ref<any[]>([])
 const total = ref(0)
 
-// ---- 分析区间筛选：预设（默认当月）或自定义日期区间 ----
+// ---- 分析区间筛选：预设（默认今日）或自定义日期区间 ----
 type Preset = 'today' | 'month' | '7d' | 'custom'
-const preset = ref<Preset>('month')
+const preset = ref<Preset>('today')
 const customRange = ref<[string, string] | null>(null) // YYYY-MM-DD
 const keyFilter = ref(0) // 调用记录按 key 过滤（0=全部，只影响明细表）
 const filters = reactive({ page: 1, page_size: 20, model: '', start: 0, end: 0, key_id: 0 })
