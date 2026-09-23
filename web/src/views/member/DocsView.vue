@@ -174,7 +174,7 @@ async function copy(text: string) {
       <pre style="min-height: auto">{{ helperCmd }}</pre>
       <el-button size="small" class="copy-btn" @click="copy(helperCmd)">复制</el-button>
     </div>
-    <p>在终端执行上面的命令即可启动<b>一键接入助手</b>（需要 Node.js ≥ 18）：选择要接入的工具与模型，自动完成全部配置。支持 <b>Claude Code、Codex CLI、OpenCode、Crush、Factory Droid</b> 五款工具（与智谱 coding-helper 相同的清单），安装只增改自己的配置键、不动其它设置。</p>
+    <p>在终端执行上面的命令即可启动<b>一键接入助手</b>（需要 Node.js ≥ 18）：选择要接入的工具与模型，自动完成全部配置。支持 <b>Claude Code、Codex CLI、OpenCode、Crush、Factory Droid</b> 五款工具（与智谱 coding-helper 相同的清单），安装只增改自己的配置键、不动其它设置。五款工具的手动配置与完整说明见 <router-link to="/docs/agent-helper">文档中心「Agent 一键接入」</router-link>。</p>
     <p>免交互安装（CI / 脚本场景）：</p>
     <div class="code-block">
       <pre>{{ helperYesCmd }}</pre>

@@ -98,6 +98,10 @@
           <div class="t">核心功能</div>
           <div class="d">渠道路由、计量计费、额度控制、对账单的完整说明。</div>
         </router-link>
+        <router-link class="doc-card" to="/docs/agent-helper">
+          <div class="t">Agent 一键接入</div>
+          <div class="d">一条命令接入 Claude Code、Codex CLI 等五款编程 Agent。</div>
+        </router-link>
         <router-link class="doc-card" to="/docs/api-chat">
           <div class="t">API 参考</div>
           <div class="d">对话补全接口的参数、示例与错误码。</div>
