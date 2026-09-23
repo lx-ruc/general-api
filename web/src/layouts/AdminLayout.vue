@@ -309,6 +309,7 @@ async function revokeToken(row: AccessToken) {
 /* ---------- 侧栏：亮色计量台 ---------- */
 .side {
   width: 224px;
+  flex: none; /* 禁止收缩：主内容超宽（长 URL/代码块撑爆 flex）时侧栏不被等比压缩 */
   background: var(--tg-sidebar);
   border-right: 1px solid var(--tg-line);
   display: flex;

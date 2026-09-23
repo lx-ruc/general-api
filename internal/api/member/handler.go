@@ -1,6 +1,7 @@
 package member
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 
@@ -225,12 +226,115 @@ func (h *Handler) StatsOverview(c *gin.Context) {
 	httpx.OK(c, ov)
 }
 
+// usageAgg 用量聚合行：按 key / 按模型两维共用形状
+type usageAgg struct {
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	Requests int64  `json:"requests"`
+	Tokens   int64  `json:"tokens"`
+	Cost     int64  `json:"cost"`
+	Errors   int64  `json:"errors"`
+}
+
+// usageRangeTotals 区间汇总（请求 / tokens / 扣减 / 失败数）
+type usageRangeTotals struct {
+	Requests int64 `json:"requests"`
+	Tokens   int64 `json:"tokens"`
+	Cost     int64 `json:"cost"`
+	Errors   int64 `json:"errors"`
+}
+
+// usageErrExpr 失败行判定：与 stats.go scanTotals 同口径
+const usageErrExpr = "CASE WHEN l.status >= 400 OR l.error != '' THEN 1 ELSE 0 END"
+
+// monthStartUnix 账期时区本月 1 号零点（与对账单/统计同一时区口径）
+func monthStartUnix() int64 {
+	now := time.Now().In(service.BillingLoc())
+	return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).Unix()
+}
+
+// UsageBreakdown GET /api/member/stats/usage：多维用量统计。
+// start/end 为 unix 秒闭开区间 [start, end)，默认当月（账期时区）；
+// today / month 为固定口径，不受 start/end 影响；by_key 恒列本人全部
+// key（含零用量，可直接当筛选下拉的数据源），by_model 限区间内非空模型名
+func (h *Handler) UsageBreakdown(c *gin.Context) {
+	id := uid(c)
+	now := time.Now().In(service.BillingLoc())
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).Unix()
+	monthStart := monthStartUnix()
+	start, end := monthStart, now.Unix()
+	if v := httpx.QueryInt64(c, "start", 0); v > 0 {
+		start = v
+	}
+	if v := httpx.QueryInt64(c, "end", 0); v > 0 {
+		end = v
+	}
+
+	totals := func(from, to int64) usageRangeTotals {
+		var t usageRangeTotals
+		_ = h.DB.Raw(fmt.Sprintf(`
+			SELECT COUNT(*) AS requests,
+			       COALESCE(SUM(l.prompt_tokens + l.completion_tokens), 0) AS tokens,
+			       COALESCE(SUM(l.cost), 0) AS cost,
+			       COALESCE(SUM(%s), 0) AS errors
+			FROM usage_logs l WHERE l.user_id = ? AND l.created_at >= ? AND l.created_at < ?`,
+			usageErrExpr), id, from, to).Scan(&t).Error
+		return t
+	}
+
+	var byKey []usageAgg
+	// LEFT JOIN 使零用量 key 也出现一行（用户视角：名下每个 key 都该能看到）
+	if err := h.DB.Raw(fmt.Sprintf(`
+		SELECT k.id AS id, k.name AS name, COUNT(l.id) AS requests,
+		       COALESCE(SUM(l.prompt_tokens + l.completion_tokens), 0) AS tokens,
+		       COALESCE(SUM(l.cost), 0) AS cost,
+		       COALESCE(SUM(%s), 0) AS errors
+		FROM api_keys k
+		LEFT JOIN usage_logs l ON l.api_key_id = k.id AND l.user_id = ?
+		       AND l.created_at >= ? AND l.created_at < ?
+		WHERE k.user_id = ?
+		GROUP BY k.id, k.name ORDER BY tokens DESC, requests DESC`, usageErrExpr),
+		id, start, end, id).Scan(&byKey).Error; err != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "按 key 统计查询失败")
+		return
+	}
+	if byKey == nil {
+		byKey = []usageAgg{}
+	}
+
+	var byModel []usageAgg
+	_ = h.DB.Raw(fmt.Sprintf(`
+		SELECT 0 AS id, l.model_name AS name, COUNT(*) AS requests,
+		       COALESCE(SUM(l.prompt_tokens + l.completion_tokens), 0) AS tokens,
+		       COALESCE(SUM(l.cost), 0) AS cost,
+		       COALESCE(SUM(%s), 0) AS errors
+		FROM usage_logs l
+		WHERE l.user_id = ? AND l.created_at >= ? AND l.created_at < ? AND l.model_name != ''
+		GROUP BY l.model_name ORDER BY tokens DESC, requests DESC`, usageErrExpr),
+		id, start, end).Scan(&byModel).Error
+	if byModel == nil {
+		byModel = []usageAgg{}
+	}
+
+	httpx.OK(c, gin.H{
+		"start": start, "end": end,
+		"today": totals(dayStart, now.Unix()),
+		"month": totals(monthStart, now.Unix()),
+		"range": totals(start, end),
+		"by_key": byKey, "by_model": byModel,
+	})
+}
+
 // ListUsage GET /api/member/usage
 func (h *Handler) ListUsage(c *gin.Context) {
 	page, size, offset := httpx.PageParams(c)
 	cond, args := "l.user_id = ?", []any{uid(c)}
 	if v := c.Query("model"); v != "" {
 		cond += " AND l.model_name = ?"
+		args = append(args, v)
+	}
+	if v := httpx.QueryInt64(c, "key_id", 0); v > 0 {
+		cond += " AND l.api_key_id = ?"
 		args = append(args, v)
 	}
 	if v := httpx.QueryInt64(c, "status", 0); v > 0 {

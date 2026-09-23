@@ -46,6 +46,9 @@ export const apiAssignKeyCenter = (id: number, costCenterId: number | null) =>
   http.put<any, any>(`/api/member/keys/${id}/cost-center`, { cost_center_id: costCenterId })
 export const apiMyModels = () => http.get<any, any>('/api/member/models')
 export const apiMyStats = () => http.get<any, any>('/api/member/stats/overview')
+// 多维用量统计：start/end 为 unix 秒闭开区间，缺省 = 当月（账期时区）
+export const apiMyUsageBreakdown = (params?: { start?: number; end?: number }) =>
+  http.get<any, any>('/api/member/stats/usage', { params })
 export const apiMyUsage = (params?: any) => http.get<any, any>('/api/member/usage', { params })
 export const apiMyRequests = () => http.get<any, QuotaRequestMine[]>('/api/member/requests')
 export const apiCreateRequest = (amount: number, reason: string) =>

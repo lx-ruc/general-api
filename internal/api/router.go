@@ -241,6 +241,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		mg.GET("/cost-centers", mh.ListCostCenters)
 		mg.GET("/models", mh.ListModels)
 		mg.GET("/stats/overview", mh.StatsOverview)
+		mg.GET("/stats/usage", mh.UsageBreakdown)
 		mg.GET("/usage", mh.ListUsage)
 		mg.GET("/requests", mh.ListRequests)
 		mg.POST("/requests", mh.CreateRequest)

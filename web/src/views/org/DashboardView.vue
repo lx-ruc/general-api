@@ -3,7 +3,7 @@ import { onMounted, ref, computed } from 'vue'
 import { apiOrgStats } from '../../api/org'
 import StatRow from '../../components/StatRow.vue'
 import LineChart from '../../components/LineChart.vue'
-import { fmtNum, fmtQuota, fmtTokenCompact } from '../../utils/format'
+import { fmtNum, fmtQuota, fmtTokenCompact, fmtTokensM } from '../../utils/format'
 import { trendOptions, barOption } from '../../utils/chart'
 
 const data = ref<any>(null)
@@ -36,7 +36,7 @@ const cards = computed(() => {
   const t = mode.value === 'today' ? data.value.today : data.value.total
   return [
     { label: mode.value === 'today' ? '今日请求' : '累计请求', value: fmtNum(t.requests) },
-    { label: mode.value === 'today' ? '今日 tokens' : '累计 tokens', value: fmtNum(t.tokens), tone: 'green' },
+    { label: mode.value === 'today' ? '今日 tokens' : '累计 tokens', value: fmtTokensM(t.tokens), tone: 'green' },
     { label: '调用成功率', value: succRate(t), tone: succTone(t) },
   ]
 })

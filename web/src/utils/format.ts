@@ -12,6 +12,17 @@ export function fmtQuota(p: number | null | undefined): string {
   return `${p.toLocaleString('zh-CN')} token`
 }
 
+// 用量 tokens 显示：与 fmtQuota 同 M 口径（≥1 百万以「M」计，M=百万；小值保持精确）
+export function fmtTokensM(n: number | null | undefined): string {
+  if (n == null) return '-'
+  if (Math.abs(n) >= 1_000_000) {
+    const m = n / 1_000_000
+    const s = Number.isInteger(m) ? m.toString() : m.toFixed(2).replace(/\.?0+$/, '')
+    return `${s}M`
+  }
+  return n.toLocaleString('zh-CN')
+}
+
 // token 数紧凑单位：<1k 原样；之后 k → M → G → T 封顶（至多 3 位有效数字）
 export function fmtTokenCompact(n: number | null | undefined): string {
   if (n == null) return '-'
