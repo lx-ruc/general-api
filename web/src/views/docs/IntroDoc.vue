@@ -100,7 +100,7 @@
         </router-link>
         <router-link class="doc-card" to="/docs/agent-helper">
           <div class="t">Agent 一键接入</div>
-          <div class="d">一条命令接入 Claude Code、Codex CLI 等五款编程 Agent。</div>
+          <div class="d">一条命令接入 Claude Code、Codex CLI 等六款编程 Agent。</div>
         </router-link>
         <router-link class="doc-card" to="/docs/api-chat">
           <div class="t">API 参考</div>

@@ -61,10 +61,12 @@ console.log(resp.choices[0].message.content);`)
 
 // ---- Agent / 编程工具接入 ----
 // Codex CLI：~/.codex/config.toml 自定义 provider（wire_api=responses，走本站 /v1/responses；
-// codex 0.142+ 已移除 chat 协议）
+// codex 0.142+ 已移除 chat 协议）；桌面端另需 ~/.codex/models.json 模型元数据（一键助手自动生成）
 const codexExample = computed(() => `# ~/.codex/config.toml
-model = "${firstModel.value}"
 model_provider = "huimu"
+model = "${firstModel.value}"
+model_reasoning_effort = "max"
+model_catalog_json = "~/.codex/models.json"
 
 [model_providers.huimu]
 name = "huimu"
@@ -176,13 +178,13 @@ async function copy(text: string) {
       <pre style="min-height: auto">{{ helperCmd }}</pre>
       <el-button size="small" class="copy-btn" @click="copy(helperCmd)">复制</el-button>
     </div>
-    <p>在终端执行上面的命令即可启动<b>一键接入助手</b>（需要 Node.js ≥ 18）：选择要接入的工具与模型，自动完成全部配置。支持 <b>Claude Code、Codex CLI、OpenCode、Crush、Factory Droid</b> 五款工具（与智谱 coding-helper 相同的清单），安装只增改自己的配置键、不动其它设置。五款工具的手动配置与完整说明见 <router-link to="/docs/agent-helper">文档中心「Agent 一键接入」</router-link>。</p>
+    <p>在终端执行上面的命令即可启动<b>一键接入助手</b>（需要 Node.js ≥ 18）：先展示各工具接入状态，再用方向键选择 <b>接入 / 卸载</b>——一个脚本完成全部操作。支持 <b>Claude Code、Codex CLI、OpenCode、Crush、Factory Droid、Trae</b> 六款工具，安装只增改自己的配置键、不动其它设置。各工具的手动配置与完整说明见 <router-link to="/docs/agent-helper">文档中心「Agent 一键接入」</router-link>。</p>
     <p>免交互安装（CI / 脚本场景）：</p>
     <div class="code-block">
       <pre>{{ helperYesCmd }}</pre>
       <el-button size="small" class="copy-btn" @click="copy(helperYesCmd)">复制</el-button>
     </div>
-    <p>卸载本站配置（保留各工具的其它配置）：</p>
+    <p>卸载本站配置（保留各工具的其它配置）——也可以再次运行上面的接入助手，在向导里选择「卸载工具」：</p>
     <div class="code-block" style="margin-bottom: 12px">
       <pre>{{ helperUninstallCmd }}</pre>
       <el-button size="small" class="copy-btn" @click="copy(helperUninstallCmd)">复制</el-button>
@@ -212,6 +214,17 @@ async function copy(text: string) {
           <pre>{{ codexExample }}</pre>
           <el-button size="small" class="copy-btn" @click="copy(codexExample)">复制</el-button>
         </div>
+        <p class="dim">桌面端（ChatGPT 内置 Codex）还需 <code>~/.codex/models.json</code> 模型元数据，一键接入助手会自动生成，推荐直接使用。</p>
+      </el-collapse-item>
+
+      <el-collapse-item name="trae">
+        <template #title><b>Trae</b>（AI IDE）</template>
+        <p>Trae 的自定义模型在 IDE 内登记：设置 → 模型 → 添加模型 → 选「自定义」，按下面信息填写：</p>
+        <ul class="steps">
+          <li>API 地址：<code>{{ baseURL }}</code>（开启「完整 URL」开关时填 <code>{{ baseURL }}/chat/completions</code>）</li>
+          <li>API Key：<code>{{ exampleKey }}</code></li>
+          <li>模型 ID：<code>{{ firstModel }}</code></li>
+        </ul>
       </el-collapse-item>
 
       <el-collapse-item name="continue">

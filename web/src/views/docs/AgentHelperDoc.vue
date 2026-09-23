@@ -12,7 +12,7 @@ const helperUninstallCmd = computed(
   () => `sh -c "$(curl -fsSL ${location.origin}/agent-helper)" uninstall all`,
 )
 
-// ---- 五款工具手动配置（与一键助手写入的内容一致，占位符按实际值替换） ----
+// ---- 六款工具手动配置（与一键助手写入的内容一致，占位符按实际值替换） ----
 const baseURL = `${location.origin}/v1`
 
 const claudeExample = computed(() => `# ~/.claude/settings.json
@@ -27,8 +27,10 @@ const claudeExample = computed(() => `# ~/.claude/settings.json
 }`)
 
 const codexExample = computed(() => `# ~/.codex/config.toml
-model = "{你的模型}"
 model_provider = "huimu"
+model = "{你的模型}"
+model_reasoning_effort = "max"
+model_catalog_json = "~/.codex/models.json"
 
 [model_providers.huimu]
 name = "huimu"
@@ -76,12 +78,20 @@ const factoryDroidExample = computed(() => `# ~/.factory/settings.json
   ]
 }`)
 
-// 手动配置 tab：与一键助手覆盖的五款工具一一对应
+// Trae 不开放可写的模型配置文件：在 IDE 内登记（一键助手会写入标记并打印同样的指引）
+const traeExample = computed(() => `入口：设置 → 模型 → 添加模型 → 自定义配置
+
+API 地址：${baseURL}（开启「完整 URL」开关时填 ${baseURL}/chat/completions）
+API Key：{你的密钥}
+模型 ID：{你的模型}`)
+
+// 手动配置 tab：与一键助手覆盖的六款工具一一对应
 interface ManualTab {
   key: string
   label: string
   code: string
   note: string
+  lang: string
 }
 
 const manualTabs = computed<ManualTab[]>(() => [
@@ -89,31 +99,43 @@ const manualTabs = computed<ManualTab[]>(() => [
     key: 'claude-code',
     label: 'Claude Code',
     code: claudeExample.value,
+    lang: 'json',
     note: '本站原生兼容 Anthropic Messages 协议（/v1/messages），无须任何协议转换即可直连。要点：ANTHROPIC_BASE_URL 填网关根地址（不带 /v1，Claude Code 自行拼接）；三个 ANTHROPIC_DEFAULT_*_MODEL 把 sonnet / opus / haiku 槽位都映射到本站模型；密钥就是你的 sk- 密钥（ANTHROPIC_AUTH_TOKEN）。',
   },
   {
     key: 'codex',
     label: 'Codex CLI',
     code: codexExample.value,
-    note: '自定义 provider 走本站 /v1/responses（OpenAI Responses 协议）——Codex CLI 0.142 起已移除 wire_api = "chat"，必须用 responses；密钥经环境变量 HUIMU_API_KEY 注入（写在 shell 配置里 export）。',
+    lang: 'toml',
+    note: '自定义 provider 走本站 /v1/responses（OpenAI Responses 协议）——Codex CLI 0.142 起已移除 wire_api = "chat"，必须用 responses；密钥经环境变量 HUIMU_API_KEY 注入（写在 shell 配置里 export）。桌面端（ChatGPT 内置 Codex）还需 ~/.codex/models.json 模型元数据（model_catalog_json 指向），一键助手会自动生成，建议直接使用。',
   },
   {
     key: 'opencode',
     label: 'OpenCode',
     code: opencodeExample.value,
+    lang: 'json',
     note: 'provider 用 @ai-sdk/openai-compatible 适配器；顶层 model / small_model 设为 huimu/{你的模型} 即默认使用本站。',
   },
   {
     key: 'crush',
     label: 'Crush',
     code: crushExample.value,
+    lang: 'json',
     note: '在 providers 里加一个 huimu 条目，随后在 Crush 的模型选择里切到 Huimu。',
   },
   {
     key: 'factory-droid',
     label: 'Factory Droid',
     code: factoryDroidExample.value,
+    lang: 'json',
     note: 'customModels 增加一条 generic-chat-completion-api 连接；displayName 含 "Huimu" 便于一键助手识别与更新。',
+  },
+  {
+    key: 'trae',
+    label: 'Trae',
+    code: traeExample.value,
+    lang: 'text',
+    note: 'Trae 的自定义模型只开放 IDE 内登记（无可写配置文件），按左侧信息在 设置 → 模型 → 添加模型 → 自定义配置 中填写即可；一键助手会写入 ~/.trae/huimu.json 标记并打印同样指引。',
   },
 ])
 const tab = ref('claude-code')
@@ -124,13 +146,13 @@ const currentTab = computed(() => manualTabs.value.find((t) => t.key === tab.val
   <article class="doc-article">
     <div class="doc-kicker">功能指南</div>
     <h1 class="doc-h1">Agent 一键接入</h1>
-    <p class="doc-desc">一条命令把命令行 Agent 接入本站：自动校验密钥、拉取模型列表、写入各工具配置。与智谱 coding-helper 同款体验，可随时一键卸载还原。</p>
+    <p class="doc-desc">一条命令把命令行 Agent 接入本站：自动校验密钥、拉取模型列表、写入各工具配置。与智谱 coding-helper 同款交互（方向键选择），接入与卸载都在向导里完成。</p>
 
     <div class="doc-prose">
       <h2>一键命令</h2>
       <p>准备一枚 <code>sk-</code> 密钥（管理台【我的密钥】创建），在终端执行：</p>
       <CodeBlock :code="helperCmd" lang="bash" />
-      <p>向导会依次引导你：选择要接入的工具 → 粘贴密钥（即时校验）→ 从你的已授权模型中选择默认模型 → 写入配置。需要 <strong>Node.js ≥ 18</strong> 与 curl，无需其它依赖。</p>
+      <p>向导启动后先展示各工具的接入状态，再用方向键选择操作：<strong>接入工具 / 卸载工具 / 刷新状态 / 退出</strong>——接入与卸载在同一个向导里完成，无须再复制其它命令。接入时依次引导：粘贴密钥（即时校验）→ 勾选工具（空格多选）→ 从你的已授权模型中选择默认模型 → 写入配置。需要 <strong>Node.js ≥ 18</strong> 与 curl，无需其它依赖。</p>
 
       <div class="doc-callout info">
         <div class="doc-callout-title">安全与可逆</div>
@@ -138,7 +160,7 @@ const currentTab = computed(() => manualTabs.value.find((t) => t.key === tab.val
           卸载按同样的边界精确还原。密钥只写入本机配置文件，不经过第三方。</p>
       </div>
 
-      <h2>支持的五款工具</h2>
+      <h2>支持的六款工具</h2>
       <div class="doc-table-wrap">
         <table class="doc-table">
           <thead>
@@ -152,8 +174,8 @@ const currentTab = computed(() => manualTabs.value.find((t) => t.key === tab.val
             </tr>
             <tr>
               <td><strong>Codex CLI</strong></td>
-              <td><code>~/.codex/config.toml</code></td>
-              <td>自定义 provider，<code>wire_api = "responses"</code>（走 <code>/v1/responses</code>）</td>
+              <td><code>~/.codex/config.toml</code> + <code>models.json</code></td>
+              <td>自定义 provider，<code>wire_api = "responses"</code>（走 <code>/v1/responses</code>）；桌面端另配模型元数据</td>
             </tr>
             <tr>
               <td><strong>OpenCode</strong></td>
@@ -170,10 +192,15 @@ const currentTab = computed(() => manualTabs.value.find((t) => t.key === tab.val
               <td><code>~/.factory/settings.json</code></td>
               <td><code>customModels</code> 增加 generic-chat-completion-api 连接</td>
             </tr>
+            <tr>
+              <td><strong>Trae</strong></td>
+              <td><code>~/.trae/huimu.json</code>（标记）</td>
+              <td>IDE 内登记（设置 → 模型 → 自定义配置），助手打印指引</td>
+            </tr>
           </tbody>
         </table>
       </div>
-      <p>五款工具的接入清单与智谱 coding-helper 保持一致；重复执行安装命令是幂等的（覆盖更新本站配置，保留你的其它设置）。</p>
+      <p>前五款工具的接入清单与智谱 coding-helper 保持一致，另加 Trae（IDE 内登记）；重复执行安装命令是幂等的（覆盖更新本站配置，保留你的其它设置）。</p>
 
       <h2>免交互安装与日常管理</h2>
       <p>CI / 脚本场景跳过向导，一步到位：</p>
@@ -194,7 +221,7 @@ const currentTab = computed(() => manualTabs.value.find((t) => t.key === tab.val
           {{ t.label }}
         </button>
       </div>
-      <CodeBlock :code="currentTab.code" lang="json" />
+      <CodeBlock :code="currentTab.code" :lang="currentTab.lang" />
       <p class="tab-note">{{ currentTab.note }}</p>
 
       <h2>常见问题</h2>
