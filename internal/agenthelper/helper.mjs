@@ -24,7 +24,7 @@ import { stdin, stdout } from 'node:process';
 
 const DEFAULT_BASE = '__HUIMU_BASE__'; // 网关下发时注入实际地址
 const PROVIDER = 'huimu';
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 
 // ---------------- 参数解析 ----------------
 // flag 可出现在任意位置（引导器会把 --base 前置），第一个位置参数是命令，其余是命令参数
@@ -95,9 +95,39 @@ function askClose() {
   if (pipeLines) { pipeLines.close(); pipeLines = null; }
 }
 
+// ---------------- 终端绘制小工具（对齐 z_ai coding-helper 的界面行为）----------------
+// 宽度按终端列计（CJK 等宽字符记 2 列），行数把折行也算进去：
+// 擦除按「屏幕行」上移，长状态行折行时也不会残留半截（inquirer 同款重绘口径）。
+
+function stripAnsi(s) { return s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ''); }
+
+function textWidth(s) {
+  let w = 0;
+  for (const ch of stripAnsi(s)) {
+    const c = ch.codePointAt(0);
+    const wide = (c >= 0x1100 && c <= 0x115f) || (c >= 0x2e80 && c <= 0x303e)
+      || (c >= 0x3041 && c <= 0x33ff) || (c >= 0x3400 && c <= 0x4dbf)
+      || (c >= 0x4e00 && c <= 0x9fff) || (c >= 0xac00 && c <= 0xd7a3)
+      || (c >= 0xf900 && c <= 0xfaff) || (c >= 0xfe30 && c <= 0xfe4f)
+      || (c >= 0xff00 && c <= 0xff60) || (c >= 0xffe0 && c <= 0xffe6);
+    w += wide ? 2 : 1;
+  }
+  return w;
+}
+
+function frameRows(text, cols) {
+  return text.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(textWidth(line) / Math.max(1, cols))), 0);
+}
+
+// 与 console.clear() 等价（清屏、光标归位，保留滚动缓冲里的历史）
+function clearScreen() { process.stdout.write('\x1b[2J\x1b[0f'); }
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 // ---------------- 方向键选择器（对齐 z_ai coding-helper：↑↓ 移动、回车确认）----------------
 // 零依赖：TTY 下 raw mode + keypress；非 TTY（管道 / CI）退化为序号输入。
 // 单选返回下标，多选返回下标数组，取消返回 null。
+// 选中后整块菜单擦除、只收拢一行答案（对齐 inquirer），上一屏菜单不会残留。
 
 function parsePickOne(ans, count) {
   if (ans === 'q') return null;
@@ -118,7 +148,7 @@ async function keySelect({ title, items, multi = false, checked = null }) {
   const labelLine = (it, i, cursor, sel) => {
     const cur = i === cursor ? '\x1b[36m❯\x1b[0m ' : '  ';
     const box = multi ? (sel.has(i) ? '\x1b[32m[x]\x1b[0m ' : '[ ] ') : '';
-    return `${cur}${box}${it.label}${it.status ? '  \x1b[2m· ${it.status}\x1b[0m' : ''}`;
+    return `${cur}${box}${it.label}${it.status ? `  \x1b[2m· ${it.status}\x1b[0m` : ''}`;
   };
 
   if (!stdin.isTTY) { // 非 TTY：序号选择退化
@@ -137,19 +167,27 @@ async function keySelect({ title, items, multi = false, checked = null }) {
   stdin.resume();
   emitKeypressEvents(stdin);
   let cursor = 0;
-  let drew = 0;
+  let drewRows = 0;
   const sel = new Set(checked ? items.map((it, i) => (checked(it) ? i : -1)).filter((i) => i >= 0) : []);
   return await new Promise((resolve) => {
+    const erase = () => { if (drewRows > 0) process.stdout.write(`\x1b[${drewRows}A\x1b[J`); };
     const finish = (val) => {
+      erase();
       stdin.setRawMode(preRaw === true);
       stdin.removeListener('keypress', onKey);
       stdin.pause();
-      process.stdout.write('\n');
+      // 菜单收拢成一行答案（对齐 inquirer：选完菜单即消失）
+      const label = (i) => String(items[i].label).trim();
+      const answer = val === null ? '\x1b[2m已取消\x1b[0m'
+        : multi ? (val.length ? val.map(label).join('、') : '\x1b[2m（未选）\x1b[0m')
+        : label(val);
+      process.stdout.write(`\x1b[36m❯\x1b[0m ${title.replace(/[：:]\s*$/, '')} \x1b[36m${answer}\x1b[0m\n`);
       resolve(val);
     };
     const draw = () => {
-      process.stdout.write(title + ' \x1b[2m' + hint + '\x1b[0m\n' + items.map((it, i) => labelLine(it, i, cursor, sel)).join('\n') + '\n');
-      drew = items.length + 1;
+      const frame = title + ' \x1b[2m' + hint + '\x1b[0m\n' + items.map((it, i) => labelLine(it, i, cursor, sel)).join('\n') + '\n';
+      process.stdout.write(frame);
+      drewRows = frameRows(frame, stdout.columns || 80);
     };
     const onKey = (str, key) => {
       if (!key) return;
@@ -160,7 +198,7 @@ async function keySelect({ title, items, multi = false, checked = null }) {
       else if (multi && (str === 'a' || str === 'A')) { if (sel.size === items.length) sel.clear(); else items.forEach((_, i) => sel.add(i)); }
       else if (key.name === 'return' || key.name === 'enter') return finish(multi ? [...sel].sort((a, b) => a - b) : cursor);
       else return; // 其余按键不重绘
-      process.stdout.write(`\x1b[${drew}A\x1b[J`); // 光标上移擦除整块后重绘
+      erase();
       draw();
     };
     stdin.on('keypress', onKey);
@@ -245,7 +283,42 @@ function uninstallCodexToml(text) {
 
 // ---------------- Codex ~/.codex/models.json 模型元数据 ----------------
 // config.toml 的自定义 provider 只对终端 Codex CLI 生效；桌面端（ChatGPT.app 内置 Codex）
-// 还要求 model_catalog_json 指向的 models.json 里存在模型元数据才能选用（对齐 z_ai coding-helper）。
+// 还要求 model_catalog_json 指向的 models.json 里存在模型元数据才能选用。
+// 字段集对齐智谱 coding-helper 当前版本写入的最小合法模板（其 glm-5.3 条目同款）：
+// 其中 shell_type / visibility / base_instructions 为必填，缺一即报
+// “failed to parse model_catalog_json ... missing field”导致桌面端无法对话。
+const CODEX_MODEL_MARKER = 'Huimu Engine model'; // 卸载时按此标记识别本站条目（卸载路径无 model 名）
+
+function codexModelEntry(model) {
+  return {
+    slug: model,
+    display_name: model,
+    description: CODEX_MODEL_MARKER,
+    default_reasoning_level: 'max',
+    supported_reasoning_levels: [
+      { effort: 'low', description: 'Light reasoning' },
+      { effort: 'high', description: 'Enhanced reasoning' },
+      { effort: 'max', description: 'Deep reasoning' },
+    ],
+    shell_type: 'shell_command',
+    visibility: 'list',
+    supported_in_api: true,
+    priority: 0,
+    base_instructions: '',
+    supports_reasoning_summaries: true,
+    default_reasoning_summary: 'none',
+    support_verbosity: false,
+    apply_patch_tool_type: 'freeform',
+    truncation_policy: { mode: 'bytes', limit: 10000 },
+    context_window: 1048576,
+    max_context_window: 1048576,
+    effective_context_window_percent: 95,
+    supports_parallel_tool_calls: true,
+    experimental_supported_tools: [],
+    input_modalities: ['text'],
+  };
+}
+
 function writeCodexModelsJson(modelsPath, model) {
   let config = { models: [] };
   try {
@@ -254,18 +327,9 @@ function writeCodexModelsJson(modelsPath, model) {
       if (parsed && Array.isArray(parsed.models)) config = parsed;
     }
   } catch { /* 损坏文件按空配置重建 */ }
-  config.models = config.models.filter((m) => m.slug !== model);
-  config.models.push({
-    slug: model,
-    display_name: model,
-    description: 'Huimu Engine model', // 卸载时按此标记识别本站条目（卸载路径无 model 名）
-    supported_reasoning_levels: [
-      { effort: 'low', description: 'Light reasoning' },
-      { effort: 'high', description: 'Enhanced reasoning' },
-      { effort: 'max', description: 'Deep reasoning' },
-    ],
-    input_modalities: ['text'],
-  });
+  // 去掉同 slug 旧条目与历史遗留的本站标记条目（换模型重装时旧条目一并清理）
+  config.models = config.models.filter((m) => m.slug !== model && m.description !== CODEX_MODEL_MARKER);
+  config.models.push(codexModelEntry(model));
   writeAtomic(modelsPath, JSON.stringify(config, null, 2) + '\n');
 }
 
@@ -276,7 +340,7 @@ function removeCodexModelsJson(modelsPath) {
     parsed = JSON.parse(readFileSync(modelsPath, 'utf-8'));
   } catch { return; }
   if (!parsed || !Array.isArray(parsed.models)) return;
-  const kept = parsed.models.filter((m) => m.description !== 'Huimu Engine model');
+  const kept = parsed.models.filter((m) => m.description !== CODEX_MODEL_MARKER);
   if (kept.length === 0) unlinkSync(modelsPath); // 只剩我们的条目 → 整个文件回收
   else if (kept.length !== parsed.models.length) writeAtomic(modelsPath, JSON.stringify({ ...parsed, models: kept }, null, 2) + '\n');
 }
@@ -355,7 +419,11 @@ function agentDefs(ctx) {
         const p = join(home, '.codex', 'config.toml');
         if (!existsSync(p)) return '未配置';
         const t = readFileSync(p, 'utf-8');
-        return t.includes(`[model_providers.${PROVIDER}]`) ? '已接入' : '未配置';
+        if (!t.includes(`[model_providers.${PROVIDER}]`)) return '未配置';
+        // 顶层 model 键在第一个表头之前；安装路径写的顶层键即当前生效模型
+        const head = t.split(/\n\s*\[/)[0];
+        const m = head.match(/^\s*model\s*=\s*"([^"]+)"/m);
+        return m ? `已接入（模型 ${m[1]}）` : '已接入';
       },
       installed() {
         const p = join(home, '.codex', 'config.toml');
@@ -590,28 +658,31 @@ function cmdStatus(base) {
   }
 }
 
-// 交互式向导：状态总览 + 方向键选择 接入/卸载（一个脚本完成全部操作，无须再复制卸载命令）
+// 交互式向导：状态总览 + 方向键选择 接入/卸载（一个脚本完成全部操作，无须再复制卸载命令）。
+// 界面对齐 z_ai coding-helper：每轮操作前清屏重绘（旧菜单绝不残留），选中项收拢成一行。
 async function wizard(flags, base) {
-  log(`慧沐引擎 · Agent 接入助手 v${VERSION}`);
   let key = flags.key || process.env.HUIMU_API_KEY || '';
   let models = null; // 密钥校验后的模型缓存（null=未校验，校验失败保持 null 以便重试）
   for (;;) {
+    clearScreen();
+    log(`\x1b[36m慧沐引擎 · Agent 接入助手 v${VERSION}\x1b[0m \x1b[2m${base}\x1b[0m`);
     const defs = agentDefs({ home: homedir(), base, key: '', model: '' });
     const items = AGENT_IDS.map((id) => ({ id, label: defs[id].name.padEnd(14), status: defs[id].status() }));
     log('\n当前接入状态：');
     for (const id of AGENT_IDS) log(`  ${defs[id].name.padEnd(14)}${defs[id].status()}`);
 
     const op = await keySelect({
-      title: '\n选择操作：',
+      title: '选择操作：',
       items: [{ label: '接入工具' }, { label: '卸载工具' }, { label: '刷新状态' }, { label: '退出' }],
     });
     if (op === null || op === 3) { log('再见。'); return; }
-    if (op === 2) { models = null; continue; } // 刷新：重新探测状态并重试密钥校验
+    if (op === 2) { models = null; continue; } // 刷新：清屏重绘即重新探测
 
     if (op === 1) { // 卸载：只预选已接入本站的工具，无须密钥
       const picks = await keySelect({ title: '要卸载的工具：', items, multi: true, checked: (it) => defs[it.id].installed() });
-      if (picks === null || picks.length === 0) { log('未选择，返回。'); continue; }
+      if (picks === null || picks.length === 0) { log('未选择，返回。'); await sleep(500); continue; }
       log('');
+      let hadFail = false;
       for (const i of picks) {
         const d = defs[items[i].id];
         try {
@@ -619,16 +690,18 @@ async function wizard(flags, base) {
           ok(`✓ ${d.name} 已卸载本站配置（其余配置保留）`);
           if (typeof d.postUninstallHint === 'function') log(d.postUninstallHint());
         } catch (e) {
+          hadFail = true;
           warn(`✗ ${d.name} 卸载失败：${e.message}`);
         }
       }
+      await (hadFail ? askOne('\n回车返回菜单… ') : sleep(800)); // 结果短暂停留后清屏，新状态在总览里可见
       continue;
     }
 
     // 接入
     if (!key.startsWith('sk-')) {
       key = await askOne('API 密钥（sk- 开头，管理台「我的密钥」创建，q 返回）: ');
-      if (!key.startsWith('sk-')) { warn('密钥应以 sk- 开头，返回菜单。'); continue; }
+      if (!key.startsWith('sk-')) { warn('密钥应以 sk- 开头，返回菜单。'); await sleep(800); continue; }
     }
     if (models === null) {
       try {
@@ -639,20 +712,21 @@ async function wizard(flags, base) {
       }
     }
     const picks = await keySelect({ title: '要接入的工具：', items, multi: true, checked: () => true });
-    if (picks === null || picks.length === 0) { log('未选择，返回。'); continue; }
+    if (picks === null || picks.length === 0) { log('未选择，返回。'); await sleep(500); continue; }
     let model = flags.model || '';
     if (!model) {
       if (models && models.length > 0) {
         const m = await keySelect({ title: '选择默认模型：', items: models.map((mm) => ({ label: mm })) });
-        if (m === null) { log('未选择模型，返回。'); continue; }
+        if (m === null) { log('未选择模型，返回。'); await sleep(500); continue; }
         model = models[m];
       } else {
         model = await askOne('模型名（如 deepseek-v4-flash）: ');
-        if (!model) { warn('未输入模型，返回。'); continue; }
+        if (!model) { warn('未输入模型，返回。'); await sleep(800); continue; }
       }
     }
     const adefs = agentDefs({ home: homedir(), base, key, model });
     log('');
+    let hadFail = false;
     for (const i of picks) {
       const d = adefs[items[i].id];
       try {
@@ -660,9 +734,11 @@ async function wizard(flags, base) {
         ok(`✓ ${d.name} 已接入（模型 ${model}）→ ${d.configPath}`);
         if (typeof d.postInstallHint === 'function') log(d.postInstallHint());
       } catch (e) {
+        hadFail = true;
         warn(`✗ ${d.name} 安装失败：${e.message}`);
       }
     }
+    await (hadFail ? askOne('\n回车返回菜单… ') : sleep(800));
   }
 }
 
@@ -691,13 +767,21 @@ function selftest() {
   const t1 = readFileSync(join(home, '.codex', 'config.toml'), 'utf-8');
   expect('codex 顶层键', t1.startsWith('model_provider = "huimu"\nmodel = "m-alpha"\nmodel_reasoning_effort = "max"\nmodel_catalog_json = "~/.codex/models.json"'));
   expect('codex provider 段', t1.includes('[model_providers.huimu]') && t1.includes('wire_api = "responses"'));
+  expect('codex 状态带模型名', defs['codex'].status() === '已接入（模型 m-alpha）');
   const mj1 = readJSON(join(home, '.codex', 'models.json'));
-  expect('codex models.json 写入', mj1.models.length === 1 && mj1.models[0].slug === 'm-alpha'
-    && mj1.models[0].supported_reasoning_levels.some((l) => l.effort === 'max'));
+  const me1 = mj1.models[0];
+  expect('codex models.json 写入', mj1.models.length === 1 && me1.slug === 'm-alpha');
+  expect('codex models.json 必填字段齐', me1.shell_type === 'shell_command' && me1.visibility === 'list'
+    && typeof me1.base_instructions === 'string' && me1.description === 'Huimu Engine model');
+  expect('codex models.json 推理档位', me1.supported_reasoning_levels.some((l) => l.effort === 'max'));
   writeFileSync(join(home, '.codex', 'config.toml'),
     '# 用户注释\nuser_key = 1\nmodel = "user-model"\n\n[other]\nx = 2\n');
+  // 预置：他人条目 + 旧版本残留的缺字段本站条目（安装时应清理替换为新模板）
   writeFileSync(join(home, '.codex', 'models.json'),
-    JSON.stringify({ models: [{ slug: 'foreign', display_name: 'Foreign', description: 'user own' }] }));
+    JSON.stringify({ models: [
+      { slug: 'foreign', display_name: 'Foreign', description: 'user own' },
+      { slug: 'stale-old', description: 'Huimu Engine model', input_modalities: ['text'] },
+    ] }));
   defs['codex'].install();
   const t2 = readFileSync(join(home, '.codex', 'config.toml'), 'utf-8');
   expect('codex 用户配置保留', t2.includes('# 用户注释') && t2.includes('user_key = 1') && t2.includes('[other]'));
@@ -708,6 +792,8 @@ function selftest() {
   const mj2 = readJSON(join(home, '.codex', 'models.json'));
   expect('codex models.json 幂等且他人条目保留',
     mj2.models.length === 2 && mj2.models.some((m) => m.slug === 'foreign') && mj2.models.some((m) => m.slug === 'm-alpha'));
+  expect('codex models.json 清理旧标记条目', !mj2.models.some((m) => m.slug === 'stale-old')
+    && mj2.models.every((m) => m.slug !== 'm-alpha' || m.shell_type === 'shell_command'));
   defs['codex'].uninstall();
   const t4 = readFileSync(join(home, '.codex', 'config.toml'), 'utf-8');
   expect('codex 卸载还原', !t4.includes('huimu') && !t4.includes('"m-alpha"') && t4.includes('# 用户注释') && t4.includes('user_key = 1'));
@@ -766,6 +852,11 @@ function selftest() {
     && JSON.stringify(parsePickList('1,3', 3)) === '[0,2]'
     && JSON.stringify(parsePickList('', 3, [2])) === '[2]'
     && parsePickList('q', 3) === null);
+
+  // 终端宽度 / 折行行数（菜单擦除口径：CJK 记 2 列、ANSI 转义不计宽）
+  expect('textWidth 中英混排', textWidth('中文ab') === 6 && textWidth('\x1b[36m中文\x1b[0m') === 4);
+  expect('frameRows 折行计数', frameRows('ab\ncd', 10) === 2 && frameRows('a'.repeat(200), 80) === 3
+    && frameRows('中'.repeat(80), 80) === 2 && frameRows('', 80) === 1);
 
   if (failed > 0) die(`\n自检失败 ${failed} 项`);
   ok('\n自检全部通过');
