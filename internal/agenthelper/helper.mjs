@@ -24,7 +24,7 @@ import { stdin, stdout } from 'node:process';
 
 const DEFAULT_BASE = '__HUIMU_BASE__'; // 网关下发时注入实际地址
 const PROVIDER = 'huimu';
-const VERSION = '1.2.0';
+const VERSION = '1.2.1';
 
 // ---------------- 参数解析 ----------------
 // flag 可出现在任意位置（引导器会把 --base 前置），第一个位置参数是命令，其余是命令参数
@@ -170,7 +170,12 @@ async function keySelect({ title, items, multi = false, checked = null }) {
   let drewRows = 0;
   const sel = new Set(checked ? items.map((it, i) => (checked(it) ? i : -1)).filter((i) => i >= 0) : []);
   return await new Promise((resolve) => {
-    const erase = () => { if (drewRows > 0) process.stdout.write(`\x1b[${drewRows}A\x1b[J`); };
+    // 帧末尾不写换行（光标停在帧最后一行）：帧底贴住终端末行时，
+    // 带换行的重绘每按一次方向键就会把整屏向上滚一行。
+    const erase = () => {
+      if (drewRows <= 0) return;
+      process.stdout.write('\r' + (drewRows > 1 ? `\x1b[${drewRows - 1}A` : '') + '\x1b[J');
+    };
     const finish = (val) => {
       erase();
       stdin.setRawMode(preRaw === true);
@@ -185,7 +190,7 @@ async function keySelect({ title, items, multi = false, checked = null }) {
       resolve(val);
     };
     const draw = () => {
-      const frame = title + ' \x1b[2m' + hint + '\x1b[0m\n' + items.map((it, i) => labelLine(it, i, cursor, sel)).join('\n') + '\n';
+      const frame = title + ' \x1b[2m' + hint + '\x1b[0m\n' + items.map((it, i) => labelLine(it, i, cursor, sel)).join('\n');
       process.stdout.write(frame);
       drewRows = frameRows(frame, stdout.columns || 80);
     };
@@ -711,7 +716,7 @@ async function wizard(flags, base) {
         warn(`${e.message}（可稍后在「刷新状态」后重试，或直接手输模型名）`);
       }
     }
-    const picks = await keySelect({ title: '要接入的工具：', items, multi: true, checked: () => true });
+    const picks = await keySelect({ title: '要接入的工具：', items, multi: true }); // 不预选，由用户勾选
     if (picks === null || picks.length === 0) { log('未选择，返回。'); await sleep(500); continue; }
     let model = flags.model || '';
     if (!model) {
