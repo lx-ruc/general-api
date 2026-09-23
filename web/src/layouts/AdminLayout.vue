@@ -169,7 +169,7 @@ async function revokeToken(row: AccessToken) {
       <div class="brand">
         <span class="brand-mark" aria-hidden="true"></span>
         <div class="brand-text">
-          <span class="brand-name">token 中转站</span>
+          <span class="brand-name">慧沐引擎</span>
           <span class="brand-sub">计量 · 转发 · 计费</span>
         </div>
       </div>
@@ -198,7 +198,7 @@ async function revokeToken(row: AccessToken) {
         <div class="top-left">
           <div class="topbar-brand">
             <span class="brand-dot" aria-hidden="true"></span>
-            <span class="topbar-name">general api</span>
+            <span class="topbar-name">慧沐引擎</span>
           </div>
           <span class="topbar-sep" aria-hidden="true"></span>
           <h1 class="page-title">{{ pageTitle }}</h1>

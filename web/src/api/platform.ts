@@ -79,16 +79,22 @@ export interface ChannelKeyRow {
 }
 
 export const apiListChannels = () => http.get<any, Channel[]>('/api/platform/channels')
-export const apiCreateChannel = (data: any) => http.post<any, any>('/api/platform/channels', data)
+// 创建返回新渠道 id：供前端创建后自动探活
+export interface ChannelCreateResult { id: number; message: string; key_count: number }
+export interface ChannelTestResult { ok: boolean; status: number; latency_ms: number; error?: string; key?: string }
+export const apiCreateChannel = (data: any) => http.post<any, ChannelCreateResult>('/api/platform/channels', data)
 export const apiGetChannel = (id: number) => http.get<any, any>(`/api/platform/channels/${id}`)
 export const apiUpdateChannel = (id: number, data: any) => http.put<any, any>(`/api/platform/channels/${id}`, data)
 export const apiUpdateChannelStatus = (id: number, status: number) =>
   http.put<any, any>(`/api/platform/channels/${id}/status`, { status })
 export const apiDeleteChannel = (id: number) => http.delete<any, any>(`/api/platform/channels/${id}`)
-export const apiTestChannel = (id: number) => http.post<any, any>(`/api/platform/channels/${id}/test`)
+export const apiTestChannel = (id: number) => http.post<any, ChannelTestResult>(`/api/platform/channels/${id}/test`)
 // 实时拉取上游模型列表（编辑渠道时供管理员挑选）
 export const apiFetchUpstreamModels = (id: number) =>
   http.get<any, { models: string[]; count: number }>(`/api/platform/channels/${id}/upstream-models`)
+// 表单版：建渠道前按 base_url / 路径 / 密钥直接拉（渠道尚未保存、无 id 时用）
+export const apiFetchUpstreamModelsByForm = (data: { base_url: string; path: string; upstream_key: string }) =>
+  http.post<any, { models: string[]; count: number }>('/api/platform/upstream-models', data)
 export const apiAddChannelKeys = (id: number, keys: string[], weight: number) =>
   http.post<any, any>(`/api/platform/channels/${id}/keys`, { keys, weight })
 export const apiDeleteChannelKey = (id: number, kid: number) =>
@@ -113,6 +119,8 @@ export interface MModel {
   cost_input_cache_hit_price: number
   status: number
   remark: string
+  /** 已接通（启用且有可用密钥）的渠道数，0=仅登记未接渠道 */
+  channel_count?: number
 }
 
 export const apiListModels = () => http.get<any, MModel[]>('/api/platform/models')

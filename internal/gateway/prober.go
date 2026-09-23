@@ -111,7 +111,7 @@ func ChannelTestOnce(h *Handler, failThreshold int, failures map[int64]int) (int
 			"err", truncateStr(errStr, 200))
 		service.NotifyPlatformAdmins(h.DB,
 			fmt.Sprintf("渠道「%s」体检连续失败已自动禁用", ch.Name),
-			fmt.Sprintf("启用中的渠道「%s」（#%d）连续 %d 次定时体检失败：%s\n渠道已自动禁用，探测成功后将自动恢复；也可到管理台手动处理。\n时间：%s\n—— token 中转站",
+			fmt.Sprintf("启用中的渠道「%s」（#%d）连续 %d 次定时体检失败：%s\n渠道已自动禁用，探测成功后将自动恢复；也可到管理台手动处理。\n时间：%s\n—— 慧沐引擎",
 				ch.Name, ch.ID, failThreshold, truncateStr(errStr, 300), time.Now().Format("2006-01-02 15:04:05")))
 	}
 	return disabled, nil
@@ -144,7 +144,7 @@ func AutoProbeOnce(h *Handler) (int, error) {
 					"latency_ms", latency)
 				service.NotifyPlatformAdmins(h.DB,
 					fmt.Sprintf("渠道「%s」已自动恢复", ch.Name),
-					fmt.Sprintf("此前因连续失败被熔断禁用的渠道「%s」（#%d）探测成功（%d ms），已自动重新启用。\n时间：%s\n—— token 中转站",
+					fmt.Sprintf("此前因连续失败被熔断禁用的渠道「%s」（#%d）探测成功（%d ms），已自动重新启用。\n时间：%s\n—— 慧沐引擎",
 						ch.Name, ch.ID, latency, time.Now().Format("2006-01-02 15:04:05")))
 			}
 			continue

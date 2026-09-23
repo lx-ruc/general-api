@@ -1,9 +1,11 @@
 package platform
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +19,7 @@ import (
 	"token-gateway/internal/crypto"
 	"token-gateway/internal/database"
 	"token-gateway/internal/middleware"
+	"token-gateway/internal/model"
 	"token-gateway/internal/service"
 )
 
@@ -407,5 +410,293 @@ func TestCreateOrgRejectNegativeQuota(t *testing.T) {
 	_ = db.Raw(`SELECT COUNT(*) FROM quota_grants WHERE amount < 0`).Scan(&negGrants).Error
 	if orgs != 0 || negGrants != 0 {
 		t.Fatalf("拒绝后不应落库：orgs=%d neg_grants=%d", orgs, negGrants)
+	}
+}
+
+// 定价页可用渠道标注：channel_count 只计「启用且有可用密钥」的渠道
+// （池内启用 Key 或 legacy 密文），无密钥 / 渠道停用 / 池 Key 全禁用均不计
+func TestListModelsChannelCount(t *testing.T) {
+	engine, db, token := newPlatformEnv(t)
+	h := NewHandler(db, nil, nil, nil)
+	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
+	g.GET("/models", h.ListModels)
+
+	for _, name := range []string{"m-live", "m-nokey", "m-off", "m-none"} {
+		if err := db.Exec(`INSERT INTO models (name, input_price, output_price, status, created_at, updated_at)
+			VALUES (?, 1, 1, 1, 0, 0)`, name).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedCh := func(id int64, name, keyEnc string, status int64) {
+		if err := db.Exec(`INSERT INTO channels (id, name, base_url, upstream_key_enc, status, created_at, updated_at)
+			VALUES (?, ?, 'https://up.example', ?, ?, 0, 0)`, id, name, keyEnc, status).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedCh(1, "c-live", "enc-legacy", 1)  // 启用 + legacy 密文
+	seedCh(2, "c-nokey", "", 1)           // 启用但无任何密钥
+	seedCh(3, "c-off", "enc-legacy", 0)   // 有密钥但渠道停用
+	seedCh(4, "c-pool", "", 1)            // 启用 + 池内启用 Key
+	seedCh(5, "c-pooldis", "", 1)         // 启用但池 Key 全禁用
+	ab := func(cid int64, m string) {
+		if err := db.Exec(`INSERT INTO channel_abilities (channel_id, model_name) VALUES (?, ?)`, cid, m).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	ab(1, "m-live")
+	ab(2, "m-nokey")
+	ab(3, "m-off")
+	ab(4, "m-live")
+	ab(5, "m-none")
+	if err := db.Exec(`INSERT INTO channel_keys (channel_id, key_enc, status, created_at, updated_at)
+		VALUES (4, 'k1', 1, 0, 0), (5, 'k2', 0, 0, 0)`).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/platform/models", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("列表应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	var rows []struct {
+		Name         string `json:"name"`
+		ChannelCount int64  `json:"channel_count"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rows); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int64{}
+	for _, r := range rows {
+		got[r.Name] = r.ChannelCount
+	}
+	want := map[string]int64{"m-live": 2, "m-nokey": 0, "m-off": 0, "m-none": 0}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("channel_count 口径不符：got %v want %v", got, want)
+	}
+}
+
+// 表单版上游模型拉取（建渠道前）：按聊天路径推导 /models、透传密钥、排序去空；缺密钥 400
+func TestUpstreamModelsByForm(t *testing.T) {
+	var gotAuth, gotPath string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth, gotPath = r.Header.Get("Authorization"), r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"b-model"},{"id":"a-model"},{"id":""}]}`))
+	}))
+	defer up.Close()
+
+	engine, db, token := newPlatformEnv(t)
+	h := NewHandler(db, nil, up.Client(), nil)
+	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
+	g.POST("/upstream-models", h.UpstreamModelsByForm)
+
+	do := func(body string) (*httptest.ResponseRecorder, func()) {
+		before := gotPath
+		req := httptest.NewRequest(http.MethodPost, "/api/platform/upstream-models", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+		return w, func() {
+			if gotPath == before && w.Code == http.StatusOK {
+				t.Fatalf("上游未收到请求：path=%q", gotPath)
+			}
+		}
+	}
+
+	w, check := do(`{"base_url":"` + up.URL + `","path":"/v1/chat/completions","upstream_key":"sk-form"}`)
+	check()
+	if w.Code != http.StatusOK {
+		t.Fatalf("拉取应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	var out struct {
+		Models []string `json:"models"`
+		Count  int      `json:"count"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(out.Models, []string{"a-model", "b-model"}) || out.Count != 2 {
+		t.Fatalf("模型列表应排序去空，得 %v count=%d", out.Models, out.Count)
+	}
+	if gotAuth != "Bearer sk-form" || gotPath != "/v1/models" {
+		t.Fatalf("应透传密钥并推导出 /v1/models，得 auth=%q path=%q", gotAuth, gotPath)
+	}
+
+	// 聊天路径为空同样回退 /v1/models
+	gotPath = ""
+	w, check = do(`{"base_url":"` + up.URL + `","upstream_key":"sk-form"}`)
+	check()
+	if w.Code != http.StatusOK || gotPath != "/v1/models" {
+		t.Fatalf("空路径应回退 /v1/models，得 %d path=%q: %s", w.Code, gotPath, w.Body.String())
+	}
+
+	// 缺密钥直接 400，不打上游
+	gotPath = ""
+	w, _ = do(`{"base_url":"` + up.URL + `"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("缺密钥应 400，得 %d: %s", w.Code, w.Body.String())
+	}
+	if gotPath != "" {
+		t.Fatalf("缺密钥不应请求上游，得 path=%q", gotPath)
+	}
+}
+
+// 渠道保存一站式定价：模型行带价则未登记的自动建 models 行（启用、带价），
+// 已登记的只更新填了价的字段；负价拒绝且整单回滚（渠道也不落库）
+func TestChannelSyncModelPrices(t *testing.T) {
+	engine, db, token := newPlatformEnv(t)
+	cipher, _ := crypto.NewCipher("")
+	h := NewHandler(db, cipher, nil, nil)
+	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
+	g.POST("/channels", h.CreateChannel)
+	g.PUT("/channels/:id", h.UpdateChannel)
+
+	post := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/platform/channels", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+		return w
+	}
+	// 存量模型：已有输入价，渠道侧只补输出价
+	if err := db.Exec(`INSERT INTO models (name, input_price, output_price, status, created_at, updated_at)
+		VALUES ('m-exist', 100, 0, 1, 0, 0)`).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	w := post(`{"name":"c1","base_url":"https://up.example","vendor":"volc","upstream_key":"sk-1","models":[
+		{"model_name":"m-new","input_price":3000000,"output_price":9000000},
+		{"model_name":"m-exist","output_price":2000000},
+		{"model_name":"m-free"}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("创建应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	var mo model.Model
+	if err := db.Where("name = ?", "m-new").First(&mo).Error; err != nil {
+		t.Fatalf("m-new 应被自动登记: %v", err)
+	}
+	if mo.InputPrice != 3000000 || mo.OutputPrice != 9000000 || mo.Status != 1 || mo.Vendor != "volc" {
+		t.Fatalf("m-new 定价不符: %+v", mo)
+	}
+	mo = model.Model{} // First 复用 struct 会把旧主键拼进条件，先清空
+	if err := db.Where("name = ?", "m-exist").First(&mo).Error; err != nil {
+		t.Fatal(err)
+	}
+	if mo.InputPrice != 100 || mo.OutputPrice != 2000000 {
+		t.Fatalf("m-exist 应只更新输出价、保留原输入价: %+v", mo)
+	}
+	var cnt int64
+	db.Model(&model.Model{}).Where("name = ?", "m-free").Count(&cnt)
+	if cnt != 0 {
+		t.Fatal("未填价的模型不应被登记")
+	}
+
+	// 负价：整个事务回滚，渠道与模型都不落库
+	w = post(`{"name":"c2","base_url":"https://up.example","upstream_key":"sk-2","models":[
+		{"model_name":"m-neg","input_price":-1}]}`)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("负价应失败，得 %d: %s", w.Code, w.Body.String())
+	}
+	db.Model(&model.Channel{}).Where("name = ?", "c2").Count(&cnt)
+	if cnt != 0 {
+		t.Fatal("负价时渠道不应落库")
+	}
+	db.Model(&model.Model{}).Where("name = ?", "m-neg").Count(&cnt)
+	if cnt != 0 {
+		t.Fatal("负价时模型不应登记")
+	}
+
+	// 更新渠道同样生效：给已登记模型补输入价
+	req := httptest.NewRequest(http.MethodPut, "/api/platform/channels/1",
+		strings.NewReader(`{"name":"c1","base_url":"https://up.example","models":[
+			{"model_name":"m-exist","input_price":8000000}]}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	wPut := httptest.NewRecorder()
+	engine.ServeHTTP(wPut, req)
+	if wPut.Code != http.StatusOK {
+		t.Fatalf("更新应 200，得 %d: %s", wPut.Code, wPut.Body.String())
+	}
+	mo = model.Model{}
+	if err := db.Where("name = ?", "m-exist").First(&mo).Error; err != nil {
+		t.Fatal(err)
+	}
+	if mo.InputPrice != 8000000 || mo.OutputPrice != 2000000 {
+		t.Fatalf("更新应改输入价并保留输出价: %+v", mo)
+	}
+}
+
+// 「没配密钥就没有模型」：无密钥建渠道/改渠道带模型一律 400；删掉最后一把 Key
+// 自动清空该渠道的模型能力（模型定价与历史账单不受影响）
+func TestChannelRequiresKeyForModels(t *testing.T) {
+	engine, db, token := newPlatformEnv(t)
+	cipher, _ := crypto.NewCipher("")
+	h := NewHandler(db, cipher, nil, nil)
+	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
+	g.POST("/channels", h.CreateChannel)
+	g.PUT("/channels/:id", h.UpdateChannel)
+	g.DELETE("/channels/:id/keys/:kid", h.DeleteChannelKey)
+
+	do := func(method, url, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, url, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+		return w
+	}
+
+	// 无密钥建渠道（带模型）→ 400
+	w := do(http.MethodPost, "/api/platform/channels",
+		`{"name":"c-nokey","base_url":"https://up.example","models":[{"model_name":"m1"}]}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("无密钥建渠道应 400，得 %d: %s", w.Code, w.Body.String())
+	}
+
+	// 正常建：带密钥 + 模型
+	w = do(http.MethodPost, "/api/platform/channels",
+		`{"name":"c-ok","base_url":"https://up.example","upstream_key":"sk-1","models":[{"model_name":"m1"}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("带密钥建渠道应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+
+	// 无密钥存量渠道（预置模板形态）配模型 → 400
+	if err := db.Exec(`INSERT INTO channels (id, name, base_url, status, created_at, updated_at)
+		VALUES (99, 'c-preset', 'https://up.example', 0, 0, 0)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	w = do(http.MethodPut, "/api/platform/channels/99",
+		`{"name":"c-preset","base_url":"https://up.example","models":[{"model_name":"m1"}]}`)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("无密钥渠道配模型应 400，得 %d: %s", w.Code, w.Body.String())
+	}
+
+	// 有密钥渠道更新模型 → 200；随后删掉最后一把 Key → 能力被清空
+	var kid int64
+	if err := db.Raw("SELECT id FROM channel_keys WHERE channel_id = 1").Scan(&kid).Error; err != nil || kid == 0 {
+		t.Fatalf("应有池 Key: id=%d err=%v", kid, err)
+	}
+	var abCount int64
+	db.Raw("SELECT COUNT(*) FROM channel_abilities WHERE channel_id = 1").Scan(&abCount)
+	if abCount != 1 {
+		t.Fatalf("删 Key 前应有 1 条能力，得 %d", abCount)
+	}
+	w = do(http.MethodDelete, fmt.Sprintf("/api/platform/channels/1/keys/%d", kid), "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("删 Key 应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	db.Raw("SELECT COUNT(*) FROM channel_abilities WHERE channel_id = 1").Scan(&abCount)
+	if abCount != 0 {
+		t.Fatalf("删最后一把 Key 后能力应清空，得 %d", abCount)
+	}
+	// models 行保留（历史账单锚定模型名）
+	var mCount int64
+	db.Raw("SELECT COUNT(*) FROM models WHERE name = 'm1'").Scan(&mCount)
+	if mCount != 0 {
+		t.Fatal("渠道没建模型时不应有 models 行（本例未填价）")
 	}
 }

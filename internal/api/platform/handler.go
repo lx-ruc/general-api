@@ -307,7 +307,7 @@ func notifyOrgQuota(db *gorm.DB, orgID, amount int64, remark string) string {
 	if err := db.Where("id = ?", orgID).First(&org).Error; err != nil {
 		return ""
 	}
-	subject := "「token 中转站」你的客户额度已更新"
+	subject := "「慧沐引擎」你的客户额度已更新"
 	body := service.QuotaGrantEmailBody(org.Name, org.Name+" 管理员",
 		amount, org.QuotaLimit, org.QuotaUsed, remark)
 	sent := service.NotifyOrgAdmins(db, orgID, subject, body)
@@ -396,6 +396,54 @@ func (h *Handler) ResetOrgAdminPassword(c *gin.Context) {
 type abilityReq struct {
 	ModelName         string  `json:"model_name" binding:"required"`
 	UpstreamModelName *string `json:"upstream_model_name"`
+	// 一站式定价（点/百万token，前端按元换算）：填了则保存渠道时顺带登记/更新 models 行；nil=不动
+	InputPrice  *int64 `json:"input_price"`
+	OutputPrice *int64 `json:"output_price"`
+}
+
+// syncModelPrices 渠道保存时的一站式定价：模型未登记则建 models 行（启用、带价），
+// 已登记则只更新填了价的字段（nil 不动）。与渠道/能力写库同一事务，避免「渠道通了却没法计费」。
+func syncModelPrices(tx *gorm.DB, models []abilityReq, vendor string) error {
+	for _, m := range models {
+		name := strings.TrimSpace(m.ModelName)
+		if name == "" || (m.InputPrice == nil && m.OutputPrice == nil) {
+			continue
+		}
+		if (m.InputPrice != nil && *m.InputPrice < 0) || (m.OutputPrice != nil && *m.OutputPrice < 0) {
+			return fmt.Errorf("模型 %s 单价不能为负", name)
+		}
+		var ex model.Model
+		err := tx.Where("name = ?", name).First(&ex).Error
+		if err != nil {
+			mo := model.Model{
+				Name: name, Vendor: vendor, Status: 1,
+				InputPrice:  derefI64(m.InputPrice),
+				OutputPrice: derefI64(m.OutputPrice),
+			}
+			if err := tx.Create(&mo).Error; err != nil {
+				return err
+			}
+			continue
+		}
+		ups := map[string]any{"updated_at": time.Now().Unix()}
+		if m.InputPrice != nil {
+			ups["input_price"] = *m.InputPrice
+		}
+		if m.OutputPrice != nil {
+			ups["output_price"] = *m.OutputPrice
+		}
+		if err := tx.Model(&model.Model{}).Where("id = ?", ex.ID).Updates(ups).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func derefI64(p *int64) int64 {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 type channelReq struct {
@@ -491,6 +539,30 @@ func hasKey(enc string, active int64) bool {
 	return active > 0 || enc != ""
 }
 
+// modelChannelCounts 每个模型名当前「已接通」的渠道数（启用且有可用密钥才算，与数据面可选渠道同口径）。
+// 定价页据此区分「已接通」与「仅登记未接渠道」的模型。
+func (h *Handler) modelChannelCounts() map[string]int64 {
+	type row struct {
+		ModelName string
+		Cnt       int64
+	}
+	var rows []row
+	_ = h.DB.Raw(`
+		SELECT ca.model_name AS model_name, COUNT(DISTINCT ca.channel_id) AS cnt
+		FROM channel_abilities ca
+		JOIN channels c ON c.id = ca.channel_id
+		LEFT JOIN (
+			SELECT DISTINCT channel_id FROM channel_keys WHERE status = 1
+		) k ON k.channel_id = ca.channel_id
+		WHERE c.status = 1 AND (COALESCE(c.upstream_key_enc, '') != '' OR k.channel_id IS NOT NULL)
+		GROUP BY ca.model_name`).Scan(&rows).Error
+	out := make(map[string]int64, len(rows))
+	for _, r := range rows {
+		out[r.ModelName] = r.Cnt
+	}
+	return out
+}
+
 func abilityModels(models []abilityReq) []model.ChannelAbility {
 	out := make([]model.ChannelAbility, 0, len(models))
 	for _, m := range models {
@@ -546,6 +618,11 @@ func (h *Handler) CreateChannel(c *gin.Context) {
 	if !httpx.BindJSON(c, &req) {
 		return
 	}
+	// 模型必须来自「配密钥 → 从上游获取」的流程：新建渠道必带密钥（binding 已要求至少一个模型）
+	if req.UpstreamKey == "" {
+		httpx.Fail(c, http.StatusBadRequest, "请先填上游密钥：配好密钥后从上游获取模型，无密钥渠道不配置模型")
+		return
+	}
 	var cnt int64
 	_ = h.DB.Model(&model.Channel{}).Where("name = ?", req.Name).Count(&cnt).Error
 	if cnt > 0 {
@@ -583,6 +660,9 @@ func (h *Handler) CreateChannel(c *gin.Context) {
 			if err := tx.Create(&ab).Error; err != nil {
 				return err
 			}
+		}
+		if err := syncModelPrices(tx, req.Models, req.Vendor); err != nil {
+			return err
 		}
 		return nil
 	})
@@ -647,6 +727,15 @@ func (h *Handler) UpdateChannel(c *gin.Context) {
 			return
 		}
 	}
+	// 无密钥渠道不配模型：legacy 密文与 Key 池皆空、且本次也没填新密钥时拒绝保存
+	if req.UpstreamKey == "" && ch.UpstreamKeyEnc == "" {
+		var keyRows int64
+		_ = h.DB.Model(&model.ChannelKey{}).Where("channel_id = ?", id).Count(&keyRows).Error
+		if keyRows == 0 {
+			httpx.Fail(c, http.StatusBadRequest, "该渠道没有密钥：请先在「Key 池」添加密钥，再从上游获取模型并保存")
+			return
+		}
+	}
 	updates := map[string]any{
 		"name": req.Name, "vendor": req.Vendor, "base_url": req.BaseURL,
 		"path": req.pathOrDefault(), "weight": maxInt(req.Weight, 1),
@@ -689,6 +778,9 @@ func (h *Handler) UpdateChannel(c *gin.Context) {
 			if err := tx.Create(&ab).Error; err != nil {
 				return err
 			}
+		}
+		if err := syncModelPrices(tx, req.Models, req.Vendor); err != nil {
+			return err
 		}
 		return nil
 	})
@@ -911,6 +1003,15 @@ func (h *Handler) DeleteChannelKey(c *gin.Context) {
 		httpx.Fail(c, http.StatusNotFound, "Key 不存在")
 		return
 	}
+	// 最后一把 Key 删掉后渠道已无法转发：按「没配密钥就没有模型」清空模型能力（模型定价不动）
+	var left int64
+	_ = h.DB.Model(&model.ChannelKey{}).Where("channel_id = ?", id).Count(&left).Error
+	if left == 0 {
+		var ch model.Channel
+		if err := h.DB.Where("id = ?", id).First(&ch).Error; err == nil && ch.UpstreamKeyEnc == "" {
+			_ = h.DB.Where("channel_id = ?", id).Delete(&model.ChannelAbility{}).Error
+		}
+	}
 	httpx.OK(c, gin.H{"message": "已删除"})
 }
 
@@ -992,35 +1093,15 @@ func (h *Handler) TestChannel(c *gin.Context) {
 	httpx.OK(c, gin.H{"ok": okFlag, "status": statusCode, "latency_ms": latency, "error": errMsg, "key": keyDesc})
 }
 
-// UpstreamModels GET /api/platform/channels/:id/upstream-models：实时拉取上游模型列表，编辑渠道时供管理员挑选
-func (h *Handler) UpstreamModels(c *gin.Context) {
-	id, ok := httpx.PathID(c)
-	if !ok {
-		return
-	}
-	var ch model.Channel
-	if err := h.DB.Where("id = ?", id).First(&ch).Error; err != nil {
-		httpx.Fail(c, http.StatusNotFound, "渠道不存在")
-		return
-	}
-	// Key 选择与数据面/测试一致：池内第一把启用 Key → 回退 legacy 单 Key
-	key := ""
-	var poolKey model.ChannelKey
-	if h.DB.Where("channel_id = ? AND status = 1", id).Order("id").First(&poolKey).Error == nil {
-		key, _ = h.Cipher.Decrypt(poolKey.KeyEnc)
-	} else if ch.UpstreamKeyEnc != "" {
-		key, _ = h.Cipher.Decrypt(ch.UpstreamKeyEnc)
-	}
-	if key == "" {
-		httpx.Fail(c, http.StatusBadRequest, "渠道未配置上游密钥，无法查询模型列表")
-		return
-	}
+// fetchUpstreamModelNames 按给定的 base / 聊天路径 / 密钥实时拉取上游模型列表（OpenAI 兼容 /models 格式），
+// 结果或错误直接写回响应。渠道版与表单版拉取共用此内核。
+func (h *Handler) fetchUpstreamModelNames(c *gin.Context, baseURL, chatPath, key string) {
 	// 模型列表路径由聊天路径推导（/v1/chat/completions → /v1/models）；非常规路径回退 /v1/models
 	modelsPath := "/v1/models"
-	if s, found := strings.CutSuffix(ch.Path, "/chat/completions"); found {
+	if s, found := strings.CutSuffix(chatPath, "/chat/completions"); found {
 		modelsPath = s + "/models"
 	}
-	req, _ := http.NewRequest(http.MethodGet, strings.TrimRight(ch.BaseURL, "/")+modelsPath, nil)
+	req, _ := http.NewRequest(http.MethodGet, strings.TrimRight(baseURL, "/")+modelsPath, nil)
 	req.Header.Set("Authorization", "Bearer "+key)
 	resp, err := h.Client.Do(req)
 	if err != nil {
@@ -1052,31 +1133,82 @@ func (h *Handler) UpstreamModels(c *gin.Context) {
 	httpx.OK(c, gin.H{"models": names, "count": len(names)})
 }
 
+// UpstreamModels GET /api/platform/channels/:id/upstream-models：实时拉取上游模型列表，编辑渠道时供管理员挑选
+func (h *Handler) UpstreamModels(c *gin.Context) {
+	id, ok := httpx.PathID(c)
+	if !ok {
+		return
+	}
+	var ch model.Channel
+	if err := h.DB.Where("id = ?", id).First(&ch).Error; err != nil {
+		httpx.Fail(c, http.StatusNotFound, "渠道不存在")
+		return
+	}
+	// Key 选择与数据面/测试一致：池内第一把启用 Key → 回退 legacy 单 Key
+	key := ""
+	var poolKey model.ChannelKey
+	if h.DB.Where("channel_id = ? AND status = 1", id).Order("id").First(&poolKey).Error == nil {
+		key, _ = h.Cipher.Decrypt(poolKey.KeyEnc)
+	} else if ch.UpstreamKeyEnc != "" {
+		key, _ = h.Cipher.Decrypt(ch.UpstreamKeyEnc)
+	}
+	if key == "" {
+		httpx.Fail(c, http.StatusBadRequest, "渠道未配置上游密钥，无法查询模型列表")
+		return
+	}
+	h.fetchUpstreamModelNames(c, ch.BaseURL, ch.Path, key)
+}
+
+type upstreamModelsReq struct {
+	BaseURL     string `json:"base_url" binding:"required"`
+	Path        string `json:"path"`
+	UpstreamKey string `json:"upstream_key" binding:"required"`
+}
+
+// UpstreamModelsByForm POST /api/platform/upstream-models：按表单里的 base_url / 路径 / 密钥拉上游模型列表，
+// 新建渠道（尚未保存、无渠道 id）时也能先看上游实际提供的模型再勾选，避免手填预置清单里已下架的名字。
+func (h *Handler) UpstreamModelsByForm(c *gin.Context) {
+	var req upstreamModelsReq
+	if !httpx.BindJSON(c, &req) {
+		return
+	}
+	h.fetchUpstreamModelNames(c, req.BaseURL, req.Path, req.UpstreamKey)
+}
+
 // ---------------- 模型与定价 ----------------
 
 type modelReq struct {
-	Name        string `json:"name" binding:"required"`
-	DisplayName string `json:"display_name"`
-	Vendor      string `json:"vendor"`
-	InputPrice  int64  `json:"input_price"`
-	OutputPrice int64  `json:"output_price"`
-	// 缓存命中输入单价（0=同 input_price，未配置的存量模型计费不变）及其成本侧对应
-	InputCacheHitPrice     int64  `json:"input_cache_hit_price"`
-	CostInputPrice         int64  `json:"cost_input_price"`
-	CostOutputPrice        int64  `json:"cost_output_price"`
-	CostInputCacheHitPrice int64  `json:"cost_input_cache_hit_price"`
-	Status                 *int   `json:"status"`
-	Remark                 string `json:"remark"`
+	Name            string `json:"name" binding:"required"`
+	DisplayName     string `json:"display_name"`
+	Vendor          string `json:"vendor"`
+	InputPrice      int64  `json:"input_price"`
+	OutputPrice     int64  `json:"output_price"`
+	InputCacheHitPrice int64 `json:"input_cache_hit_price"`  // 缓存命中输入单价；0=同输入价
+	CostInputPrice  int64  `json:"cost_input_price"`
+	CostOutputPrice int64  `json:"cost_output_price"`
+	CostInputCacheHitPrice int64 `json:"cost_input_cache_hit_price"` // 0=同成本输入价
+	Status          *int   `json:"status"`
+	Remark          string `json:"remark"`
 }
 
-// ListModels GET /api/platform/models
+// ListModels GET /api/platform/models（附 channel_count：已接通——启用且有密钥——的渠道数）
 func (h *Handler) ListModels(c *gin.Context) {
 	var models []model.Model
 	_ = h.DB.Order("name").Find(&models).Error
-	if models == nil {
-		models = []model.Model{}
+	counts := h.modelChannelCounts()
+	list := make([]gin.H, 0, len(models))
+	for _, m := range models {
+		list = append(list, gin.H{
+			"id": m.ID, "name": m.Name, "display_name": m.DisplayName, "vendor": m.Vendor,
+			"input_price": m.InputPrice, "output_price": m.OutputPrice,
+			"input_cache_hit_price": m.InputCacheHitPrice,
+			"cost_input_price": m.CostInputPrice, "cost_output_price": m.CostOutputPrice,
+			"cost_input_cache_hit_price": m.CostInputCacheHitPrice,
+			"status": m.Status, "remark": m.Remark,
+			"channel_count": counts[m.Name],
+		})
 	}
-	httpx.OK(c, models)
+	httpx.OK(c, list)
 }
 
 // CreateModel POST /api/platform/models
@@ -1104,9 +1236,9 @@ func (h *Handler) CreateModel(c *gin.Context) {
 		Name: req.Name, DisplayName: req.DisplayName, Vendor: req.Vendor,
 		InputPrice: req.InputPrice, OutputPrice: req.OutputPrice,
 		InputCacheHitPrice: req.InputCacheHitPrice,
-		CostInputPrice:     req.CostInputPrice, CostOutputPrice: req.CostOutputPrice,
+		CostInputPrice: req.CostInputPrice, CostOutputPrice: req.CostOutputPrice,
 		CostInputCacheHitPrice: req.CostInputCacheHitPrice,
-		Status:                 status, Remark: req.Remark,
+		Status: status, Remark: req.Remark,
 	}
 	if err := h.DB.Create(&m).Error; err != nil {
 		// 并发同模型名：映射回与预检查一致的 400（原为 500 泛化错误）
@@ -1127,16 +1259,16 @@ func (h *Handler) UpdateModel(c *gin.Context) {
 		return
 	}
 	var req struct {
-		DisplayName            *string `json:"display_name"`
-		Vendor                 *string `json:"vendor"`
-		InputPrice             *int64  `json:"input_price" binding:"required,min=0"`
-		OutputPrice            *int64  `json:"output_price" binding:"required,min=0"`
-		InputCacheHitPrice     *int64  `json:"input_cache_hit_price" binding:"omitempty,min=0"`
-		CostInputPrice         *int64  `json:"cost_input_price" binding:"omitempty,min=0"`
-		CostOutputPrice        *int64  `json:"cost_output_price" binding:"omitempty,min=0"`
-		CostInputCacheHitPrice *int64  `json:"cost_input_cache_hit_price" binding:"omitempty,min=0"`
-		Status                 *int    `json:"status"`
-		Remark                 *string `json:"remark"`
+		DisplayName     *string `json:"display_name"`
+		Vendor          *string `json:"vendor"`
+		InputPrice      *int64  `json:"input_price" binding:"required,min=0"`
+		OutputPrice     *int64  `json:"output_price" binding:"required,min=0"`
+		InputCacheHitPrice *int64 `json:"input_cache_hit_price" binding:"omitempty,min=0"`
+		CostInputPrice  *int64  `json:"cost_input_price" binding:"omitempty,min=0"`
+		CostOutputPrice *int64  `json:"cost_output_price" binding:"omitempty,min=0"`
+		CostInputCacheHitPrice *int64 `json:"cost_input_cache_hit_price" binding:"omitempty,min=0"`
+		Status          *int    `json:"status"`
+		Remark          *string `json:"remark"`
 	}
 	if !httpx.BindJSON(c, &req) {
 		return

@@ -6,7 +6,7 @@ import CodeBlock from './CodeBlock.vue'
 const baseURL = `${location.origin}/v1`
 
 const curlExample = computed(() => `curl ${baseURL}/models \\
-  -H "Authorization: Bearer sk-你的密钥"`)
+  -H "Authorization: Bearer {你的密钥}"`)
 </script>
 
 <template>
@@ -23,7 +23,7 @@ const curlExample = computed(() => `curl ${baseURL}/models \\
 
     <div class="doc-prose">
       <h2>鉴权</h2>
-      <p>HTTP Header 携带 <code>Authorization: Bearer sk-你的密钥</code>。</p>
+      <p>HTTP Header 携带 <code>Authorization: Bearer {你的密钥}</code>。</p>
 
       <h2>说明</h2>
       <ul>

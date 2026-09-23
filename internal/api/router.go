@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
+	"token-gateway/internal/agenthelper"
 	"token-gateway/internal/api/member"
 	"token-gateway/internal/api/org"
 	"token-gateway/internal/api/platform"
@@ -87,6 +88,8 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 	{
 		v1.POST("/chat/completions", gw.ChatCompletions)
 		v1.POST("/embeddings", gw.Embeddings)
+		// Anthropic Messages 协议：Claude Code 等 Anthropic 系客户端直连
+		v1.POST("/messages", gw.Messages)
 		v1.GET("/models", gw.ListModels)
 	}
 
@@ -164,6 +167,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		plat.POST("/channels/:id/test", ph.TestChannel)
 		plat.GET("/channels/:id/keys", ph.ListChannelKeys)
 		plat.GET("/channels/:id/upstream-models", ph.UpstreamModels)
+		plat.POST("/upstream-models", ph.UpstreamModelsByForm)
 		plat.POST("/channels/:id/keys", ph.AddChannelKeys)
 		plat.DELETE("/channels/:id/keys/:kid", ph.DeleteChannelKey)
 		plat.PUT("/channels/:id/keys/:kid/status", ph.UpdateChannelKeyStatus)
@@ -239,6 +243,9 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		mg.GET("/requests", mh.ListRequests)
 		mg.POST("/requests", mh.CreateRequest)
 	}
+
+	// Agent 一键接入助手（零依赖 Node 脚本，须在 SPA fallback 之前注册）
+	agenthelper.Register(r)
 
 	// 前端静态（embed，SPA fallback）
 	webui.Register(r, webDist)

@@ -63,7 +63,7 @@ watch(page, async () => {
     <aside class="docs-side">
       <div class="docs-side-head">
         <span class="docs-side-dot" aria-hidden="true"></span>
-        <span class="docs-side-name">general api 文档</span>
+        <span class="docs-side-name">慧沐引擎文档</span>
       </div>
       <nav class="docs-nav">
         <div v-for="g in groups" :key="g.label" class="docs-group">

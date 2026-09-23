@@ -3,14 +3,14 @@
     <div class="doc-kicker">开始使用</div>
     <h1 class="doc-h1">产品介绍</h1>
     <p class="doc-desc">
-      general api（token 中转站）是自托管的大模型 API 网关与计量计费平台：把多家厂商 API
+      慧沐引擎是自托管的大模型 API 网关与计量计费平台：把多家厂商 API
       统一转换为自己签发的 OpenAI 兼容接口，并在转发之间完成账号管理、模型授权、token 计量与额度控制。
     </p>
 
     <div class="doc-prose">
       <h2>它解决什么问题</h2>
       <ul>
-        <li><strong>统一接入</strong>：业务方只需把 OpenAI SDK 的 <code>base_url</code> 指向中转站，即可在
+        <li><strong>统一接入</strong>：业务方只需把 OpenAI SDK 的 <code>base_url</code> 指向慧沐引擎，即可在
           DeepSeek、智谱 GLM、通义千问等任意 OpenAI 兼容厂商之间切换，上游变更对业务零感知。</li>
         <li><strong>集中管控</strong>：三级账号 + 模型级授权——谁能用哪个模型、能用多少，全部在管理台配置；
           厂商 API key 集中保管（AES-256-GCM 加密存储），不再散发到每个人手里。</li>

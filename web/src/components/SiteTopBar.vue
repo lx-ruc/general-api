@@ -1,12 +1,12 @@
 <script setup lang="ts">
-// 登录/注册页顶栏：与管理台 AdminLayout 同款品牌条（绿点 + general api + 在线脉冲）
+// 登录/注册页顶栏：与管理台 AdminLayout 同款品牌条（绿点 + 慧沐引擎 + 在线脉冲）
 </script>
 
 <template>
   <header class="site-top">
     <div class="site-brand">
       <span class="brand-dot" aria-hidden="true"></span>
-      <span class="brand-name">general api</span>
+      <span class="brand-name">慧沐引擎</span>
     </div>
     <div class="site-meter" aria-hidden="true">
       <span class="meter-dot"></span>

@@ -100,6 +100,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	v1 := engine.Group("/v1", middleware.APIKeyAuth(f.db))
 	v1.POST("/chat/completions", h.ChatCompletions)
 	v1.POST("/embeddings", h.Embeddings)
+	v1.POST("/messages", h.Messages)
 	return &testEnv{f: f, h: h, cd: cd, m: m, engine: engine, apiKey: apiKey, userID: 1, orgID: 1, cfg: cfg}
 }
 

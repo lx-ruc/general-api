@@ -1,4 +1,4 @@
-# token 中转站配置示例
+# 慧沐引擎配置示例
 # 复制为 config.yaml 后修改；敏感项可用 TG_* 环境变量覆盖
 
 server:
@@ -62,7 +62,7 @@ smtp:                       # 注册验证码邮件；host 留空 = 不发邮件
   port: 465                 # 465=SSL / 587=STARTTLS
   username: ""
   password: ""
-  from: "token中转站 <noreply@example.com>"
+  from: "慧沐引擎 <noreply@example.com>"
 
 billing:                    # 月度对账单口径
   timezone: "Asia/Shanghai" # 账期月边界与日分桶时区（IANA 名）；ENV: TG_BILLING_TIMEZONE。
@@ -76,4 +76,4 @@ billing:                    # 月度对账单口径
 log:
   level: info
 
-seed_presets: true          # 启动时确保预置渠道/模型存在（DeepSeek/智谱/通义，见 internal/presets）
+seed_presets: true          # 启动时确保预置渠道模板存在（仅 base_url/路径，不预置模型；模型从上游获取后定价，见 internal/presets）

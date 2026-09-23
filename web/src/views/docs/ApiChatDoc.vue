@@ -11,7 +11,7 @@ const examples = computed<Record<string, { lang: string; code: string }>>(() => 
   curl: {
     lang: 'bash',
     code: `curl ${endpoint} \\
-  -H "Authorization: Bearer sk-你的密钥" \\
+  -H "Authorization: Bearer {你的密钥}" \\
   -H "Content-Type: application/json" \\
   -d '{
     "model": "deepseek-chat",
@@ -22,7 +22,7 @@ const examples = computed<Record<string, { lang: string; code: string }>>(() => 
     lang: 'bash',
     code: `# 流式：SSE 逐块返回，curl 需加 -N 关闭缓冲
 curl -N ${endpoint} \\
-  -H "Authorization: Bearer sk-你的密钥" \\
+  -H "Authorization: Bearer {你的密钥}" \\
   -H "Content-Type: application/json" \\
   -d '{
     "model": "deepseek-chat",
@@ -34,7 +34,7 @@ curl -N ${endpoint} \\
     lang: 'python',
     code: `from openai import OpenAI
 
-client = OpenAI(api_key="sk-你的密钥", base_url="${baseURL}")
+client = OpenAI(api_key="{你的密钥}", base_url="${baseURL}")
 
 # 非流式
 resp = client.chat.completions.create(
@@ -58,7 +58,7 @@ for chunk in stream:
     code: `import OpenAI from "openai";
 
 const client = new OpenAI({
-  apiKey: "sk-你的密钥",
+  apiKey: "{你的密钥}",
   baseURL: "${baseURL}",
 });
 
@@ -87,9 +87,17 @@ for await (const chunk of stream) {
       <span class="doc-base">{{ baseURL }}</span>
     </div>
 
+    <div class="doc-endpoint" style="margin-top: 8px">
+      <span class="doc-method post">POST</span>
+      <span class="doc-path">/v1/messages</span>
+      <span class="doc-base">{{ baseURL }}</span>
+    </div>
+    <p class="doc-desc" style="margin-top: 4px">另有 Anthropic Messages 兼容端点 <code>/v1/messages</code>：Claude Code 等 Anthropic 系客户端可直连，
+      鉴权头 <code>x-api-key</code> 或 <code>Authorization: Bearer</code> 均可，system / tools / tool_result、流式 SSE 与计费口径与本端点完全一致。</p>
+
     <div class="doc-prose">
       <h2>鉴权</h2>
-      <p>HTTP Header 携带 <code>Authorization: Bearer sk-你的密钥</code>。模型必须在该密钥的授权列表内，
+      <p>HTTP Header 携带 <code>Authorization: Bearer {你的密钥}</code>。模型必须在该密钥的授权列表内，
         否则返回 <code>403 model_not_allowed</code>。</p>
 
       <h2>Body 参数（application/json）</h2>

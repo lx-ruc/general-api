@@ -211,18 +211,27 @@ func truncateStr(s string, n int) string {
 	return s[:n] + "..."
 }
 
-// relaySpec 端点差异参数化：chat 与 embeddings 共用同一条编排链路
+// relaySpec 端点差异参数化：chat / embeddings / messages 共用同一条编排链路
 // （限流→解析→授权→预检→缓存→选渠道→闸门→转发→分类→结算），chat 行为零变化
 type relaySpec struct {
 	cacheFields []string // 参与精确缓存 key 的字段白名单（固定顺序）
 	allowStream bool     // 是否支持流式（embeddings 不支持）
 	fixedPath   string   // 非空 → 出站路径最后一段替换为该值（如 /embeddings）
 	require     []string // 除 model 外的必填请求体字段
+	// Anthropic Messages 协议（/v1/messages）：入站翻译为 OpenAI 格式、
+	// 出站（响应/SSE/错误形状）翻译回 Anthropic 形状；false = OpenAI 原生直通
+	anthropic bool
 }
 
 // ChatCompletions POST /v1/chat/completions
 func (h *Handler) ChatCompletions(c *gin.Context) {
 	h.relay(c, relaySpec{cacheFields: chatCacheFields, allowStream: true})
+}
+
+// Messages POST /v1/messages：Anthropic Messages 协议（Claude Code 等 Anthropic 系
+// 客户端直连）。协议翻译只发生在边界，编排内核（授权/额度/渠道/映射/计费）完全复用
+func (h *Handler) Messages(c *gin.Context) {
+	h.relay(c, relaySpec{cacheFields: chatCacheFields, allowStream: true, anthropic: true})
 }
 
 // Embeddings POST /v1/embeddings：向量接口（RAG/知识库场景）；
@@ -239,6 +248,11 @@ func (h *Handler) Embeddings(c *gin.Context) {
 func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 	start := time.Now()
 	ki := middleware.GetKeyInfo(c)
+	// 错误响应形状：Anthropic 端点用 Anthropic 形状，其余维持 OpenAI 形状
+	werr := openaiError
+	if spec.anthropic {
+		werr = anthropicError
+	}
 
 	rec := &model.UsageLog{
 		RequestID:    middleware.GetRequestID(c),
@@ -272,7 +286,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 	// per-key 限流
 	if h.Limiter != nil && !h.Limiter.Allow(fmt.Sprintf("key:%d", ki.KeyID)) {
 		rec.Status, rec.Error = http.StatusTooManyRequests, "rate limit exceeded"
-		openaiError(c, http.StatusTooManyRequests, "rate_limit_error", "rate limit exceeded, please retry later")
+		werr(c, http.StatusTooManyRequests, "rate_limit_error", "rate limit exceeded, please retry later")
 		return
 	}
 
@@ -283,20 +297,28 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		// "先写完再读" 的客户端（urllib/curl）撞上 RST 读不到错误响应
 		middleware.DrainRequestBody(c.Request.Body, h.MaxBody)
 		rec.Status, rec.Error = http.StatusRequestEntityTooLarge, "request body too large"
-		openaiError(c, http.StatusRequestEntityTooLarge, "request_too_large", "request body too large")
+		werr(c, http.StatusRequestEntityTooLarge, "request_too_large", "request body too large")
 		return
 	}
 	var bodyMap map[string]json.RawMessage
-	if err := json.Unmarshal(body, &bodyMap); err != nil || len(bodyMap) == 0 {
+	if spec.anthropic {
+		// Anthropic → OpenAI 翻译；失败即请求非法（model/messages 缺失、块格式错误等）
+		bodyMap, err = decodeAnthropicRequest(body)
+		if err != nil {
+			rec.Status, rec.Error = http.StatusBadRequest, err.Error()
+			werr(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+	} else if err := json.Unmarshal(body, &bodyMap); err != nil || len(bodyMap) == 0 {
 		rec.Status, rec.Error = http.StatusBadRequest, "invalid JSON body"
-		openaiError(c, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
+		werr(c, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
 		return
 	}
 
 	modelName := rawString(bodyMap["model"])
 	if modelName == "" {
 		rec.Status, rec.Error = http.StatusBadRequest, "missing model"
-		openaiError(c, http.StatusBadRequest, "invalid_request_error", "missing required parameter: model")
+		werr(c, http.StatusBadRequest, "invalid_request_error", "missing required parameter: model")
 		return
 	}
 	// 模型名是客户端可控文本：计量入库前截断，防止恶意超长名撑爆 usage_logs
@@ -306,7 +328,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 	for _, f := range spec.require {
 		if _, ok := bodyMap[f]; !ok {
 			rec.Status, rec.Error = http.StatusBadRequest, "missing "+f
-			openaiError(c, http.StatusBadRequest, "invalid_request_error",
+			werr(c, http.StatusBadRequest, "invalid_request_error",
 				fmt.Sprintf("missing required parameter: %s", f))
 			return
 		}
@@ -321,7 +343,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 	var m model.Model
 	if err := h.DB.Where("name = ? AND status = 1", modelName).First(&m).Error; err != nil {
 		rec.Status, rec.Error = http.StatusNotFound, "model not found: "+truncateStr(modelName, 100)
-		openaiError(c, http.StatusNotFound, "invalid_request_error",
+		werr(c, http.StatusNotFound, "invalid_request_error",
 			fmt.Sprintf("model %q does not exist or is not available", modelName))
 		return
 	}
@@ -332,7 +354,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		if err := h.DB.Model(&model.UserModelGrant{}).
 			Where("user_id = ? AND model_name = ?", ki.UserID, modelName).Count(&cnt).Error; err != nil || cnt == 0 {
 			rec.Status, rec.Error = http.StatusForbidden, "model not allowed: "+truncateStr(modelName, 100)
-			openaiError(c, http.StatusForbidden, "model_not_allowed",
+			werr(c, http.StatusForbidden, "model_not_allowed",
 				fmt.Sprintf("you are not allowed to use model %q, please contact your company admin", modelName))
 			return
 		}
@@ -344,16 +366,16 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		if err := service.Precheck(h.DB, ki.UserID); err != nil {
 			if errors.Is(err, service.ErrUserQuota) || errors.Is(err, service.ErrOrgQuota) {
 				rec.Status, rec.Error = http.StatusTooManyRequests, err.Error()
-				openaiError(c, http.StatusTooManyRequests, "insufficient_balance", err.Error())
+				werr(c, http.StatusTooManyRequests, "insufficient_balance", err.Error())
 				return
 			}
 			if errors.Is(err, service.ErrUserMonthly) || errors.Is(err, service.ErrOrgMonthly) {
 				rec.Status, rec.Error = http.StatusTooManyRequests, err.Error()
-				openaiError(c, http.StatusTooManyRequests, "monthly_limit_exceeded", err.Error())
+				werr(c, http.StatusTooManyRequests, "monthly_limit_exceeded", err.Error())
 				return
 			}
 			rec.Status, rec.Error = http.StatusInternalServerError, err.Error()
-			openaiError(c, http.StatusInternalServerError, "internal_error", "quota precheck failed")
+			werr(c, http.StatusInternalServerError, "internal_error", "quota precheck failed")
 			return
 		}
 	}
@@ -370,14 +392,21 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			rec.CacheHit = 1
 			c.Writer.Header().Set("X-Tg-Cache", "hit")
 			c.Data(http.StatusOK, "application/json", data)
-			var ur struct {
-				Usage *Usage `json:"usage"`
+			// 缓存里存的是本协议形状（Anthropic 端点存翻译后的体），usage 按协议取
+			var usage *Usage
+			if spec.anthropic {
+				usage = anthropicUsageFrom(data)
+			} else {
+				var ur struct {
+					Usage *Usage `json:"usage"`
+				}
+				_ = json.Unmarshal(data, &ur)
+				usage = ur.Usage
 			}
-			_ = json.Unmarshal(data, &ur)
-			if ur.Usage != nil {
-				rec.PromptTokens = ur.Usage.PromptTokens
-				rec.CompletionTokens = ur.Usage.CompletionTokens
-				rec.CachedTokens = ur.Usage.CachedTokens()
+			if usage != nil {
+				rec.PromptTokens = usage.PromptTokens
+				rec.CompletionTokens = usage.CompletionTokens
+				rec.CachedTokens = usage.CachedTokens()
 				if rec.CachedTokens > rec.PromptTokens {
 					rec.CachedTokens = rec.PromptTokens
 				}
@@ -395,7 +424,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 	cands, selStats, err := SelectCandidates(h.DB, h.Cipher, modelName, h.Coord)
 	if err != nil {
 		rec.Status, rec.Error = http.StatusInternalServerError, err.Error()
-		openaiError(c, http.StatusInternalServerError, "internal_error", "failed to select channels")
+		werr(c, http.StatusInternalServerError, "internal_error", "failed to select channels")
 		return
 	}
 	if len(cands) == 0 {
@@ -403,26 +432,26 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		switch {
 		case selStats.Channels == 0:
 			rec.Status, rec.Error = http.StatusServiceUnavailable, "no enabled channel for model"
-			openaiError(c, http.StatusServiceUnavailable, "no_available_channel",
+			werr(c, http.StatusServiceUnavailable, "no_available_channel",
 				"no enabled channel serves this model, please contact the platform admin")
 			return
 		case selStats.KeyedChannels == 0:
 			rec.Status, rec.Error = http.StatusServiceUnavailable, "no usable upstream key (not configured or disabled)"
-			openaiError(c, http.StatusServiceUnavailable, "channel_key_missing",
+			werr(c, http.StatusServiceUnavailable, "channel_key_missing",
 				"upstream key is not configured or disabled, please contact the platform admin")
 			return
 		case selStats.DecryptFailed > 0 && selStats.DecryptFailed == selStats.KeyedChannels:
 			// 密钥材料齐备但全部解不开：aes_key 轮换后未重建渠道密钥 / 密文损坏。
 			// 也是配置问题（重试无意义），不得落入"全冷却"429 误导客户端退避重试
 			rec.Status, rec.Error = http.StatusServiceUnavailable, "all upstream keys failed to decrypt"
-			openaiError(c, http.StatusServiceUnavailable, "channel_key_missing",
+			werr(c, http.StatusServiceUnavailable, "channel_key_missing",
 				"upstream keys cannot be decrypted (aes_key changed?), please contact the platform admin")
 			return
 		default:
 			// 所有 Key 冷却中：语义是"上游限流中"，回 429 而非 503
 			rec.Status, rec.Error = http.StatusTooManyRequests, "no available key (all cooling)"
 			h.writeRetryAfter(c, h.KeyCooldown)
-			openaiError(c, http.StatusTooManyRequests, "upstream_busy",
+			werr(c, http.StatusTooManyRequests, "upstream_busy",
 				"upstream is rate limited, please retry later")
 			return
 		}
@@ -584,7 +613,12 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			c.Writer.Header().Set("Cache-Control", "no-cache")
 			c.Writer.Header().Set("X-Accel-Buffering", "no")
 			c.Writer.WriteHeader(resp.StatusCode)
-			usage, perr := pipeSSE(c.Writer, c.Request.Context(), resp.Body, modelSwap)
+			// SSE 翻译：Anthropic 端点逐块翻译成 Anthropic 事件流，其余原样透传
+			pipe := pipeSSE
+			if spec.anthropic {
+				pipe = anthropicPipeSSE
+			}
+			usage, perr := pipe(c.Writer, c.Request.Context(), resp.Body, modelSwap)
 			_ = resp.Body.Close()
 			if h.Metrics != nil {
 				h.Metrics.ActiveStreams.Dec()
@@ -630,12 +664,8 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		}
 		// 模型映射：缓存与客户端拿到的都是外部名（缓存回放不泄漏上游名）
 		data = rewriteModel(data, modelSwap)
-		// 2xx 且非流式、体积受限 → 写精确缓存
-		if resp.StatusCode < 300 && cacheKey != "" && len(data) <= 1<<20 {
-			h.Coord.CacheSet(cacheKey, data, h.CacheTTL)
-		}
-		c.Data(resp.StatusCode, ct, data)
 		if resp.StatusCode >= 400 {
+			// 上游错误体：提取 message 记日志；Anthropic 端点包成 Anthropic 错误形状再透传
 			var er struct {
 				Error struct {
 					Message string `json:"message"`
@@ -647,14 +677,39 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 				msg = fmt.Sprintf("upstream returned %d", resp.StatusCode)
 			}
 			rec.Error = truncateStr(msg, 500)
+			if spec.anthropic {
+				data = anthropicErrorBody(msg)
+			}
+			c.Data(resp.StatusCode, ct, data)
 			return attemptDone
 		}
-		var ur struct {
-			Usage *Usage `json:"usage"`
+		// 2xx：Anthropic 端点先翻译成 Messages 形状（缓存与客户端拿到的都是本协议形状，
+		// 回放零再翻译）；翻译失败视为渠道应答异常，换下一渠道
+		var usage *Usage
+		if spec.anthropic {
+			out, u, eerr := encodeAnthropicResponse(data, modelName)
+			if eerr != nil {
+				onlyRateLimited, authOnly = false, false
+				lastErr = "translate response: " + eerr.Error()
+				h.noteChannelFailure(cand)
+				return attemptNextChannel
+			}
+			data, usage = out, u
 		}
-		_ = json.Unmarshal(data, &ur)
+		// 非流式、体积受限 → 写精确缓存
+		if resp.StatusCode < 300 && cacheKey != "" && len(data) <= 1<<20 {
+			h.Coord.CacheSet(cacheKey, data, h.CacheTTL)
+		}
+		c.Data(resp.StatusCode, ct, data)
+		if !spec.anthropic {
+			var ur struct {
+				Usage *Usage `json:"usage"`
+			}
+			_ = json.Unmarshal(data, &ur)
+			usage = ur.Usage
+		}
 		h.Breaker.RecordSuccess(cand.ChannelID) // 2xx 且读全体成功
-		applyUsage(rec, ur.Usage, m)
+		applyUsage(rec, usage, m)
 		return attemptDone
 	}
 
@@ -699,16 +754,16 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			ra = h.KeyCooldown
 		}
 		h.writeRetryAfter(c, ra)
-		openaiError(c, http.StatusTooManyRequests, "upstream_busy",
+		werr(c, http.StatusTooManyRequests, "upstream_busy",
 			"upstream is rate limited, please retry later")
 	case authOnly:
 		// 全部 Key 因 401/403 被上游拒绝并自动禁用 → 503，明确指向平台管理员配置问题
 		rec.Status = http.StatusServiceUnavailable
-		openaiError(c, http.StatusServiceUnavailable, "channel_key_invalid",
+		werr(c, http.StatusServiceUnavailable, "channel_key_invalid",
 			"upstream rejected all keys (401/403); the invalid keys are auto-disabled, please contact the platform admin")
 	default:
 		rec.Status = http.StatusBadGateway
-		openaiError(c, http.StatusBadGateway, "upstream_error",
+		werr(c, http.StatusBadGateway, "upstream_error",
 			"all upstream channels failed: "+truncateStr(lastErr, 200))
 	}
 }

@@ -6,7 +6,7 @@ import CodeBlock from './CodeBlock.vue'
 const baseURL = `${location.origin}/v1`
 
 const curlExample = computed(() => `curl ${baseURL}/chat/completions \\
-  -H "Authorization: Bearer sk-你的密钥" \\
+  -H "Authorization: Bearer {你的密钥}" \\
   -H "Content-Type: application/json" \\
   -d '{
     "model": "deepseek-chat",
@@ -16,7 +16,7 @@ const curlExample = computed(() => `curl ${baseURL}/chat/completions \\
 const pythonExample = computed(() => `from openai import OpenAI
 
 client = OpenAI(
-    api_key="sk-你的密钥",
+    api_key="{你的密钥}",
     base_url="${baseURL}",
 )
 

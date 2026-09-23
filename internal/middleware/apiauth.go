@@ -44,7 +44,7 @@ func APIKeyAuth(db *gorm.DB) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		key := bearerToken(c)
 		if !strings.HasPrefix(key, "sk-") {
-			openaiAbort(c, http.StatusUnauthorized, "invalid_api_key", "invalid API key format, expected Bearer sk-...")
+			v1Abort(c, http.StatusUnauthorized, "invalid_api_key", "invalid API key format, expected Bearer sk-...")
 			return
 		}
 		var row struct {
@@ -65,19 +65,19 @@ func APIKeyAuth(db *gorm.DB) gin.HandlerFunc {
 			WHERE k.key_hash = ? AND k.status = 1`, auth.HashAPIKey(key)).
 			Scan(&row).Error
 		if err != nil || row.KeyID == 0 {
-			openaiAbort(c, http.StatusUnauthorized, "invalid_api_key", "invalid API key")
+			v1Abort(c, http.StatusUnauthorized, "invalid_api_key", "invalid API key")
 			return
 		}
 		if row.ExpiredAt != nil && *row.ExpiredAt <= time.Now().Unix() {
-			openaiAbort(c, http.StatusUnauthorized, "invalid_api_key", "API key has expired")
+			v1Abort(c, http.StatusUnauthorized, "invalid_api_key", "API key has expired")
 			return
 		}
 		if row.UserStatus != 1 || row.OrgStatus == 0 {
-			openaiAbort(c, http.StatusForbidden, "permission_error", "account or organization is disabled")
+			v1Abort(c, http.StatusForbidden, "permission_error", "account or organization is disabled")
 			return
 		}
 		if row.OrgStatus == 2 { // 欠费停服：额度耗尽自动置位，充值后自动恢复
-			openaiAbort(c, http.StatusForbidden, "insufficient_balance",
+			v1Abort(c, http.StatusForbidden, "insufficient_balance",
 				"organization suspended for arrears (quota exhausted), please contact the platform admin to recharge")
 			return
 		}
@@ -98,6 +98,35 @@ func GetKeyInfo(c *gin.Context) *KeyInfo {
 		}
 	}
 	return nil
+}
+
+// v1Abort 数据面错误统一出口：/v1/messages 是 Anthropic 协议平面，
+// 错误体须用 {"type":"error","error":{...}} 形状，其余端点维持 OpenAI 形状
+func v1Abort(c *gin.Context, status int, errType, msg string) {
+	if c.Request.URL.Path == "/v1/messages" {
+		c.AbortWithStatusJSON(status, gin.H{
+			"type":  "error",
+			"error": gin.H{"type": anthropicErrType(status), "message": msg},
+		})
+		return
+	}
+	openaiAbort(c, status, errType, msg)
+}
+
+// anthropicErrType HTTP 状态码 → Anthropic 错误类型（鉴权/权限/限流/超限四类，其余归 api_error）
+func anthropicErrType(status int) string {
+	switch status {
+	case http.StatusUnauthorized:
+		return "authentication_error"
+	case http.StatusForbidden:
+		return "permission_error"
+	case http.StatusTooManyRequests:
+		return "rate_limit_error"
+	case http.StatusRequestEntityTooLarge:
+		return "request_too_large"
+	default:
+		return "api_error"
+	}
 }
 
 func openaiAbort(c *gin.Context, status int, errType, msg string) {

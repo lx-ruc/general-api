@@ -6,7 +6,7 @@ import CodeBlock from './CodeBlock.vue'
 const baseURL = `${location.origin}/v1`
 
 const authExample = computed(() => `curl ${baseURL}/models \\
-  -H "Authorization: Bearer sk-你的密钥"`)
+  -H "Authorization: Bearer {你的密钥}"`)
 </script>
 
 <template>

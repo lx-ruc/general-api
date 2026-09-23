@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-token 中转站 — 自托管的大模型 API 网关与计量计费平台（Go 后端 + Vue3 管理台，前端 embed 进单个二进制）。把厂商 API（DeepSeek / 智谱 GLM / 通义千问等任意 OpenAI 兼容厂商）转换为自己签发的统一 OpenAI 兼容接口，支持三级账号（系统管理员 → 客户管理员 → 子账号）、模型级授权、token 计量计费与双层额度控制。
+慧沐引擎（token 中转站）— 自托管的大模型 API 网关与计量计费平台（Go 后端 + Vue3 管理台，前端 embed 进单个二进制）。把厂商 API（DeepSeek / 智谱 GLM / 通义千问等任意 OpenAI 兼容厂商）转换为自己签发的统一 OpenAI 兼容接口，支持三级账号（系统管理员 → 客户管理员 → 子账号）、模型级授权、token 计量计费与双层额度控制。
 
 代码注释、commit message、文档均为中文；commit 格式 `feat: <中文描述>`。
 
@@ -17,7 +17,11 @@ make web-install                     # 前端依赖（用 pnpm，不是 npm）
 make web-dev                         # Vite :5173，代理 /api 与 /v1 到 :8080
 make build                           # 前端 build → go build → 单二进制 dist/token-gateway
 make cross-build                     # linux/amd64 交叉编译
-go vet ./...                         # 静态检查（仓库目前没有任何测试）
+make web-test                        # 前端单元测试（vitest，目前只有 utils/ 下纯函数）
+go test ./internal/...               # 全部单元测试（内存 SQLite，无外部依赖）
+go test ./internal/gateway/ -run TestCalcCost -v   # 单跑一个测试
+go vet ./...                         # 静态检查
+python3 tools/e2e/run.py             # 端到端回归（需网关先跑在 :8081；自带 mock 上游 :9102）
 ```
 
 - **Fresh clone 坑**：`web/dist` 整体被 gitignore（static.go 里 `//go:embed all:web/dist` 期望的占位 index.html 并未提交），clone 后直接 `go build` / `make dev` 会报 `no matching files found`。先 `mkdir -p web/dist && echo ok > web/dist/index.html` 或先跑前端 build。
@@ -30,19 +34,25 @@ go vet ./...                         # 静态检查（仓库目前没有任何�
 单端口同服三个平面（路由装配见 `internal/api/router.go`）：
 
 - `/healthz`、`/metrics`（手写 Prometheus 文本格式，零依赖；`security.metrics_token` 非空时需鉴权）
-- `/v1` 数据面：API key 鉴权（`middleware/APIKeyAuth`），只有 `/v1/chat/completions` 与 `/v1/models`。SSE 流式透传。
-- `/api` 管理面：JWT + RBAC，handler 按 `internal/api/{platform,org,member}/` 三角色分包；org 隔离靠 handler 内每条查询强制 `WHERE org_id`（没有全局中间件，新增 org 接口必须自己带）。
+- `/v1` 数据面：API key 鉴权（`middleware/APIKeyAuth`），端点仅 `/v1/chat/completions`、`/v1/embeddings`、`/v1/models`。SSE 流式透传。
+- `/api` 管理面：JWT + RBAC，handler 按 `internal/api/{platform,org,member}/` 三角色分包；org 隔离靠 handler 内每条查询强制 `WHERE org_id`（没有全局中间件，新增 org 接口必须自己带）。管理面同样接受 `tgp_` 访问令牌（`JWTAuth` 双轨：`Bearer tgp_...` 查表载入属主，权限与登录账号完全一致，SHA-256 落库）。
 - 其余路径走 `internal/webui` 的 SPA fallback（`/api`、`/v1` 前缀返回 JSON 404，不落入 SPA）。
 
-**网关编排**（`internal/gateway/handler.go` ChatCompletions）：per-key 限流（内存令牌桶，多实例下为 per-node）→ 模型/授权/额度预检 → 渠道选择 → 转发 → defer 里结算。流式请求会向 body 注入 `stream_options.include_usage` 保证末块带 usage 供计费；上游没返回 usage 则标记不计量。
+**网关编排**（`internal/gateway/handler.go` ChatCompletions / Embeddings 共用 relay 内核）：per-key 限流（内存令牌桶，多实例下为 per-node）→ 模型/授权/额度预检 → 渠道选择 → 转发 → defer 里结算。流式请求会向 body 注入 `stream_options.include_usage` 保证末块带 usage 供计费；上游没返回 usage 则标记不计量。
 
-**渠道路由**（`gateway/selector.go`）：`channels JOIN channel_abilities` 按模型名找候选；最高 priority 组内按 weight 加权随机（负载均衡），其余组按优先级顺序追加为降级备用。`gateway/breaker.go`：单渠道连续失败 N 次（默认 5）自动置 `status=0` 并写备注，需手动恢复。
+**高并发协调器**（`internal/coord`，`Coordinator` 接口 + Redis/内存双实现）：渠道多 Key 池轮询、上游 429 按渠道+Key 冷却并自动换 Key、渠道并发闸门（超限排队削峰）、非流式精确缓存（命中不扣费）。配了 `redis.addr` 走全局实现，连不上 fail-open 回退进程内存（多实例下退化为 per-node）；装配见 router.go `newCoordinator`。
+
+**模型名映射**（`channels.model_mapping`，JSON）：渠道可配「对外名 → 上游名」；出站请求改写为上游名，响应（含流式每块）改写回对外名，计费与 usage_logs 锚定对外名，映射对客户不可见。
+
+**渠道路由**（`gateway/selector.go`）：`channels JOIN channel_abilities` 按模型名找候选；最高 priority 组内按 weight 加权随机（负载均衡），其余组按优先级顺序追加为降级备用。`gateway/breaker.go`：单渠道连续失败 N 次（默认 5）自动置 `status=0` 并写备注；自动禁用会记 `auto_disabled_at`，这类渠道由 `AutoProbeLoop` 周期探测自动恢复，手动禁用（`auto_disabled_at=0`）永不探测。
+
+**后台 goroutine 都在 `SetupRouter` 里启动**（router.go，不是 main.go）：熔断自动恢复探测、定时渠道体检（`channel_test_interval`，连续失败达阈值自动禁用+邮件告警）、月末余额快照（次月 1 日 00:05 账期时区，漏跑重启自愈）、usage_logs 按月归档（`billing.usage_retention_months > 0` 才启用）。
 
 **计费不变量**（`internal/service/quota.go` — 额度读写的唯一入口）：
 
 - 全整数运算：`cost = ceil((输入tokens×输入单价 + 输出tokens×输出单价)/1M)`，见 `gateway.CalcCost`。单价以**额度点/百万token**存储：默认 `1 元 = 1,000,000 点`（`settings.points_per_yuan` 可调），故 ¥2/百万token 的模型 `input_price = 2,000,000`，即每 token 扣 2 点；前端定价表单直接输入点数，展示时折算成元
 - 分配是"设上限"式：只写 `quota_limit`，消耗只有 `quota_used` 一个真相来源，不存在点数划拨
-- `Precheck` 纯读不锁（advisory）；`Settle` 在响应已发出后无条件执行：同一事务内双记账（users.quota_used + orgs.quota_used）+ 写 usage_logs；超扣幅度封顶在单请求成本内
+- `Precheck` 纯读不锁（advisory）；`Settle` 在响应已发出后无条件执行：同一事务内双记账（users.quota_used + orgs.quota_used）+ 写 usage_logs；超扣幅度串行到达时封顶在单请求成本内，并发齐射上界为 N×单次成本（可用性优先的既定设计，见 `TestQuotaConcurrentAdmissionAndSettle`）
 - 新增额度入口只有 `AddOrgQuota` / `AddUserQuota`（带 QuotaGrant 审计流水）；设值式变更（子账号转不限/转限额）走 `SetUserQuotaUnlimited`，同样差值入流水——**quota_limit 的一切变更必须与流水同事务**，恒保持 Σgrants == COALESCE(quota_limit, 0)
 
 **SSE 红线**：永远不要给 `http.Server` 设 `WriteTimeout`、给上游 `http.Client` 设整体 `Timeout` —— 都会杀流式长连接（见 main.go 注释与 `gateway.NewHTTPClient`）；只允许用 `ResponseHeaderTimeout` / 首字节超时。
@@ -59,4 +69,10 @@ go vet ./...                         # 静态检查（仓库目前没有任何�
 
 ## OpenSpec 工作流
 
-`.claude/commands/opsx/`（propose / apply / archive / explore）与 `.claude/skills/openspec-*` 定义了基于 `openspec` CLI 的 spec-driven 变更流程；仓库尚未初始化 `openspec/` 目录。
+`.claude/commands/opsx/`（propose / apply / archive / explore）与 `.claude/skills/openspec-*` 定义了基于 `openspec` CLI 的 spec-driven 变更流程。`openspec/` 已初始化：`specs/` 存放各能力规格，`changes/` 存放变更（archive/ 为已归档）。注意 changes/ 下未归档目录的 tasks.md 勾选状态可能滞后于代码（如 embeddings / 访问令牌 / 渠道探活均已实现并有测试，但未走完 archive）——动手前先对照代码确认实际进度。
+
+## 工具（tools/）
+
+- `e2e/run.py`：端到端回归（数据面/管理面/计费不变量），自带 mock 上游，网关需跑在 :8081
+- `loadgen`：压测器（目标 rps + 并发 worker 打 /v1/chat/completions，统计状态码与延迟分位）
+- `mockupstream`：OpenAI 兼容假上游（按 key 分桶限 RPM 回 429），配合 loadgen 测多 Key 轮询容量

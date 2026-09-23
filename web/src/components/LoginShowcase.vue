@@ -170,7 +170,7 @@ onBeforeUnmount(() => { clearInterval(tick); clearInterval(feed) })
         <circle class="ripple r2" cx="400" cy="170" r="44" />
         <g class="hub">
           <rect x="330" y="138" width="140" height="64" rx="12" />
-          <text class="hub-name" x="400" y="164">token 中转站</text>
+          <text class="hub-name" x="400" y="164">慧沐引擎</text>
           <text class="hub-sub num" x="400" y="184">OpenAI 兼容 · SSE</text>
         </g>
 

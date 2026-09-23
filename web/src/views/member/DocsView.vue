@@ -1,32 +1,23 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { apiMyModels, apiMyKeys } from '../../api/member'
+import { apiMyModels } from '../../api/member'
 import { copyText } from '../../utils/clipboard'
 
 const models = ref<any[]>([])
-const keys = ref<any[]>([])
 const baseURL = `${location.origin}/v1`
 
 onMounted(async () => {
   const m = await apiMyModels()
   models.value = m.models || []
-  keys.value = await apiMyKeys()
 })
 
-const exampleKey = computed(() => {
-  const prefix = keys.value[0]?.key_prefix
-  return prefix ? `${prefix}<你的完整密钥>` : 'sk-<在「我的密钥」新建后填入>'
-})
+// 示例密钥统一用 {你的密钥} 占位，不展示任何真实前缀
+const exampleKey = '{你的密钥}'
 const firstModel = computed(() => models.value[0]?.name || 'deepseek-chat')
-// Agent 配置示例里的模型清单（至多前 6 个，够覆盖又不冗长）
-const modelList = computed(() => {
-  const names = models.value.slice(0, 6).map((m) => m.name)
-  return names.length > 0 ? names : [firstModel.value]
-})
 
 const curlExample = computed(() => `curl ${baseURL}/chat/completions \\
-  -H "Authorization: Bearer ${exampleKey.value}" \\
+  -H "Authorization: Bearer ${exampleKey}" \\
   -H "Content-Type: application/json" \\
   -d '{
     "model": "${firstModel.value}",
@@ -34,7 +25,7 @@ const curlExample = computed(() => `curl ${baseURL}/chat/completions \\
   }'`)
 
 const curlStreamExample = computed(() => `curl -N ${baseURL}/chat/completions \\
-  -H "Authorization: Bearer ${exampleKey.value}" \\
+  -H "Authorization: Bearer ${exampleKey}" \\
   -H "Content-Type: application/json" \\
   -d '{
     "model": "${firstModel.value}",
@@ -45,7 +36,7 @@ const curlStreamExample = computed(() => `curl -N ${baseURL}/chat/completions \\
 const pythonExample = computed(() => `from openai import OpenAI
 
 client = OpenAI(
-    api_key="sk-你的完整密钥",
+    api_key="{你的密钥}",
     base_url="${baseURL}",
 )
 
@@ -58,7 +49,7 @@ print(resp.choices[0].message.content)`)
 const jsExample = computed(() => `import OpenAI from "openai";
 
 const client = new OpenAI({
-  apiKey: "sk-你的完整密钥",
+  apiKey: "{你的密钥}",
   baseURL: "${baseURL}",
 });
 
@@ -77,7 +68,7 @@ model_provider = "huimu"
 [model_providers.huimu]
 name = "huimu"
 base_url = "${baseURL}"
-env_key = "HUIMU_API_KEY"   # export HUIMU_API_KEY=sk-你的完整密钥
+env_key = "HUIMU_API_KEY"   # export HUIMU_API_KEY={你的密钥}
 wire_api = "chat"`)
 
 // Continue：~/.continue/config.yaml（旧版为 config.json 的 models 数组，字段同名）
@@ -89,30 +80,33 @@ models:
     provider: openai
     model: ${firstModel.value}
     apiBase: ${baseURL}
-    apiKey: sk-你的完整密钥
+    apiKey: {你的密钥}
     roles: [chat, edit, apply]`)
 
-// Claude Code：原生说 Anthropic 协议，须经 claude-code-router 转成 OpenAI 格式再进本站
-const ccrExample = computed(() => `# 1) 安装：npm install -g @musistudio/claude-code-router
-# 2) 写入 ~/.claude-code-router/config.json（api_base_url 为完整对话端点）：
+// 一键接入助手：网关托管的零依赖 Node 脚本（与智谱 coding-helper 同款体验）
+const helperCmd = computed(() => `sh -c "$(curl -fsSL ${location.origin}/agent-helper)"`)
+
+const helperYesCmd = computed(() => `sh -c "$(curl -fsSL ${location.origin}/agent-helper)" install claude-code codex --key {你的密钥} --model ${firstModel.value} --yes`)
+
+const helperUninstallCmd = computed(() => `sh -c "$(curl -fsSL ${location.origin}/agent-helper)" uninstall all`)
+
+// Claude Code：本站 /v1/messages 已原生兼容 Anthropic 协议，直连即可
+const claudeExample = computed(() => `# ~/.claude/settings.json
 {
-  "Providers": [
-    {
-      "name": "huimu",
-      "api_base_url": "${baseURL}/chat/completions",
-      "api_key": "sk-你的完整密钥",
-      "models": [${modelList.value.map((n) => `"${n}"`).join(', ')}],
-      "transformer": { "use": ["openai"] }
-    }
-  ],
-  "Router": { "default": "huimu,${firstModel.value}" }
-}
-# 3) 用 ccr code 启动（代替 claude），即走本站转发`)
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "{你的密钥}",
+    "ANTHROPIC_BASE_URL": "${location.origin}",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "${firstModel.value}",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "${firstModel.value}",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "${firstModel.value}"
+  }
+}`)
+
 
 // Open WebUI / Dify 等平台：管理员设置里加 OpenAI 兼容连接
 const platformExample = computed(() => `平台类型：OpenAI API Compatible
 API 地址（Base URL）：${baseURL}
-API Key：sk-你的完整密钥
+API Key：{你的密钥}
 模型名（Model ID）：${firstModel.value}
 （Open WebUI：设置 → 连接 → OpenAI API；Dify：设置 → 模型供应商 → OpenAI-API-compatible）`)
 
@@ -133,15 +127,16 @@ async function copy(text: string) {
     <h3>快速上手（3 步）</h3>
     <ol class="steps">
       <li>在 <b>「我的密钥」</b>创建 API 密钥（<code>sk-</code> 开头，仅创建时完整显示一次，请妥善保存）。</li>
-      <li>在你的工具里填入 Base URL <code>{{ baseURL }}</code> 与该密钥（鉴权头 <code>Authorization: Bearer sk-…</code>）。</li>
+      <li>在你的工具里填入 Base URL <code>{{ baseURL }}</code> 与该密钥（鉴权头 <code>Authorization: Bearer {你的密钥}</code>）。</li>
       <li>模型名从下方「可用模型」中选一个填入（未列出的模型未获授权，请联系客户管理员开通）。</li>
     </ol>
 
     <h3>1. 基础信息</h3>
     <el-descriptions :column="1" border style="max-width: 700px">
       <el-descriptions-item label="Base URL"><code>{{ baseURL }}</code></el-descriptions-item>
-      <el-descriptions-item label="鉴权方式">请求头 <code>Authorization: Bearer sk-你的完整密钥</code></el-descriptions-item>
+      <el-descriptions-item label="鉴权方式">请求头 <code>Authorization: Bearer {你的密钥}</code></el-descriptions-item>
       <el-descriptions-item label="对话接口"><code>POST {{ baseURL }}/chat/completions</code>（支持 stream）</el-descriptions-item>
+      <el-descriptions-item label="Anthropic 对话接口"><code>POST {{ baseURL }}/messages</code>（Claude Code 等原生 Anthropic 客户端直连，鉴权头 <code>x-api-key</code> 或 Bearer 均可）</el-descriptions-item>
       <el-descriptions-item label="向量接口"><code>POST {{ baseURL }}/embeddings</code></el-descriptions-item>
       <el-descriptions-item label="模型列表"><code>GET {{ baseURL }}/models</code></el-descriptions-item>
       <el-descriptions-item label="可用模型">
@@ -174,7 +169,24 @@ async function copy(text: string) {
     </div>
 
     <h3>6. Agent 与编程工具接入</h3>
-    <p class="dim">以下工具都支持 OpenAI 兼容接口：把 Base URL 换成本站、密钥换成你的 <code>sk-</code> 密钥即可。配置里的占位符按你的实际值替换。</p>
+
+    <div class="code-block" style="margin-bottom: 12px">
+      <pre style="min-height: auto">{{ helperCmd }}</pre>
+      <el-button size="small" class="copy-btn" @click="copy(helperCmd)">复制</el-button>
+    </div>
+    <p>在终端执行上面的命令即可启动<b>一键接入助手</b>（需要 Node.js ≥ 18）：选择要接入的工具与模型，自动完成全部配置。支持 <b>Claude Code、Codex CLI、OpenCode、Crush、Factory Droid</b> 五款工具（与智谱 coding-helper 相同的清单），安装只增改自己的配置键、不动其它设置。</p>
+    <p>免交互安装（CI / 脚本场景）：</p>
+    <div class="code-block">
+      <pre>{{ helperYesCmd }}</pre>
+      <el-button size="small" class="copy-btn" @click="copy(helperYesCmd)">复制</el-button>
+    </div>
+    <p>卸载本站配置（保留各工具的其它配置）：</p>
+    <div class="code-block" style="margin-bottom: 12px">
+      <pre>{{ helperUninstallCmd }}</pre>
+      <el-button size="small" class="copy-btn" @click="copy(helperUninstallCmd)">复制</el-button>
+    </div>
+
+    <p class="dim">也可以手动配置：以下工具都支持 OpenAI 兼容接口，把 Base URL 换成本站、密钥换成你的 <code>sk-</code> 密钥即可。配置里的占位符按你的实际值替换。</p>
 
     <el-collapse class="agents">
       <el-collapse-item name="cursor">
@@ -209,13 +221,13 @@ async function copy(text: string) {
       </el-collapse-item>
 
       <el-collapse-item name="claude-code">
-        <template #title><b>Claude Code</b>（须经协议转换）</template>
-        <p>Claude Code 原生使用 Anthropic Messages 协议（<code>/v1/messages</code>），本站是 OpenAI 兼容协议，直连不通——用开源的 <b>claude-code-router</b> 在本地把请求转成 OpenAI 格式再进本站：</p>
+        <template #title><b>Claude Code</b>（官方 CLI，直连）</template>
+        <p>本站已原生兼容 Anthropic Messages 协议（<code>/v1/messages</code>），Claude Code 无须任何协议转换即可直连。编辑 <code>~/.claude/settings.json</code>：</p>
         <div class="code-block">
-          <pre>{{ ccrExample }}</pre>
-          <el-button size="small" class="copy-btn" @click="copy(ccrExample)">复制</el-button>
+          <pre>{{ claudeExample }}</pre>
+          <el-button size="small" class="copy-btn" @click="copy(claudeExample)">复制</el-button>
         </div>
-        <p class="dim">Router 里 <code>default</code> 的格式为 <code>provider名,模型名</code>，须与 Providers 里的 name 一致。</p>
+        <p class="dim">要点：<code>ANTHROPIC_BASE_URL</code> 填网关根地址（不带 <code>/v1</code>）；三个 <code>ANTHROPIC_DEFAULT_*_MODEL</code> 把 sonnet / opus / haiku 槽位都映射到本站模型。密钥就是你的 <code>sk-</code> 密钥（<code>ANTHROPIC_AUTH_TOKEN</code>）。一键助手会自动写入这些配置。</p>
       </el-collapse-item>
 
       <el-collapse-item name="platforms">
@@ -236,7 +248,7 @@ async function copy(text: string) {
       <li><b>429 rate_limit_error</b>：请求过于频繁（每密钥默认 60 次/分钟）。</li>
       <li><b>流式响应</b>：本站会自动向上游请求 usage 统计用于计费，无需客户端做任何改动。</li>
       <li><b>计费口径</b>：按模型的输入/输出单价（元/百万 tokens）计费；上游提示缓存命中的输入部分按更低的「缓存命中单价」计（如有配置）。</li>
-      <li><b>Agent 工具调用</b>：对话端点完整透传 messages / tools / tool_choice 等字段，支持 Function Calling 的模型即可正常使用。</li>
+      <li><b>Agent 工具调用</b>：对话端点完整透传 messages / tools / tool_choice 等字段，支持 Function Calling 的模型即可正常使用；<code>/v1/messages</code>（Anthropic 协议）同样完整支持 tools / tool_result 工具往返。</li>
     </ul>
   </el-card>
 </template>

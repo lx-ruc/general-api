@@ -115,6 +115,10 @@ func bearerToken(c *gin.Context) string {
 	if strings.HasPrefix(h, "Bearer ") {
 		return strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
 	}
+	// Anthropic 系客户端（Claude Code 等）原生用 x-api-key 头携带密钥
+	if k := c.GetHeader("x-api-key"); k != "" {
+		return strings.TrimSpace(k)
+	}
 	return ""
 }
 

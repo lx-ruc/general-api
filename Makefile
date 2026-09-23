@@ -1,4 +1,4 @@
-.PHONY: dev web-dev web-install build cross-build clean
+.PHONY: dev web-dev web-install web-test build cross-build clean
 
 dev: ## 启动后端（读取 ./config.yaml）
 	go run .
@@ -8,6 +8,9 @@ web-install: ## 安装前端依赖
 
 web-dev: ## 启动前端开发服务器（代理到 :8080）
 	cd web && pnpm dev
+
+web-test: ## 前端单元测试（vitest）
+	cd web && pnpm test
 
 build: ## 构建单二进制（前端 embed）
 	sh build.sh

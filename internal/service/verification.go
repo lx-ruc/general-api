@@ -89,8 +89,8 @@ func (v *Verification) SendCode(email string) (devCode string, retryAfter int, e
 		slog.Warn("SMTP 未配置，验证码以开发模式返回", "email", email, "code", code)
 		return code, 0, nil
 	}
-	if err := sendMail(v.smtp, email, "token 中转站注册验证码",
-		fmt.Sprintf("你的注册验证码是：%s\n\n5 分钟内有效。若非本人操作请忽略本邮件。\n—— token 中转站", code)); err != nil {
+	if err := sendMail(v.smtp, email, "慧沐引擎注册验证码",
+		fmt.Sprintf("你的注册验证码是：%s\n\n5 分钟内有效。若非本人操作请忽略本邮件。\n—— 慧沐引擎", code)); err != nil {
 		_ = v.db.Exec("DELETE FROM verification_codes WHERE email = ?", email).Error
 		return "", 0, fmt.Errorf("邮件发送失败: %v", err)
 	}
