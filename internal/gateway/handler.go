@@ -580,11 +580,37 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 
 		switch {
 		case codeMatch(h.RetryKeyCodes, resp.StatusCode):
-			// 429（默认）：Key 冷却（Retry-After 优先）→ 同渠道下一把 Key；
-			// channel 粒度时同渠道全部 Key 一起冷却（厂商限额按账户，逐个试错纯浪费）
-			drain()
+			// 429（默认）→ 同渠道下一把 Key。先读错误体区分两类语义：
+			// 配额类（火山 SetLimitExceeded / OpenAI insufficient_quota 等）是持久的账户
+			// 配额暂停而非瞬时限流——只冷却该 Key（Key 池可能跨账户混布，同渠道其它
+			// Key 不应连坐）并拉长冷却（10×KeyCooldown，≥10min），错误码写入 lastErr
+			// 落 usage_logs 便于排障；
+			// 普通限流 429 维持原语义：按 key_cooldown_scope 冷却（Retry-After 优先，
+			// channel 粒度时同渠道全部 Key 一起冷却——厂商限额按账户，逐个试错纯浪费）
+			eb, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			_ = resp.Body.Close()
 			if h.Metrics != nil {
 				h.Metrics.Upstream429.Inc()
+			}
+			if qc := quota429Code(eb); qc != "" {
+				d := 10 * h.KeyCooldown
+				if d < 10*time.Minute {
+					d = 10 * time.Minute
+				}
+				h.Coord.SetCooldown(cand.KeyScope(), d)
+				if h.Metrics != nil {
+					h.Metrics.KeyCooldown.Inc()
+				}
+				if d > coolApplied {
+					coolApplied = d
+				}
+				slog.Warn("上游配额类 429，该 Key 长效冷却（同渠道其它 Key 不连坐）",
+					"channel_id", cand.ChannelID, "channel", cand.ChannelName,
+					"key_id", cand.KeyID, "code", qc, "cooldown", d.String())
+				lastErr = fmt.Sprintf("upstream %s returned %d %s (key %d quota cooldown %s)",
+					cand.ChannelName, resp.StatusCode, qc, cand.KeyID, d)
+				authOnly = false
+				return attemptNextKey
 			}
 			cd := parseRetryAfter(resp.Header.Get("Retry-After"))
 			if cd <= 0 {
@@ -916,6 +942,32 @@ func clampRetryAfter(secs int) time.Duration {
 		return 0
 	}
 	return time.Duration(secs) * time.Second
+}
+
+// quota429Codes 配额类 429 错误码（小写比较）：命中的是持久性账户配额暂停，
+// 短冷却后重试注定再吃一次 429，且 Key 池跨账户混布时同渠道其它 Key 不应被渠道级冷却连坐
+var quota429Codes = map[string]struct{}{
+	"setlimitexceeded":       {}, // 火山方舟：账号用量达上限/安全体验模式，模型服务暂停
+	"insufficient_quota":     {}, // OpenAI：配额耗尽
+	"quota_exceeded":         {}, // 通用配额超限
+	"exceeded_current_quota": {}, // OpenAI 计费文案变体
+}
+
+// quota429Code 从上游错误体提取配额类错误码（OpenAI 形状 error.code，大小写不敏感）；非配额类返回空
+func quota429Code(body []byte) string {
+	var er struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &er) != nil || er.Error.Code == "" {
+		return ""
+	}
+	code := strings.ToLower(strings.TrimSpace(er.Error.Code))
+	if _, ok := quota429Codes[code]; ok {
+		return er.Error.Code
+	}
+	return ""
 }
 
 // coolKeys 429 后设置冷却：key 粒度只冷却当前 Key；channel 粒度把候选中同渠道的全部

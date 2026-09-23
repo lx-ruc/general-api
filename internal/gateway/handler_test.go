@@ -327,6 +327,98 @@ func TestAll429Returns429WithRetryAfter(t *testing.T) {
 	}
 }
 
+// 配额类 429（火山 SetLimitExceeded 等）：是持久的账户配额暂停，只长效冷却肇事 Key，
+// 同渠道其它 Key 不连坐、请求内就地切换——否则池里混着一把死 Key 时整个渠道被拖死
+func TestQuota429CoolsOnlyOffendingKey(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") == "Bearer quota-dead-key" {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"code":"SetLimitExceeded","message":"Your account [1] has reached the set usage limit"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(okBody))
+	}))
+	defer up.Close()
+	// 池键按插入顺序取自增 id：quota-dead-key=1、good-key=2
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, []string{"quota-dead-key", "good-key"}, 10)
+
+	// 无论先选中哪把 Key，请求都应 200：好 Key 直接成功；死 Key 吃配额 429 → 只冷却
+	// 它自己 → 同渠道换好 Key 成功（渠道级连坐会让 good-key 一起进冷却，本请求直接 429）
+	for i := 0; i < 20; i++ {
+		if w := e.post(chatBody("q", "")); w.Code != http.StatusOK {
+			t.Fatalf("第 %d 笔请求应全部 200（配额 429 不应连坐好 Key），got %d body=%s", i, w.Code, w.Body)
+		}
+	}
+	if e.m.Upstream429.Value() != 1 {
+		t.Fatalf("死 Key 应只被打中一次（之后长效冷却过滤），got %d", e.m.Upstream429.Value())
+	}
+	if e.m.KeyCooldown.Value() != 1 {
+		t.Fatalf("配额 429 只冷却肇事 Key 一把，got %d", e.m.KeyCooldown.Value())
+	}
+	// 核心回归断言：死 Key 在冷却、好 Key 不在（channel 粒度连坐时两把都在）
+	if !e.cd.IsCooling("ck:1:1") {
+		t.Fatal("配额 429 的肇事 Key 应进入长效冷却")
+	}
+	if e.cd.IsCooling("ck:1:2") {
+		t.Fatal("同渠道的好 Key 不应被配额 429 连坐冷却")
+	}
+}
+
+// 全部 Key 都是配额类 429 → 回 429，Retry-After 如实回报长效冷却（10×key_cooldown，
+// 下限 10min），错误码落 usage_logs 便于排障
+func TestQuota429AllKeysExhausted(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"code":"SetLimitExceeded","message":"has reached the set usage limit"}}`))
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, []string{"k1", "k2"}, 10)
+
+	w := e.post(chatBody("q", ""))
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("全配额 429 应回 429，got %d body=%s", w.Code, w.Body)
+	}
+	// key_cooldown=60s → 10×=600s，且 ≥10min 下限不放大
+	if got := w.Header().Get("Retry-After"); got != "600" {
+		t.Fatalf("Retry-After 应为长效冷却 600s，got %q", got)
+	}
+	if !e.cd.IsCooling("ck:1:1") || !e.cd.IsCooling("ck:1:2") {
+		t.Fatal("两把肇事 Key 都应各自进入长效冷却")
+	}
+	var errText string
+	if err := e.f.db.Raw("SELECT COALESCE(error,'') FROM usage_logs WHERE id = ?", e.lastUsage(t)).Scan(&errText).Error; err != nil {
+		t.Fatalf("读取 usage_log: %v", err)
+	}
+	if !strings.Contains(errText, "SetLimitExceeded") {
+		t.Fatalf("usage_log 错误应含配额错误码便于排障，got %q", errText)
+	}
+}
+
+// quota429Code：OpenAI 形状 error.code 识别（大小写不敏感），非配额类/畸形体返回空
+func TestQuota429Code(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"火山安全体验模式", `{"error":{"code":"SetLimitExceeded","message":"Your account [1] has reached the set usage limit"}}`, "SetLimitExceeded"},
+		{"OpenAI 配额耗尽", `{"error":{"code":"insufficient_quota","message":"You exceeded your current quota"}}`, "insufficient_quota"},
+		{"OpenAI 计费文案变体", `{"error":{"code":"exceeded_current_quota"}}`, "exceeded_current_quota"},
+		{"通用配额超限", `{"error":{"code":"quota_exceeded"}}`, "quota_exceeded"},
+		{"大小写不敏感", `{"error":{"code":"Insufficient_Quota"}}`, "Insufficient_Quota"},
+		{"普通限流不识别", `{"error":{"code":"RateLimitExceeded"}}`, ""},
+		{"无 code 字段", `{"error":{"message":"rate limited"}}`, ""},
+		{"畸形体", `not json`, ""},
+	}
+	for _, c := range cases {
+		if got := quota429Code([]byte(c.body)); got != c.want {
+			t.Errorf("%s: got %q want %q", c.name, got, c.want)
+		}
+	}
+}
+
 // 上游 401 → 池内该 Key 禁用并同渠道切备用 Key：命中坏 Key 的请求本身也应成功（3.6 主 Key 报错自动切备用）
 func Test401AutoDisablesPoolKey(t *testing.T) {
 	e := newTestEnv(t)
