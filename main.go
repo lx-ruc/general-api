@@ -42,6 +42,11 @@ func main() {
 		slog.Error("数据库迁移失败", "err", err)
 		os.Exit(1)
 	}
+	// 数据不变量对账：置空无密钥渠道的模型、删除无渠道支撑的孤儿模型（幂等，详见 database.Cleanup）
+	if err := database.Cleanup(db); err != nil {
+		slog.Error("启动数据清理失败", "err", err)
+		os.Exit(1)
+	}
 
 	// 数据迁移：SQLite → 当前库（通常为 postgres），完成后退出
 	if *migrateFrom != "" {
