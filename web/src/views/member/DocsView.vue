@@ -86,12 +86,8 @@ models:
     apiKey: {你的密钥}
     roles: [chat, edit, apply]`)
 
-// 一键接入助手：网关托管的零依赖 Node 脚本（与智谱 coding-helper 同款体验）
+// 一键接入助手：网关托管的零依赖 Node 脚本（向导内可选 接入/卸载，与智谱 coding-helper 同款交互）
 const helperCmd = computed(() => `sh -c "$(curl -fsSL ${location.origin}/agent-helper)"`)
-
-const helperYesCmd = computed(() => `sh -c "$(curl -fsSL ${location.origin}/agent-helper)" install claude-code codex --key {你的密钥} --model ${firstModel.value} --yes`)
-
-const helperUninstallCmd = computed(() => `sh -c "$(curl -fsSL ${location.origin}/agent-helper)" uninstall all`)
 
 // Claude Code：本站 /v1/messages 已原生兼容 Anthropic 协议，直连即可
 const claudeExample = computed(() => `# ~/.claude/settings.json
@@ -178,17 +174,8 @@ async function copy(text: string) {
       <pre style="min-height: auto">{{ helperCmd }}</pre>
       <el-button size="small" class="copy-btn" @click="copy(helperCmd)">复制</el-button>
     </div>
-    <p>在终端执行上面的命令即可启动<b>一键接入助手</b>（需要 Node.js ≥ 18）：先展示各工具接入状态，再用方向键选择 <b>接入 / 卸载</b>——一个脚本完成全部操作。支持 <b>Claude Code、Codex CLI、OpenCode、Crush、Factory Droid、Trae</b> 六款工具，安装只增改自己的配置键、不动其它设置。各工具的手动配置与完整说明见 <router-link to="/docs/agent-helper">文档中心「Agent 一键接入」</router-link>。</p>
-    <p>免交互安装（CI / 脚本场景）：</p>
-    <div class="code-block">
-      <pre>{{ helperYesCmd }}</pre>
-      <el-button size="small" class="copy-btn" @click="copy(helperYesCmd)">复制</el-button>
-    </div>
-    <p>卸载本站配置（保留各工具的其它配置）——也可以再次运行上面的接入助手，在向导里选择「卸载工具」：</p>
-    <div class="code-block" style="margin-bottom: 12px">
-      <pre>{{ helperUninstallCmd }}</pre>
-      <el-button size="small" class="copy-btn" @click="copy(helperUninstallCmd)">复制</el-button>
-    </div>
+    <p>在终端执行上面的命令即可启动<b>一键接入助手</b>（需要 Node.js ≥ 18）：先展示各工具接入状态，再用方向键选择 <b>接入 / 卸载</b>——一个脚本完成全部操作，无须复制其它命令。支持 <b>Claude Code、Codex CLI、OpenCode、Crush、Factory Droid、Trae</b> 六款工具，安装只增改自己的配置键、不动其它设置。各工具的手动配置与完整说明见 <router-link to="/docs/agent-helper">文档中心「Agent 一键接入」</router-link>。</p>
+    <p class="dim">CI / 脚本等无法交互的场景，可在同一命令后加子命令与参数免交互执行（如 <code>install claude-code codex --key {你的密钥} --model {模型} --yes</code>、<code>uninstall all</code>）；日常在终端里用上面的向导即可。</p>
 
     <p class="dim">也可以手动配置：以下工具都支持 OpenAI 兼容接口，把 Base URL 换成本站、密钥换成你的 <code>sk-</code> 密钥即可。配置里的占位符按你的实际值替换。</p>
 
