@@ -211,16 +211,25 @@ func truncateStr(s string, n int) string {
 	return s[:n] + "..."
 }
 
-// relaySpec 端点差异参数化：chat / embeddings / messages 共用同一条编排链路
+// relayProto 数据面端点的协议形态：决定边界的翻译方向，编排内核完全一致
+type relayProto int
+
+const (
+	protoOpenAI     relayProto = iota // OpenAI chat/completions 原生直通
+	protoAnthropic                    // /v1/messages：Anthropic Messages 协议
+	protoResponses                    // /v1/responses：OpenAI Responses 协议（Codex 系客户端）
+)
+
+// relaySpec 端点差异参数化：chat / embeddings / messages / responses 共用同一条编排链路
 // （限流→解析→授权→预检→缓存→选渠道→闸门→转发→分类→结算），chat 行为零变化
 type relaySpec struct {
 	cacheFields []string // 参与精确缓存 key 的字段白名单（固定顺序）
 	allowStream bool     // 是否支持流式（embeddings 不支持）
 	fixedPath   string   // 非空 → 出站路径最后一段替换为该值（如 /embeddings）
 	require     []string // 除 model 外的必填请求体字段
-	// Anthropic Messages 协议（/v1/messages）：入站翻译为 OpenAI 格式、
-	// 出站（响应/SSE/错误形状）翻译回 Anthropic 形状；false = OpenAI 原生直通
-	anthropic bool
+	// 非 OpenAI 协议端点：入站翻译为 OpenAI 格式、出站（响应/SSE/错误形状）
+	// 翻译回该协议形状；翻译只发生在边界（见 anthropic.go / responses.go）
+	proto relayProto
 }
 
 // ChatCompletions POST /v1/chat/completions
@@ -231,7 +240,14 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 // Messages POST /v1/messages：Anthropic Messages 协议（Claude Code 等 Anthropic 系
 // 客户端直连）。协议翻译只发生在边界，编排内核（授权/额度/渠道/映射/计费）完全复用
 func (h *Handler) Messages(c *gin.Context) {
-	h.relay(c, relaySpec{cacheFields: chatCacheFields, allowStream: true, anthropic: true})
+	h.relay(c, relaySpec{cacheFields: chatCacheFields, allowStream: true, proto: protoAnthropic})
+}
+
+// Responses POST /v1/responses：OpenAI Responses 协议（Codex CLI 0.142+ 等客户端
+// 直连，自定义 provider 仅支持 wire_api="responses"）。协议翻译只发生在边界，
+// 编排内核（授权/额度/渠道/映射/计费）完全复用
+func (h *Handler) Responses(c *gin.Context) {
+	h.relay(c, relaySpec{cacheFields: chatCacheFields, allowStream: true, proto: protoResponses})
 }
 
 // Embeddings POST /v1/embeddings：向量接口（RAG/知识库场景）；
@@ -248,9 +264,9 @@ func (h *Handler) Embeddings(c *gin.Context) {
 func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 	start := time.Now()
 	ki := middleware.GetKeyInfo(c)
-	// 错误响应形状：Anthropic 端点用 Anthropic 形状，其余维持 OpenAI 形状
+	// 错误响应形状：Anthropic 端点用 Anthropic 形状，其余（含 Responses）维持 OpenAI 形状
 	werr := openaiError
-	if spec.anthropic {
+	if spec.proto == protoAnthropic {
 		werr = anthropicError
 	}
 
@@ -301,7 +317,8 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		return
 	}
 	var bodyMap map[string]json.RawMessage
-	if spec.anthropic {
+	switch spec.proto {
+	case protoAnthropic:
 		// Anthropic → OpenAI 翻译；失败即请求非法（model/messages 缺失、块格式错误等）
 		bodyMap, err = decodeAnthropicRequest(body)
 		if err != nil {
@@ -309,10 +326,21 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			werr(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 			return
 		}
-	} else if err := json.Unmarshal(body, &bodyMap); err != nil || len(bodyMap) == 0 {
-		rec.Status, rec.Error = http.StatusBadRequest, "invalid JSON body"
-		werr(c, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
-		return
+	case protoResponses:
+		// Responses → OpenAI 翻译；失败即请求非法（model/input 缺失、input 数组格式错误等）。
+		// 必填字段校验在解码器内完成（input 是 string|array，无法走 spec.require 的键存在性检查）
+		bodyMap, err = decodeResponsesRequest(body)
+		if err != nil {
+			rec.Status, rec.Error = http.StatusBadRequest, err.Error()
+			werr(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+	default:
+		if err := json.Unmarshal(body, &bodyMap); err != nil || len(bodyMap) == 0 {
+			rec.Status, rec.Error = http.StatusBadRequest, "invalid JSON body"
+			werr(c, http.StatusBadRequest, "invalid_request_error", "invalid JSON body")
+			return
+		}
 	}
 
 	modelName := rawString(bodyMap["model"])
@@ -392,11 +420,14 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			rec.CacheHit = 1
 			c.Writer.Header().Set("X-Tg-Cache", "hit")
 			c.Data(http.StatusOK, "application/json", data)
-			// 缓存里存的是本协议形状（Anthropic 端点存翻译后的体），usage 按协议取
+			// 缓存里存的是本协议形状（翻译型端点存翻译后的体），usage 按协议取
 			var usage *Usage
-			if spec.anthropic {
+			switch spec.proto {
+			case protoAnthropic:
 				usage = anthropicUsageFrom(data)
-			} else {
+			case protoResponses:
+				usage = responsesUsageFrom(data)
+			default:
 				var ur struct {
 					Usage *Usage `json:"usage"`
 				}
@@ -613,10 +644,13 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			c.Writer.Header().Set("Cache-Control", "no-cache")
 			c.Writer.Header().Set("X-Accel-Buffering", "no")
 			c.Writer.WriteHeader(resp.StatusCode)
-			// SSE 翻译：Anthropic 端点逐块翻译成 Anthropic 事件流，其余原样透传
+			// SSE 翻译：协议型端点逐块翻译成本协议事件流，OpenAI 原生直通
 			pipe := pipeSSE
-			if spec.anthropic {
+			switch spec.proto {
+			case protoAnthropic:
 				pipe = anthropicPipeSSE
+			case protoResponses:
+				pipe = responsesPipeSSE
 			}
 			usage, perr := pipe(c.Writer, c.Request.Context(), resp.Body, modelSwap)
 			_ = resp.Body.Close()
@@ -677,17 +711,27 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 				msg = fmt.Sprintf("upstream returned %d", resp.StatusCode)
 			}
 			rec.Error = truncateStr(msg, 500)
-			if spec.anthropic {
+			if spec.proto == protoAnthropic {
 				data = anthropicErrorBody(msg)
 			}
 			c.Data(resp.StatusCode, ct, data)
 			return attemptDone
 		}
-		// 2xx：Anthropic 端点先翻译成 Messages 形状（缓存与客户端拿到的都是本协议形状，
+		// 2xx：协议型端点先翻译成本协议形状（缓存与客户端拿到的都是本协议形状，
 		// 回放零再翻译）；翻译失败视为渠道应答异常，换下一渠道
 		var usage *Usage
-		if spec.anthropic {
+		switch spec.proto {
+		case protoAnthropic:
 			out, u, eerr := encodeAnthropicResponse(data, modelName)
+			if eerr != nil {
+				onlyRateLimited, authOnly = false, false
+				lastErr = "translate response: " + eerr.Error()
+				h.noteChannelFailure(cand)
+				return attemptNextChannel
+			}
+			data, usage = out, u
+		case protoResponses:
+			out, u, eerr := encodeResponsesResponse(data, modelName)
 			if eerr != nil {
 				onlyRateLimited, authOnly = false, false
 				lastErr = "translate response: " + eerr.Error()
@@ -701,7 +745,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			h.Coord.CacheSet(cacheKey, data, h.CacheTTL)
 		}
 		c.Data(resp.StatusCode, ct, data)
-		if !spec.anthropic {
+		if spec.proto == protoOpenAI {
 			var ur struct {
 				Usage *Usage `json:"usage"`
 			}

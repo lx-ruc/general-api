@@ -95,6 +95,15 @@ for await (const chunk of stream) {
     <p class="doc-desc" style="margin-top: 4px">另有 Anthropic Messages 兼容端点 <code>/v1/messages</code>：Claude Code 等 Anthropic 系客户端可直连，
       鉴权头 <code>x-api-key</code> 或 <code>Authorization: Bearer</code> 均可，system / tools / tool_result、流式 SSE 与计费口径与本端点完全一致。</p>
 
+    <div class="doc-endpoint" style="margin-top: 8px">
+      <span class="doc-method post">POST</span>
+      <span class="doc-path">/v1/responses</span>
+      <span class="doc-base">{{ baseURL }}</span>
+    </div>
+    <p class="doc-desc" style="margin-top: 4px">另有 OpenAI Responses 兼容端点 <code>/v1/responses</code>：Codex CLI（0.142+，wire_api = "responses"）
+      等 Responses 协议客户端可直连，<code>instructions</code> / <code>input</code>（字符串或 items 数组）/ 扁平 tools、
+      function_call 往返、流式 SSE 事件流（response.created → output_text.delta → response.completed）与计费口径同本端点。</p>
+
     <div class="doc-prose">
       <h2>鉴权</h2>
       <p>HTTP Header 携带 <code>Authorization: Bearer {你的密钥}</code>。模型必须在该密钥的授权列表内，

@@ -34,7 +34,7 @@ python3 tools/e2e/run.py             # 端到端回归（需网关先跑在 :808
 单端口同服三个平面（路由装配见 `internal/api/router.go`）：
 
 - `/healthz`、`/metrics`（手写 Prometheus 文本格式，零依赖；`security.metrics_token` 非空时需鉴权）
-- `/v1` 数据面：API key 鉴权（`middleware/APIKeyAuth`），端点仅 `/v1/chat/completions`、`/v1/embeddings`、`/v1/models`。SSE 流式透传。
+- `/v1` 数据面：API key 鉴权（`middleware/APIKeyAuth`），端点 `/v1/chat/completions`、`/v1/embeddings`、`/v1/models`，以及两个协议翻译端点：`/v1/messages`（Anthropic Messages，Claude Code 直连）与 `/v1/responses`（OpenAI Responses，Codex CLI 0.142+ 直连）——翻译只发生在边界（`gateway/anthropic.go`、`gateway/responses.go`），编排/计费内核完全复用。SSE 流式透传。
 - `/api` 管理面：JWT + RBAC，handler 按 `internal/api/{platform,org,member}/` 三角色分包；org 隔离靠 handler 内每条查询强制 `WHERE org_id`（没有全局中间件，新增 org 接口必须自己带）。管理面同样接受 `tgp_` 访问令牌（`JWTAuth` 双轨：`Bearer tgp_...` 查表载入属主，权限与登录账号完全一致，SHA-256 落库）。
 - 其余路径走 `internal/webui` 的 SPA fallback（`/api`、`/v1` 前缀返回 JSON 404，不落入 SPA）。
 

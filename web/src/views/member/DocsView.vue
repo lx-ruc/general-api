@@ -60,7 +60,8 @@ const resp = await client.chat.completions.create({
 console.log(resp.choices[0].message.content);`)
 
 // ---- Agent / 编程工具接入 ----
-// Codex CLI：~/.codex/config.toml 自定义 provider（wire_api=chat 即 OpenAI 对话格式）
+// Codex CLI：~/.codex/config.toml 自定义 provider（wire_api=responses，走本站 /v1/responses；
+// codex 0.142+ 已移除 chat 协议）
 const codexExample = computed(() => `# ~/.codex/config.toml
 model = "${firstModel.value}"
 model_provider = "huimu"
@@ -69,7 +70,7 @@ model_provider = "huimu"
 name = "huimu"
 base_url = "${baseURL}"
 env_key = "HUIMU_API_KEY"   # export HUIMU_API_KEY={你的密钥}
-wire_api = "chat"`)
+wire_api = "responses"`)
 
 // Continue：~/.continue/config.yaml（旧版为 config.json 的 models 数组，字段同名）
 const continueExample = computed(() => `# ~/.continue/config.yaml
@@ -137,6 +138,7 @@ async function copy(text: string) {
       <el-descriptions-item label="鉴权方式">请求头 <code>Authorization: Bearer {你的密钥}</code></el-descriptions-item>
       <el-descriptions-item label="对话接口"><code>POST {{ baseURL }}/chat/completions</code>（支持 stream）</el-descriptions-item>
       <el-descriptions-item label="Anthropic 对话接口"><code>POST {{ baseURL }}/messages</code>（Claude Code 等原生 Anthropic 客户端直连，鉴权头 <code>x-api-key</code> 或 Bearer 均可）</el-descriptions-item>
+      <el-descriptions-item label="Responses 对话接口"><code>POST {{ baseURL }}/responses</code>（Codex CLI 等 OpenAI Responses 协议客户端直连，instructions / 工具调用、流式 SSE 与计费口径与对话接口一致）</el-descriptions-item>
       <el-descriptions-item label="向量接口"><code>POST {{ baseURL }}/embeddings</code></el-descriptions-item>
       <el-descriptions-item label="模型列表"><code>GET {{ baseURL }}/models</code></el-descriptions-item>
       <el-descriptions-item label="可用模型">

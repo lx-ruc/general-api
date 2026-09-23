@@ -90,6 +90,8 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		v1.POST("/embeddings", gw.Embeddings)
 		// Anthropic Messages 协议：Claude Code 等 Anthropic 系客户端直连
 		v1.POST("/messages", gw.Messages)
+		// OpenAI Responses 协议：Codex CLI 0.142+ 等客户端直连（wire_api="responses"）
+		v1.POST("/responses", gw.Responses)
 		v1.GET("/models", gw.ListModels)
 	}
 

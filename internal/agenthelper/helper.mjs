@@ -2,7 +2,7 @@
 // 慧沐引擎 · Agent 一键接入助手
 // 零依赖（Node >= 18）。支持的编码工具与配置文件位置对齐智谱 coding-helper：
 //   claude-code   ~/.claude/settings.json（env 注入，走本站 /v1/messages Anthropic 端点）
-//   codex         ~/.codex/config.toml（自定义 provider，wire_api=chat）
+//   codex         ~/.codex/config.toml（自定义 provider，wire_api=responses，走 /v1/responses）
 //   opencode      ~/.config/opencode/opencode.json（openai-compatible provider）
 //   crush         ~/.config/crush/crush.json（providers.huimu）
 //   factory-droid ~/.factory/settings.json（customModels，generic-chat-completion-api）
@@ -114,7 +114,7 @@ function installCodexToml(text, { base, key, model }) {
     'name = "huimu"',
     `base_url = "${base}/v1"`,
     `experimental_bearer_token = "${key}"`,
-    'wire_api = "chat"',
+    'wire_api = "responses"', // codex 0.142+ 已移除 chat，自定义 provider 只认 responses
   ].join('\n');
   t = head + t.replace(/^\n+/, '');
   if (t.trim() !== '') t = t.trimEnd() + '\n';
@@ -482,7 +482,7 @@ function selftest() {
   defs['codex'].install();
   const t1 = readFileSync(join(home, '.codex', 'config.toml'), 'utf-8');
   expect('codex 顶层键', t1.startsWith('model_provider = "huimu"\nmodel = "m-alpha"'));
-  expect('codex provider 段', t1.includes('[model_providers.huimu]') && t1.includes('wire_api = "chat"'));
+  expect('codex provider 段', t1.includes('[model_providers.huimu]') && t1.includes('wire_api = "responses"'));
   writeFileSync(join(home, '.codex', 'config.toml'),
     '# 用户注释\nuser_key = 1\nmodel = "user-model"\n\n[other]\nx = 2\n');
   defs['codex'].install();

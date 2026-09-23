@@ -34,7 +34,7 @@ model_provider = "huimu"
 name = "huimu"
 base_url = "${baseURL}"
 env_key = "HUIMU_API_KEY"   # export HUIMU_API_KEY={你的密钥}
-wire_api = "chat"`)
+wire_api = "responses"`)
 
 const opencodeExample = computed(() => `# ~/.config/opencode/opencode.json
 {
@@ -95,7 +95,7 @@ const manualTabs = computed<ManualTab[]>(() => [
     key: 'codex',
     label: 'Codex CLI',
     code: codexExample.value,
-    note: '自定义 provider 走 OpenAI 对话格式（wire_api = "chat"），密钥经环境变量 HUIMU_API_KEY 注入（写在 shell 配置里 export）。',
+    note: '自定义 provider 走本站 /v1/responses（OpenAI Responses 协议）——Codex CLI 0.142 起已移除 wire_api = "chat"，必须用 responses；密钥经环境变量 HUIMU_API_KEY 注入（写在 shell 配置里 export）。',
   },
   {
     key: 'opencode',
@@ -153,7 +153,7 @@ const currentTab = computed(() => manualTabs.value.find((t) => t.key === tab.val
             <tr>
               <td><strong>Codex CLI</strong></td>
               <td><code>~/.codex/config.toml</code></td>
-              <td>自定义 provider，<code>wire_api = "chat"</code></td>
+              <td>自定义 provider，<code>wire_api = "responses"</code>（走 <code>/v1/responses</code>）</td>
             </tr>
             <tr>
               <td><strong>OpenCode</strong></td>
