@@ -7,8 +7,9 @@
 //   opencode      ~/.config/opencode/opencode.json（openai-compatible provider）
 //   crush         ~/.config/crush/crush.json（providers.huimu）
 //   factory-droid ~/.factory/settings.json（customModels，generic-chat-completion-api）
+//   trae          ~/.trae/huimu.json（仅本站标记；Trae 不开放模型配置文件，助手打印 IDE 内登记指引）
 // 用法：
-//   node helper.mjs                                   # 交互式向导
+//   node helper.mjs                                   # 交互式向导（状态总览 + 方向键选择 接入/卸载）
 //   node helper.mjs install claude-code codex         # 安装指定 agent
 //   node helper.mjs uninstall claude-code             # 卸载指定 agent 配置
 //   node helper.mjs status                            # 查看各 agent 配置状态
@@ -18,11 +19,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, mkdtemp
 import { join, dirname } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createInterface } from 'node:readline/promises';
+import { emitKeypressEvents, createInterface as createLineInterface } from 'node:readline';
 import { stdin, stdout } from 'node:process';
 
 const DEFAULT_BASE = '__HUIMU_BASE__'; // 网关下发时注入实际地址
 const PROVIDER = 'huimu';
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 
 // ---------------- 参数解析 ----------------
 // flag 可出现在任意位置（引导器会把 --base 前置），第一个位置参数是命令，其余是命令参数
@@ -60,9 +62,110 @@ function writeJSON(path, obj) {
   writeAtomic(path, JSON.stringify(obj, null, 2) + '\n');
 }
 
-async function ask(rl, question) {
-  const answer = (await rl.question(question)).trim();
-  return answer;
+// 文本输入：TTY 下按次创建/关闭 readline（不与 keySelect 的 raw mode 冲突）；
+// 管道输入下 readline 会一口气吐出所有 line 事件（问句间隙没有 pending question 时行会被丢弃），
+// 因此自维护行队列，按需取行。
+let pipeLines = null;
+function pipeLineReader() {
+  if (pipeLines) return pipeLines;
+  const queue = [];
+  const waiters = [];
+  const rl = createLineInterface({ input: stdin }); // 同步事件式读取
+  rl.on('line', (line) => {
+    const w = waiters.shift();
+    if (w) w.resolve(line); else queue.push(line);
+  });
+  rl.on('close', () => { while (waiters.length) waiters.shift().resolve(''); }); // EOF：等待者收到空串
+  pipeLines = {
+    next: () => new Promise((resolve) => (queue.length ? resolve(queue.shift()) : waiters.push({ resolve }))),
+    close: () => rl.close(),
+  };
+  return pipeLines;
+}
+
+async function askOne(question) {
+  if (stdin.isTTY) {
+    const rl = await createInterface({ input: stdin, output: stdout });
+    try { return (await rl.question(question)).trim(); } finally { await rl.close(); }
+  }
+  if (question) process.stdout.write(question);
+  return (await pipeLineReader().next()).trim();
+}
+function askClose() {
+  if (pipeLines) { pipeLines.close(); pipeLines = null; }
+}
+
+// ---------------- 方向键选择器（对齐 z_ai coding-helper：↑↓ 移动、回车确认）----------------
+// 零依赖：TTY 下 raw mode + keypress；非 TTY（管道 / CI）退化为序号输入。
+// 单选返回下标，多选返回下标数组，取消返回 null。
+
+function parsePickOne(ans, count) {
+  if (ans === 'q') return null;
+  const n = parseInt(ans, 10);
+  return n >= 1 && n <= count ? n - 1 : 0;
+}
+
+function parsePickList(ans, count, preselected) {
+  if (ans === 'q') return null;
+  if (ans === '') return preselected && preselected.length ? [...preselected] : Array.from({ length: count }, (_, i) => i);
+  if (ans === 'a') return Array.from({ length: count }, (_, i) => i);
+  return [...new Set(ans.split(/[,，\s]+/).map((n) => parseInt(n, 10))
+    .filter((n) => n >= 1 && n <= count).map((n) => n - 1))];
+}
+
+async function keySelect({ title, items, multi = false, checked = null }) {
+  const hint = multi ? '（↑↓ 移动，空格 勾选，a 全选/清空，回车 确认，Ctrl+C 取消）' : '（↑↓ 移动，回车 确认，Ctrl+C 取消）';
+  const labelLine = (it, i, cursor, sel) => {
+    const cur = i === cursor ? '\x1b[36m❯\x1b[0m ' : '  ';
+    const box = multi ? (sel.has(i) ? '\x1b[32m[x]\x1b[0m ' : '[ ] ') : '';
+    return `${cur}${box}${it.label}${it.status ? '  \x1b[2m· ${it.status}\x1b[0m' : ''}`;
+  };
+
+  if (!stdin.isTTY) { // 非 TTY：序号选择退化
+    log('\n' + title + hint);
+    items.forEach((it, i) => log(`  ${i + 1}. ${it.label}${it.status ? ' · ' + it.status : ''}`));
+    const ans = await askOne(multi ? '输入序号（逗号分隔，a=全部，q=取消）: ' : '输入序号（回车默认 1，q 取消）: ');
+    if (multi) {
+      const pre = checked ? items.map((it, i) => (checked(it) ? i : -1)).filter((i) => i >= 0) : null;
+      return parsePickList(ans, items.length, pre);
+    }
+    return parsePickOne(ans, items.length);
+  }
+
+  const preRaw = stdin.isRaw;
+  stdin.setRawMode(true);
+  stdin.resume();
+  emitKeypressEvents(stdin);
+  let cursor = 0;
+  let drew = 0;
+  const sel = new Set(checked ? items.map((it, i) => (checked(it) ? i : -1)).filter((i) => i >= 0) : []);
+  return await new Promise((resolve) => {
+    const finish = (val) => {
+      stdin.setRawMode(preRaw === true);
+      stdin.removeListener('keypress', onKey);
+      stdin.pause();
+      process.stdout.write('\n');
+      resolve(val);
+    };
+    const draw = () => {
+      process.stdout.write(title + ' \x1b[2m' + hint + '\x1b[0m\n' + items.map((it, i) => labelLine(it, i, cursor, sel)).join('\n') + '\n');
+      drew = items.length + 1;
+    };
+    const onKey = (str, key) => {
+      if (!key) return;
+      if (key.ctrl && key.name === 'c') return finish(null);
+      if (key.name === 'up') cursor = (cursor - 1 + items.length) % items.length;
+      else if (key.name === 'down') cursor = (cursor + 1) % items.length;
+      else if (multi && key.name === 'space') { if (sel.has(cursor)) sel.delete(cursor); else sel.add(cursor); }
+      else if (multi && (str === 'a' || str === 'A')) { if (sel.size === items.length) sel.clear(); else items.forEach((_, i) => sel.add(i)); }
+      else if (key.name === 'return' || key.name === 'enter') return finish(multi ? [...sel].sort((a, b) => a - b) : cursor);
+      else return; // 其余按键不重绘
+      process.stdout.write(`\x1b[${drew}A\x1b[J`); // 光标上移擦除整块后重绘
+      draw();
+    };
+    stdin.on('keypress', onKey);
+    draw();
+  });
 }
 
 function log(msg) { console.log(msg); }
@@ -230,6 +333,9 @@ function agentDefs(ctx) {
         return env.ANTHROPIC_BASE_URL === base ? `已接入（模型 ${env.ANTHROPIC_DEFAULT_SONNET_MODEL || '?'}）`
           : env.ANTHROPIC_BASE_URL ? `已接入其它服务（${env.ANTHROPIC_BASE_URL}）` : '未配置';
       },
+      installed() {
+        return (readJSON(join(home, '.claude', 'settings.json')).env || {}).ANTHROPIC_BASE_URL === base;
+      },
     },
     'codex': {
       name: 'Codex CLI',
@@ -250,6 +356,10 @@ function agentDefs(ctx) {
         if (!existsSync(p)) return '未配置';
         const t = readFileSync(p, 'utf-8');
         return t.includes(`[model_providers.${PROVIDER}]`) ? '已接入' : '未配置';
+      },
+      installed() {
+        const p = join(home, '.codex', 'config.toml');
+        return existsSync(p) && readFileSync(p, 'utf-8').includes(`[model_providers.${PROVIDER}]`);
       },
     },
     'opencode': {
@@ -290,6 +400,9 @@ function agentDefs(ctx) {
         if (cfg.provider && cfg.provider[PROVIDER]) return `已接入（模型 ${cfg.model || '?'}）`;
         return cfg.provider && Object.keys(cfg.provider).length ? '已接入其它服务' : '未配置';
       },
+      installed() {
+        return !!(readJSON(join(home, '.config', 'opencode', 'opencode.json')).provider || {})[PROVIDER];
+      },
     },
     'crush': {
       name: 'Crush',
@@ -318,6 +431,9 @@ function agentDefs(ctx) {
       status() {
         const cfg = readJSON(join(home, '.config', 'crush', 'crush.json'));
         return cfg.providers && cfg.providers[PROVIDER] ? '已接入' : '未配置';
+      },
+      installed() {
+        return !!(readJSON(join(home, '.config', 'crush', 'crush.json')).providers || {})[PROVIDER];
       },
     },
     'factory-droid': {
@@ -354,11 +470,46 @@ function agentDefs(ctx) {
         const hit = (cfg.customModels || []).find((m) => String(m.displayName || '').includes('Huimu'));
         return hit ? `已接入（模型 ${hit.model}）` : '未配置';
       },
+      installed() {
+        return (readJSON(join(home, '.factory', 'settings.json')).customModels || [])
+          .some((m) => String(m.displayName || '').includes('Huimu'));
+      },
+    },
+    'trae': {
+      name: 'Trae',
+      configPath: join(home, '.trae', 'huimu.json'), // 本站标记文件；Trae 的模型登记在 IDE 设置内（GUI）
+      install() {
+        const p = join(home, '.trae', 'huimu.json');
+        writeJSON(p, { provider: PROVIDER, base, model });
+      },
+      uninstall() {
+        const p = join(home, '.trae', 'huimu.json');
+        if (existsSync(p)) unlinkSync(p);
+      },
+      status() {
+        const cfg = readJSON(join(home, '.trae', 'huimu.json'));
+        return cfg.model ? `已接入（模型 ${cfg.model}，IDE 内登记）` : '未配置';
+      },
+      installed() {
+        return existsSync(join(home, '.trae', 'huimu.json'));
+      },
+      // Trae 不开放可写的模型配置文件：写标记后打印 IDE 内登记的三样信息
+      postInstallHint() {
+        return [
+          '  Trae 内登记（设置 → 模型 → 添加模型 → 自定义配置）：',
+          `    API 地址：${base}/v1（开启「完整 URL」开关时填 ${base}/v1/chat/completions）`,
+          `    API Key：${key}`,
+          `    模型 ID：${model}`,
+        ].join('\n');
+      },
+      postUninstallHint() {
+        return '  提示：Trae 设置 → 模型 中登记的自定义模型请在 IDE 内手动删除。';
+      },
     },
   };
 }
 
-const AGENT_IDS = ['claude-code', 'codex', 'opencode', 'crush', 'factory-droid'];
+const AGENT_IDS = ['claude-code', 'codex', 'opencode', 'crush', 'factory-droid', 'trae'];
 
 // ---------------- 密钥校验与模型拉取 ----------------
 async function fetchModels(base, key) {
@@ -383,7 +534,7 @@ function resolveBase(flags) {
   return base;
 }
 
-async function resolveModel(flags, base, key, rl) {
+async function resolveModel(flags, base, key) {
   if (flags.model) return flags.model;
   let models = [];
   try {
@@ -391,40 +542,30 @@ async function resolveModel(flags, base, key, rl) {
   } catch (e) {
     warn(`${e.message}，模型列表不可用`);
   }
-  if (models.length === 0) {
-    if (!rl) die('无法确定模型：请用 --model 指定（密钥无效或网关不可达）');
-    return ask(rl, '模型名（如 deepseek-v4-flash）: ');
-  }
-  if (!rl) return models[0];
-  log('\n可用模型：');
-  models.forEach((m, i) => log(`  ${i + 1}. ${m}`));
-  const pick = await ask(rl, `选择模型序号（回车默认 1）: `);
-  const idx = parseInt(pick, 10);
-  return idx >= 1 && idx <= models.length ? models[idx - 1] : models[0];
+  if (models.length === 0) return askOne('模型名（如 deepseek-v4-flash）: ');
+  if (flags.yes) return models[0]; // 免交互：默认取第一个
+  const pick = await keySelect({ title: '选择默认模型：', items: models.map((m) => ({ label: m })) });
+  return pick === null ? null : models[pick];
 }
 
 async function cmdInstall(flags, agents, base) {
   const key = flags.key || process.env.HUIMU_API_KEY;
   if (!key || !key.startsWith('sk-')) die('缺少有效密钥：请用 --key sk-... 指定（或设置 HUIMU_API_KEY 环境变量）');
-  const rl = flags.yes ? null : await createInterface({ input: stdin, output: stdout });
-  try {
-    const model = await resolveModel(flags, base, key, rl);
-    const ctx = { home: homedir(), base, key, model };
-    const defs = agentDefs(ctx);
-    log('');
-    for (const id of agents) {
-      const d = defs[id];
-      try {
-        d.install();
-        ok(`✓ ${d.name} 已接入（模型 ${model}）→ ${d.configPath}`);
-      } catch (e) {
-        warn(`✗ ${d.name} 安装失败：${e.message}`);
-      }
+  const model = await resolveModel(flags, base, key);
+  if (!model) { warn('未选择模型，已取消。'); return; }
+  const defs = agentDefs({ home: homedir(), base, key, model });
+  log('');
+  for (const id of agents) {
+    const d = defs[id];
+    try {
+      d.install();
+      ok(`✓ ${d.name} 已接入（模型 ${model}）→ ${d.configPath}`);
+      if (typeof d.postInstallHint === 'function') log(d.postInstallHint());
+    } catch (e) {
+      warn(`✗ ${d.name} 安装失败：${e.message}`);
     }
-    log(`\n完成。卸载任一 agent：node helper.mjs uninstall ${agents.join(' ')}`);
-  } finally {
-    if (rl) await rl.close();
   }
+  log('\n完成。再次运行向导（无参数）可随时切换或卸载。');
 }
 
 function cmdUninstall(agents) {
@@ -434,6 +575,7 @@ function cmdUninstall(agents) {
     try {
       d.uninstall();
       ok(`✓ ${d.name} 已卸载本站配置（其余配置保留）`);
+      if (typeof d.postUninstallHint === 'function') log(d.postUninstallHint());
     } catch (e) {
       warn(`✗ ${d.name} 卸载失败：${e.message}`);
     }
@@ -448,53 +590,79 @@ function cmdStatus(base) {
   }
 }
 
+// 交互式向导：状态总览 + 方向键选择 接入/卸载（一个脚本完成全部操作，无须再复制卸载命令）
 async function wizard(flags, base) {
-  log('慧沐引擎 · Agent 一键接入助手\n');
-  const rl = await createInterface({ input: stdin, output: stdout });
-  try {
-    let key = flags.key || process.env.HUIMU_API_KEY || '';
+  log(`慧沐引擎 · Agent 接入助手 v${VERSION}`);
+  let key = flags.key || process.env.HUIMU_API_KEY || '';
+  let models = null; // 密钥校验后的模型缓存（null=未校验，校验失败保持 null 以便重试）
+  for (;;) {
+    const defs = agentDefs({ home: homedir(), base, key: '', model: '' });
+    const items = AGENT_IDS.map((id) => ({ id, label: defs[id].name.padEnd(14), status: defs[id].status() }));
+    log('\n当前接入状态：');
+    for (const id of AGENT_IDS) log(`  ${defs[id].name.padEnd(14)}${defs[id].status()}`);
+
+    const op = await keySelect({
+      title: '\n选择操作：',
+      items: [{ label: '接入工具' }, { label: '卸载工具' }, { label: '刷新状态' }, { label: '退出' }],
+    });
+    if (op === null || op === 3) { log('再见。'); return; }
+    if (op === 2) { models = null; continue; } // 刷新：重新探测状态并重试密钥校验
+
+    if (op === 1) { // 卸载：只预选已接入本站的工具，无须密钥
+      const picks = await keySelect({ title: '要卸载的工具：', items, multi: true, checked: (it) => defs[it.id].installed() });
+      if (picks === null || picks.length === 0) { log('未选择，返回。'); continue; }
+      log('');
+      for (const i of picks) {
+        const d = defs[items[i].id];
+        try {
+          d.uninstall();
+          ok(`✓ ${d.name} 已卸载本站配置（其余配置保留）`);
+          if (typeof d.postUninstallHint === 'function') log(d.postUninstallHint());
+        } catch (e) {
+          warn(`✗ ${d.name} 卸载失败：${e.message}`);
+        }
+      }
+      continue;
+    }
+
+    // 接入
     if (!key.startsWith('sk-')) {
-      key = await ask(rl, 'API 密钥（sk- 开头，管理台「我的密钥」创建）: ');
+      key = await askOne('API 密钥（sk- 开头，管理台「我的密钥」创建，q 返回）: ');
+      if (!key.startsWith('sk-')) { warn('密钥应以 sk- 开头，返回菜单。'); continue; }
     }
-    let models = [];
-    try {
-      models = await fetchModels(base, key);
-      ok(`密钥有效，可用模型 ${models.length} 个`);
-    } catch (e) {
-      warn(e.message);
+    if (models === null) {
+      try {
+        models = await fetchModels(base, key);
+        ok(`密钥有效，可用模型 ${models.length} 个`);
+      } catch (e) {
+        warn(`${e.message}（可稍后在「刷新状态」后重试，或直接手输模型名）`);
+      }
     }
-    log('\n要接入的编码工具（逗号分隔序号，回车全选）：');
-    AGENT_IDS.forEach((id, i) => log(`  ${i + 1}. ${agentDefs({ home: '', base: '', key: '', model: '' })[id].name}`));
-    const pick = await ask(rl, '选择: ');
-    let ids = pick === '' ? AGENT_IDS : pick.split(/[,，\s]+/).map((n) => AGENT_IDS[parseInt(n, 10) - 1]).filter(Boolean);
-    if (ids.length === 0) ids = AGENT_IDS;
-
+    const picks = await keySelect({ title: '要接入的工具：', items, multi: true, checked: () => true });
+    if (picks === null || picks.length === 0) { log('未选择，返回。'); continue; }
     let model = flags.model || '';
-    if (models.length > 0) {
-      log('\n可用模型：');
-      models.forEach((m, i) => log(`  ${i + 1}. ${m}`));
-      const mpick = await ask(rl, `选择模型序号（回车默认 1）: `);
-      const idx = parseInt(mpick, 10);
-      model = idx >= 1 && idx <= models.length ? models[idx - 1] : models[0];
-    } else {
-      model = model || await ask(rl, '模型名: ');
+    if (!model) {
+      if (models && models.length > 0) {
+        const m = await keySelect({ title: '选择默认模型：', items: models.map((mm) => ({ label: mm })) });
+        if (m === null) { log('未选择模型，返回。'); continue; }
+        model = models[m];
+      } else {
+        model = await askOne('模型名（如 deepseek-v4-flash）: ');
+        if (!model) { warn('未输入模型，返回。'); continue; }
+      }
     }
-
-    const ctx = { home: homedir(), base, key, model };
-    const defs = agentDefs(ctx);
+    const adefs = agentDefs({ home: homedir(), base, key, model });
     log('');
-    for (const id of ids) {
-      const d = defs[id];
+    for (const i of picks) {
+      const d = adefs[items[i].id];
       try {
         d.install();
         ok(`✓ ${d.name} 已接入（模型 ${model}）→ ${d.configPath}`);
+        if (typeof d.postInstallHint === 'function') log(d.postInstallHint());
       } catch (e) {
         warn(`✗ ${d.name} 安装失败：${e.message}`);
       }
     }
-    log(`\n完成。卸载：node helper.mjs uninstall ${ids.join(' ')}`);
-  } finally {
-    await rl.close();
   }
 }
 
@@ -584,6 +752,21 @@ function selftest() {
   const f3 = readJSON(join(home, '.factory', 'settings.json'));
   expect('droid 卸载还原', f3.customModels.length === 1 && f3.customModels[0].displayName === 'My Own');
 
+  // trae：无可写模型配置 → 标记文件 + 引导
+  defs['trae'].install();
+  const tr1 = readJSON(join(home, '.trae', 'huimu.json'));
+  expect('trae 标记写入', tr1.provider === 'huimu' && tr1.base === ctx.base && tr1.model === 'm-alpha');
+  expect('trae installed 判定', defs['trae'].installed() === true && defs['trae'].status().includes('m-alpha'));
+  defs['trae'].uninstall();
+  expect('trae 卸载清理标记', !existsSync(join(home, '.trae', 'huimu.json')));
+
+  // 非 TTY 序号解析（选择器退化路径）
+  expect('parsePickOne 序号与默认', parsePickOne('2', 4) === 1 && parsePickOne('', 4) === 0 && parsePickOne('q', 4) === null);
+  expect('parsePickList 全选/子集/预选', JSON.stringify(parsePickList('a', 3)) === '[0,1,2]'
+    && JSON.stringify(parsePickList('1,3', 3)) === '[0,2]'
+    && JSON.stringify(parsePickList('', 3, [2])) === '[2]'
+    && parsePickList('q', 3) === null);
+
   if (failed > 0) die(`\n自检失败 ${failed} 项`);
   ok('\n自检全部通过');
 }
@@ -596,23 +779,27 @@ async function main() {
   if (command === 'selftest') return selftest();
 
   const base = resolveBase(flags);
-  if (command === 'status') return cmdStatus(base);
+  try {
+    if (command === 'status') return cmdStatus(base);
 
-  if (command === 'install') {
-    const agents = flags._.filter((a) => AGENT_IDS.includes(a));
-    if (agents.length === 0) die(`请指定要接入的 agent：${AGENT_IDS.join(' / ')}（或多个空格分隔）`);
-    const bad = flags._.filter((a) => !AGENT_IDS.includes(a));
-    if (bad.length) warn(`忽略不支持的 agent：${bad.join(', ')}（支持：${AGENT_IDS.join(' / ')}）`);
-    return cmdInstall(flags, agents, base);
+    if (command === 'install') {
+      const agents = flags._.filter((a) => AGENT_IDS.includes(a));
+      if (agents.length === 0) die(`请指定要接入的 agent：${AGENT_IDS.join(' / ')}（或多个空格分隔）`);
+      const bad = flags._.filter((a) => !AGENT_IDS.includes(a));
+      if (bad.length) warn(`忽略不支持的 agent：${bad.join(', ')}（支持：${AGENT_IDS.join(' / ')}）`);
+      return await cmdInstall(flags, agents, base);
+    }
+    if (command === 'uninstall') {
+      if (flags._.includes('all')) return cmdUninstall(AGENT_IDS);
+      const agents = flags._.filter((a) => AGENT_IDS.includes(a));
+      if (agents.length === 0) die(`请指定要卸载的 agent：${AGENT_IDS.join(' / ')}，或 uninstall all`);
+      return cmdUninstall(agents);
+    }
+    if (command && command !== 'wizard') die(`未知命令：${command}\n用法：helper.mjs [install|uninstall|status|selftest] [agent...] [--base --key --model --yes]`);
+    return await wizard(flags, base);
+  } finally {
+    askClose();
   }
-  if (command === 'uninstall') {
-    if (flags._.includes('all')) return cmdUninstall(AGENT_IDS);
-    const agents = flags._.filter((a) => AGENT_IDS.includes(a));
-    if (agents.length === 0) die(`请指定要卸载的 agent：${AGENT_IDS.join(' / ')}，或 uninstall all`);
-    return cmdUninstall(agents);
-  }
-  if (command && command !== 'wizard') die(`未知命令：${command}\n用法：helper.mjs [install|uninstall|status|selftest] [agent...] [--base --key --model --yes]`);
-  return wizard(flags, base);
 }
 
 main().catch((e) => die(e.message));
