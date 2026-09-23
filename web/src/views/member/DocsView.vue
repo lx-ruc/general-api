@@ -261,7 +261,8 @@ h3 { margin: 20px 0 10px; color: #303133; }
 .dim { color: #909399; font-size: 12.5px; }
 .code-block { position: relative; max-width: 760px; }
 .code-block pre {
-  background: #0d1117; color: #e6edf3; padding: 14px 16px; border-radius: 6px;
+  background: var(--tg-paper); color: var(--tg-ink); border: 1px solid var(--tg-line);
+  padding: 14px 16px; border-radius: 6px;
   overflow-x: auto; font-size: 12.5px; line-height: 1.6; margin: 0;
 }
 .copy-btn { position: absolute; top: 8px; right: 8px; }
