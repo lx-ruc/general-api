@@ -3,6 +3,7 @@
 // 零依赖（Node >= 18）。支持的编码工具与配置文件位置对齐智谱 coding-helper：
 //   claude-code   ~/.claude/settings.json（env 注入，走本站 /v1/messages Anthropic 端点）
 //   codex         ~/.codex/config.toml（自定义 provider，wire_api=responses，走 /v1/responses）
+//                 + ~/.codex/models.json（模型元数据，桌面端 ChatGPT 内置 Codex 识别用）
 //   opencode      ~/.config/opencode/opencode.json（openai-compatible provider）
 //   crush         ~/.config/crush/crush.json（providers.huimu）
 //   factory-droid ~/.factory/settings.json（customModels，generic-chat-completion-api）
@@ -13,7 +14,7 @@
 //   node helper.mjs status                            # 查看各 agent 配置状态
 //   node helper.mjs selftest                          # 内部纯函数自检
 // flags: --base http://host:port   --key sk-...   --model <模型名>   --yes
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, mkdtempSync, unlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { createInterface } from 'node:readline/promises';
@@ -107,7 +108,7 @@ function removeTopLevelTomlKeys(text, keys) {
 function installCodexToml(text, { base, key, model }) {
   let t = removeTomlTable(text, `model_providers.${PROVIDER}`);
   t = removeTopLevelTomlKeys(t, ['model_provider', 'model', 'model_reasoning_effort', 'model_catalog_json']);
-  const head = `model_provider = "${PROVIDER}"\nmodel = "${model}"\n`;
+  const head = `model_provider = "${PROVIDER}"\nmodel = "${model}"\nmodel_reasoning_effort = "max"\nmodel_catalog_json = "~/.codex/models.json"\n`;
   const table = [
     '',
     `[model_providers.${PROVIDER}]`,
@@ -137,6 +138,44 @@ function uninstallCodexToml(text) {
     out.push(line);
   }
   return out.join('\n');
+}
+
+// ---------------- Codex ~/.codex/models.json 模型元数据 ----------------
+// config.toml 的自定义 provider 只对终端 Codex CLI 生效；桌面端（ChatGPT.app 内置 Codex）
+// 还要求 model_catalog_json 指向的 models.json 里存在模型元数据才能选用（对齐 z_ai coding-helper）。
+function writeCodexModelsJson(modelsPath, model) {
+  let config = { models: [] };
+  try {
+    if (existsSync(modelsPath)) {
+      const parsed = JSON.parse(readFileSync(modelsPath, 'utf-8'));
+      if (parsed && Array.isArray(parsed.models)) config = parsed;
+    }
+  } catch { /* 损坏文件按空配置重建 */ }
+  config.models = config.models.filter((m) => m.slug !== model);
+  config.models.push({
+    slug: model,
+    display_name: model,
+    description: 'Huimu Engine model', // 卸载时按此标记识别本站条目（卸载路径无 model 名）
+    supported_reasoning_levels: [
+      { effort: 'low', description: 'Light reasoning' },
+      { effort: 'high', description: 'Enhanced reasoning' },
+      { effort: 'max', description: 'Deep reasoning' },
+    ],
+    input_modalities: ['text'],
+  });
+  writeAtomic(modelsPath, JSON.stringify(config, null, 2) + '\n');
+}
+
+function removeCodexModelsJson(modelsPath) {
+  if (!existsSync(modelsPath)) return;
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(modelsPath, 'utf-8'));
+  } catch { return; }
+  if (!parsed || !Array.isArray(parsed.models)) return;
+  const kept = parsed.models.filter((m) => m.description !== 'Huimu Engine model');
+  if (kept.length === 0) unlinkSync(modelsPath); // 只剩我们的条目 → 整个文件回收
+  else if (kept.length !== parsed.models.length) writeAtomic(modelsPath, JSON.stringify({ ...parsed, models: kept }, null, 2) + '\n');
 }
 
 // ---------------- Agent 定义 ----------------
@@ -199,11 +238,12 @@ function agentDefs(ctx) {
         const p = join(home, '.codex', 'config.toml');
         const text = existsSync(p) ? readFileSync(p, 'utf-8') : '';
         writeAtomic(p, installCodexToml(text, { base, key, model }));
+        writeCodexModelsJson(join(home, '.codex', 'models.json'), model); // 桌面端 Codex 识别模型用
       },
       uninstall() {
         const p = join(home, '.codex', 'config.toml');
-        if (!existsSync(p)) return;
-        writeAtomic(p, uninstallCodexToml(readFileSync(p, 'utf-8')));
+        if (existsSync(p)) writeAtomic(p, uninstallCodexToml(readFileSync(p, 'utf-8')));
+        removeCodexModelsJson(join(home, '.codex', 'models.json')); // 只清我们的模型条目
       },
       status() {
         const p = join(home, '.codex', 'config.toml');
@@ -481,10 +521,15 @@ function selftest() {
   // codex toml：空文件安装、用户已有内容保留、幂等重装、卸载还原
   defs['codex'].install();
   const t1 = readFileSync(join(home, '.codex', 'config.toml'), 'utf-8');
-  expect('codex 顶层键', t1.startsWith('model_provider = "huimu"\nmodel = "m-alpha"'));
+  expect('codex 顶层键', t1.startsWith('model_provider = "huimu"\nmodel = "m-alpha"\nmodel_reasoning_effort = "max"\nmodel_catalog_json = "~/.codex/models.json"'));
   expect('codex provider 段', t1.includes('[model_providers.huimu]') && t1.includes('wire_api = "responses"'));
+  const mj1 = readJSON(join(home, '.codex', 'models.json'));
+  expect('codex models.json 写入', mj1.models.length === 1 && mj1.models[0].slug === 'm-alpha'
+    && mj1.models[0].supported_reasoning_levels.some((l) => l.effort === 'max'));
   writeFileSync(join(home, '.codex', 'config.toml'),
     '# 用户注释\nuser_key = 1\nmodel = "user-model"\n\n[other]\nx = 2\n');
+  writeFileSync(join(home, '.codex', 'models.json'),
+    JSON.stringify({ models: [{ slug: 'foreign', display_name: 'Foreign', description: 'user own' }] }));
   defs['codex'].install();
   const t2 = readFileSync(join(home, '.codex', 'config.toml'), 'utf-8');
   expect('codex 用户配置保留', t2.includes('# 用户注释') && t2.includes('user_key = 1') && t2.includes('[other]'));
@@ -492,13 +537,23 @@ function selftest() {
   expect('codex 我们顶层键前置', t2.indexOf('model_provider = "huimu"') === 0);
   const t3 = installCodexToml(t2, ctx); // 幂等
   expect('codex 幂等（唯一 provider 段）', (t3.match(/\[model_providers\.huimu\]/g) || []).length === 1);
+  const mj2 = readJSON(join(home, '.codex', 'models.json'));
+  expect('codex models.json 幂等且他人条目保留',
+    mj2.models.length === 2 && mj2.models.some((m) => m.slug === 'foreign') && mj2.models.some((m) => m.slug === 'm-alpha'));
   defs['codex'].uninstall();
   const t4 = readFileSync(join(home, '.codex', 'config.toml'), 'utf-8');
   expect('codex 卸载还原', !t4.includes('huimu') && !t4.includes('"m-alpha"') && t4.includes('# 用户注释') && t4.includes('user_key = 1'));
+  const mj3 = readJSON(join(home, '.codex', 'models.json'));
+  expect('codex models.json 卸载只清本站条目', mj3.models.length === 1 && mj3.models[0].slug === 'foreign');
   // 用户自配 model（model_provider 非 huimu）时卸载不得回收
   writeFileSync(join(home, '.codex', 'config.toml'), 'model = "keep-me"\n');
   defs['codex'].uninstall();
   expect('codex 用户 model 保留', readFileSync(join(home, '.codex', 'config.toml'), 'utf-8').includes('keep-me'));
+  // models.json 只剩本站条目时，卸载删除整个文件
+  unlinkSync(join(home, '.codex', 'models.json'));
+  defs['codex'].install();
+  defs['codex'].uninstall();
+  expect('codex models.json 空时整体回收', !existsSync(join(home, '.codex', 'models.json')));
 
   // opencode / crush / factory-droid 往返
   defs['opencode'].install();
