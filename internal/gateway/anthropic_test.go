@@ -5,7 +5,9 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -347,6 +349,61 @@ func TestAnthropicPipeSSEModelSwap(t *testing.T) {
 	}
 	if !strings.Contains(sb.String(), `"model":"ext-name"`) {
 		t.Fatalf("message_start 应使用外部名（映射对客户不可见）:\n%s", sb.String())
+	}
+}
+
+// repeat-id 分片（部分厂商每个分片都重复携带 id）：同一次调用不得被拆成多个块，
+// 且参数字符串内的空白必须保真（partial_json 拼回即原始 arguments）
+func TestAnthropicPipeSSEToolCallRepeatedID(t *testing.T) {
+	out, _ := runAnthPipe(t,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_9","function":{"name":"run","arguments":""}}]}}]}`+"\n\n"+
+			`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_9","function":{"arguments":"{\"cmd\":\"ls   -la\"}"}}]}}]}`+"\n\n"+
+			"data: [DONE]\n\n")
+	if strings.Count(out, "event: content_block_start") != 1 {
+		t.Fatalf("重复 id 分片不应重复开块:\n%s", out)
+	}
+	if !strings.Contains(out, `"partial_json":"{\"cmd\":\"ls   -la\"}"`) {
+		t.Fatalf("参数分片应原样透传（含字符串值内空白）:\n%s", out)
+	}
+	if !strings.Contains(out, `"stop_reason":"tool_use"`) {
+		t.Fatalf("出过工具块应兜底 tool_use:\n%s", out)
+	}
+}
+
+// 上游中途断流（含「尚无任何事件」的最早失败）：必须补发 error 事件终态，
+// 否则客户端已收到 200 头、事件流悬空到断连无法解析出错误
+func TestAnthropicPipeSSEUpstreamError(t *testing.T) {
+	cases := []io.Reader{
+		io.MultiReader(strings.NewReader(""), &errReader{err: errors.New("upstream boom")}),
+		io.MultiReader(
+			strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n\n"),
+			&errReader{err: errors.New("mid-stream boom")}),
+	}
+	for i, r := range cases {
+		var sb strings.Builder
+		_, err := anthropicPipeSSE(&sb, context.Background(), r, [2]string{})
+		if err == nil || !strings.Contains(err.Error(), "boom") {
+			t.Fatalf("case %d 应返回原始错误: %v", i, err)
+		}
+		if !strings.Contains(sb.String(), "event: error") || !strings.Contains(sb.String(), "boom") {
+			t.Fatalf("case %d 断流应补发 error 事件:\n%s", i, sb.String())
+		}
+	}
+}
+
+// 脏上游漏发 finish_reason 但出了 tool_use 块：stop_reason 应兜底 tool_use，
+// 报 end_turn 会让 Claude Code 视为回合结束而不执行工具
+func TestAnthropicPipeSSEMissingFinishWithTool(t *testing.T) {
+	out, _ := runAnthPipe(t,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"get_weather","arguments":"{\"city\":\"北京\"}"}}]}}]}`+"\n\n"+
+			"data: [DONE]\n\n")
+	if !strings.Contains(out, `"stop_reason":"tool_use"`) {
+		t.Fatalf("漏发 finish_reason 时应兜底 tool_use:\n%s", out)
+	}
+	// 对照：纯文本流漏发 finish_reason 仍是 end_turn
+	out2, _ := runAnthPipe(t, "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\ndata: [DONE]\n\n")
+	if !strings.Contains(out2, `"stop_reason":"end_turn"`) {
+		t.Fatalf("纯文本流应保持 end_turn:\n%s", out2)
 	}
 }
 

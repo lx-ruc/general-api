@@ -501,6 +501,7 @@ type anthStreamTranslator struct {
 	openKind string // "text" | "tool"
 	nextIdx int
 	toolMap map[int]int // OpenAI tool_calls index → Anthropic 块下标
+	sawTool bool        // 本流是否出现过 tool_use 块（漏发 finish_reason 时兜底 stop_reason 用）
 
 	usage *Usage
 	stop  string
@@ -573,6 +574,7 @@ func (t *anthStreamTranslator) openTool(id, name string) (int, error) {
 		id = fmt.Sprintf("toolu_%02d", t.nextIdx)
 	}
 	t.openIdx, t.openKind, t.nextIdx = t.nextIdx, "tool", t.nextIdx+1
+	t.sawTool = true
 	err := t.emit("content_block_start", map[string]any{
 		"type": "content_block_start", "index": t.openIdx,
 		"content_block": map[string]any{"type": "tool_use", "id": id, "name": name, "input": map[string]any{}},
@@ -604,42 +606,54 @@ func (t *anthStreamTranslator) handle(chunk oaiChunk) error {
 		}
 		for _, tc := range ch.Delta.ToolCalls {
 			var idx int
-			switch {
-			case tc.ID != "" || tc.Function.Name != "": // 新工具调用首块
-				mapped, err := t.openTool(tc.ID, tc.Function.Name)
-				if err != nil {
-					return err
+			// 续流判定：index 已映射且本块不带 name。部分厂商每个分片都重复携带 id，
+			// 凭 id 判「新调用」会把同一次调用拆成多个块、参数全碎，故续流只看 index+name
+			cont := false
+			if tc.Index != nil {
+				if m, ok := t.toolMap[*tc.Index]; ok && tc.Function.Name == "" {
+					idx, cont = m, true
 				}
-				idx = mapped
-				if tc.Index != nil {
-					t.toolMap[*tc.Index] = mapped
-				}
-			case tc.Index != nil:
-				if m, ok := t.toolMap[*tc.Index]; ok {
-					idx = m
-					if t.openIdx != m { // 参数块先于首块到达的脏流：补开块
-						if _, err := t.openTool("", ""); err != nil {
+			}
+			if !cont {
+				switch {
+				case tc.ID != "" || tc.Function.Name != "": // 新工具调用首块
+					mapped, err := t.openTool(tc.ID, tc.Function.Name)
+					if err != nil {
+						return err
+					}
+					idx = mapped
+					if tc.Index != nil {
+						t.toolMap[*tc.Index] = mapped
+					}
+				case tc.Index != nil:
+					if m, ok := t.toolMap[*tc.Index]; ok {
+						idx = m
+						if t.openIdx != m { // 参数块先于首块到达的脏流：补开块
+							if _, err := t.openTool("", ""); err != nil {
+								return err
+							}
+							t.toolMap[*tc.Index] = t.openIdx
+							idx = t.openIdx
+						}
+					} else {
+						mapped, err := t.openTool("", "")
+						if err != nil {
 							return err
 						}
-						t.toolMap[*tc.Index] = t.openIdx
-						idx = t.openIdx
+						t.toolMap[*tc.Index] = mapped
+						idx = mapped
 					}
-				} else {
+				default: // 既无首块也无 index：兜底新开
 					mapped, err := t.openTool("", "")
 					if err != nil {
 						return err
 					}
-					t.toolMap[*tc.Index] = mapped
 					idx = mapped
 				}
-			default: // 既无首块也无 index：兜底新开
-				mapped, err := t.openTool("", "")
-				if err != nil {
-					return err
-				}
-				idx = mapped
 			}
-			if strings.TrimSpace(tc.Function.Arguments) != "" {
+			// 空白分片必须原样透传：TrimSpace 会吞掉 JSON 字符串值内被拆分的空白
+			// （如 "ls   -la" 拆成 "ls" + "   " + "-la"），拼回时参数已被改写
+			if tc.Function.Arguments != "" {
 				if err := t.emit("content_block_delta", map[string]any{
 					"type": "content_block_delta", "index": idx,
 					"delta": map[string]any{"type": "input_json_delta", "partial_json": tc.Function.Arguments},
@@ -662,7 +676,13 @@ func (t *anthStreamTranslator) finish() error {
 	}
 	stop := t.stop
 	if stop == "" {
-		stop = "end_turn"
+		// 脏上游漏发 finish_reason：出过 tool_use 块按 tool_use 收尾，否则 Claude Code
+		// 视为回合结束不执行工具；纯文本流维持 end_turn
+		if t.sawTool {
+			stop = "tool_use"
+		} else {
+			stop = "end_turn"
+		}
 	}
 	usage := map[string]any{"output_tokens": 0}
 	if t.usage != nil {
@@ -679,6 +699,17 @@ func (t *anthStreamTranslator) finish() error {
 		return err
 	}
 	return t.emit("message_stop", map[string]any{"type": "message_stop"})
+}
+
+// fail 以 error 事件终结事件流（Anthropic 形状，客户端可解析出错误而非悬空到断连），
+// 随后返回原始错误。无条件补发：流式路径 WriteHeader(200) 在翻译开始前已发出，
+// 即使尚无任何事件，不发终态客户端也会悬空到断连
+func (t *anthStreamTranslator) fail(err error) error {
+	_ = t.emit("error", map[string]any{
+		"type":  "error",
+		"error": map[string]any{"type": "api_error", "message": err.Error()},
+	})
+	return err
 }
 
 // anthropicPipeSSE OpenAI SSE 上游流 → Anthropic SSE 客户端流（逐块翻译即时写出）；
@@ -704,7 +735,7 @@ func anthropicPipeSSE(w io.Writer, ctx context.Context, body io.Reader, modelSwa
 						chunk.Model = modelSwap[1]
 					}
 					if herr := tr.handle(chunk); herr != nil {
-						return tr.usage, herr
+						return tr.usage, tr.fail(herr)
 					}
 				}
 			}
@@ -713,7 +744,7 @@ func anthropicPipeSSE(w io.Writer, ctx context.Context, body io.Reader, modelSwa
 			if rerr == io.EOF {
 				return tr.usage, tr.finish()
 			}
-			return tr.usage, rerr
+			return tr.usage, tr.fail(rerr)
 		}
 	}
 }

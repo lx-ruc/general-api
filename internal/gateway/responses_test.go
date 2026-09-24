@@ -5,12 +5,19 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+// errReader 始终返回错误的读端点：模拟上游中途断流
+type errReader struct{ err error }
+
+func (r *errReader) Read([]byte) (int, error) { return 0, r.err }
 
 // ---------------- 入站翻译 ----------------
 
@@ -172,6 +179,20 @@ func TestDecodeResponsesToolChoiceObject(t *testing.T) {
 	fn, _ := tc["function"].(map[string]any)
 	if fn["name"] != "f1" {
 		t.Fatalf("tool_choice 函数名错: %s", bm["tool_choice"])
+	}
+}
+
+// 对象形态的 auto/none/required（部分 SDK 这么发）应译为字符串透传，不得静默丢弃
+func TestDecodeResponsesToolChoiceObjectMode(t *testing.T) {
+	for _, mode := range []string{"auto", "none", "required"} {
+		bm, err := decodeResponsesRequest([]byte(fmt.Sprintf(
+			`{"model":"m","input":"x","tool_choice":{"type":%q}}`, mode)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(bm["tool_choice"]) != fmt.Sprintf("%q", mode) {
+			t.Fatalf("对象形态 %s 应译为字符串: %s", mode, bm["tool_choice"])
+		}
 	}
 }
 
@@ -393,6 +414,54 @@ func TestResponsesPipeSSEModelSwap(t *testing.T) {
 	}
 	if !strings.Contains(sb.String(), `"model":"ext-name"`) {
 		t.Fatalf("事件流应使用外部名（映射对客户不可见）:\n%s", sb.String())
+	}
+}
+
+// repeat-id 分片（部分厂商每个分片都重复携带 id）：同一次调用不得被拆成多个 item
+func TestResponsesPipeSSEToolCallRepeatedID(t *testing.T) {
+	out, _ := runRespPipe(t,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_9","function":{"name":"run","arguments":""}}]}}]}`+"\n\n"+
+			`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_9","function":{"arguments":"{\"cmd\":\"ls   -la\"}"}}]}}]}`+"\n\n"+
+			"data: [DONE]\n\n")
+	if strings.Count(out, "event: response.output_item.added") != 1 {
+		t.Fatalf("重复 id 分片不应重复开 item:\n%s", out)
+	}
+	if strings.Count(out, "event: response.output_item.done") != 1 {
+		t.Fatalf("应恰好一个 done 事件:\n%s", out)
+	}
+	// done 条目 arguments 完整且字符串内空白保真
+	var doneEvt struct {
+		Item struct {
+			Type      string `json:"type"`
+			Arguments string `json:"arguments"`
+		} `json:"item"`
+	}
+	if !parseSSEEvent(t, out, "response.output_item.done", &doneEvt) {
+		t.Fatalf("缺少 output_item.done 事件:\n%s", out)
+	}
+	if doneEvt.Item.Type != "function_call" || doneEvt.Item.Arguments != `{"cmd":"ls   -la"}` {
+		t.Fatalf("repeat-id 分片后 arguments 应完整: %q", doneEvt.Item.Arguments)
+	}
+}
+
+// 上游中途断流（含「尚无任何事件」的最早失败）：必须补发 response.failed 终态，
+// 否则客户端已收到 200 头、事件流悬空到断连无法解析出错误
+func TestResponsesPipeSSEUpstreamError(t *testing.T) {
+	cases := []io.Reader{
+		io.MultiReader(strings.NewReader(""), &errReader{err: errors.New("upstream boom")}),
+		io.MultiReader(
+			strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n\n"),
+			&errReader{err: errors.New("mid-stream boom")}),
+	}
+	for i, r := range cases {
+		var sb strings.Builder
+		_, err := responsesPipeSSE(&sb, context.Background(), r, [2]string{})
+		if err == nil || !strings.Contains(err.Error(), "boom") {
+			t.Fatalf("case %d 应返回原始错误: %v", i, err)
+		}
+		if !strings.Contains(sb.String(), "event: response.failed") {
+			t.Fatalf("case %d 断流应补发 response.failed:\n%s", i, sb.String())
+		}
 	}
 }
 

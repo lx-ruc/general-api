@@ -247,9 +247,14 @@ func decodeResponsesRequest(raw []byte) (map[string]json.RawMessage, error) {
 				Type string `json:"type"`
 				Name string `json:"name"`
 			}
-			if json.Unmarshal(req.ToolChoice, &obj) == nil && obj.Type == "function" && obj.Name != "" {
-				out["tool_choice"] = map[string]any{
-					"type": "function", "function": map[string]any{"name": obj.Name}}
+			if json.Unmarshal(req.ToolChoice, &obj) == nil {
+				switch {
+				case obj.Type == "function" && obj.Name != "":
+					out["tool_choice"] = map[string]any{
+						"type": "function", "function": map[string]any{"name": obj.Name}}
+				case obj.Type == "auto" || obj.Type == "none" || obj.Type == "required":
+					out["tool_choice"] = obj.Type // 对象形态的 auto/none/required（部分 SDK 这么发）
+				}
 			}
 		}
 	}
@@ -403,6 +408,7 @@ type respStreamTranslator struct {
 	openIdx  int    // 当前打开 output 下标；-1=无
 	openKind string // "message" | "function_call"
 	nextOut  int
+	toolSeen map[int]bool // 上游 tool_calls index → 是否已开过 item（repeat-id 分片判续流用）
 
 	msgID, fcID    string // item id
 	callID, fcName string
@@ -571,14 +577,17 @@ func (t *respStreamTranslator) handle(chunk oaiChunk) error {
 			}
 		}
 		for _, tc := range ch.Delta.ToolCalls {
-			if tc.ID != "" || tc.Function.Name != "" { // 新工具调用首块
+			// 续流判定：index 已登记且本块不带 name。部分厂商每个分片都重复携带 id，
+			// 凭 id 判「新调用」会把同一次调用拆成多个 item、参数全碎，故续流只看 index+name
+			cont := tc.Index != nil && tc.Function.Name == "" &&
+				t.toolSeen[*tc.Index] && t.openKind == "function_call"
+			if !cont && (tc.ID != "" || tc.Function.Name != "" || t.openKind != "function_call") {
+				// 新工具调用首块，或参数块先于首块到达的脏流兜底开块
 				if err := t.openFunctionCall(tc.ID, tc.Function.Name); err != nil {
 					return err
 				}
-			} else if t.openKind != "function_call" {
-				// 参数块先于首块到达的脏流：兜底开块
-				if err := t.openFunctionCall("", ""); err != nil {
-					return err
+				if tc.Index != nil {
+					t.toolSeen[*tc.Index] = true
 				}
 			}
 			if tc.Function.Arguments != "" {
@@ -607,14 +616,13 @@ func (t *respStreamTranslator) finish() error {
 }
 
 // fail 以 response.failed 终结事件流（已写出字节无法换渠道，这里保证客户端
-// 收到终态事件不悬空），随后返回原始错误
+// 收到终态事件不悬空），随后返回原始错误。无条件补发：流式路径 WriteHeader(200)
+// 在翻译开始前已发出，即使尚无任何事件，不发终态客户端也会悬空到断连
 func (t *respStreamTranslator) fail(err error) error {
-	if t.started {
-		_ = t.emit("response.failed", map[string]any{
-			"response": t.skeleton("failed", map[string]any{
-				"code": "api_error", "message": err.Error()}),
-		})
-	}
+	_ = t.emit("response.failed", map[string]any{
+		"response": t.skeleton("failed", map[string]any{
+			"code": "api_error", "message": err.Error()}),
+	})
 	return err
 }
 
@@ -626,7 +634,7 @@ func responsesPipeSSE(w io.Writer, ctx context.Context, body io.Reader, modelSwa
 	tr := &respStreamTranslator{
 		w: w, flusher: flusher, openIdx: -1,
 		created: time.Now().Unix(), id: "resp_gateway",
-		output: []map[string]any{},
+		output: []map[string]any{}, toolSeen: map[int]bool{},
 	}
 	if modelSwap[1] != "" {
 		tr.model = modelSwap[1] // 事件锚外部名（映射对客户不可见）
