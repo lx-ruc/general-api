@@ -20,10 +20,12 @@ type Mem struct {
 }
 
 // cdEntry 冷却条目：hits 为 Backoff 连击次数（SetCooldown 不动它），
-// 冷却到期（惰性清理或下次 Backoff 发现过期）即连同计数一起消失
+// quota 标记当前冷却是否源于配额耗尽（MarkQuotaCooling 置位），
+// 冷却到期（惰性清理或下次 Backoff 发现过期）即连同计数与标记一起消失
 type cdEntry struct {
 	until time.Time
 	hits  int
+	quota bool
 }
 
 // NewMem maxCacheItems 内存 LRU 条数上限（<=0 视为不限，仅靠 TTL）
@@ -83,6 +85,41 @@ func (m *Mem) Backoff(scope string, base, max time.Duration) time.Duration {
 	e.until = now.Add(d)
 	m.cooldown[scope] = e
 	return d
+}
+
+// MarkQuotaCooling 置位配额冷却标记。调用方约定紧跟 Backoff 之后（已有在期冷却），
+// 防御性兜底：条目缺失/已过期时按 ttl 新建（配额冷却本身就是一种冷却）
+func (m *Mem) MarkQuotaCooling(scope string, ttl time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.cooldown[scope]
+	if !ok || time.Now().After(e.until) {
+		e = cdEntry{until: time.Now().Add(ttl)}
+	}
+	e.quota = true
+	m.cooldown[scope] = e
+}
+
+func (m *Mem) IsQuotaCooling(scope string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.cooldown[scope]
+	if !ok {
+		return false
+	}
+	if time.Now().After(e.until) {
+		delete(m.cooldown, scope) // 惰性清理（与 IsCooling 同口径）
+		return false
+	}
+	return e.quota
+}
+
+// ClearCooldown 立即解除冷却（连击计数与配额标记随条目一起消失：
+// 下次配额 429 从退避起步档重新计，不会继承已被清除的历史）
+func (m *Mem) ClearCooldown(scope string) {
+	m.mu.Lock()
+	delete(m.cooldown, scope)
+	m.mu.Unlock()
 }
 
 func (m *Mem) AcquireSlot(ctx context.Context, scope string, max int) (func(), bool) {

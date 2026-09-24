@@ -20,7 +20,7 @@ import (
 func newDemoEnv(t *testing.T) (*gin.Engine, *gorm.DB, string) {
 	t.Helper()
 	engine, db, token := newPlatformEnv(t)
-	h := NewHandler(db, nil, nil, nil)
+	h := NewHandler(db, nil, nil, nil, nil)
 	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
 	g.GET("/demo-key", h.GetDemoKey)
 	g.PUT("/demo-key", h.ConfigureDemoKey)

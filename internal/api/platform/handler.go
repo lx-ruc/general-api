@@ -16,6 +16,7 @@ import (
 	"gorm.io/gorm"
 
 	"token-gateway/internal/auth"
+	"token-gateway/internal/coord"
 	"token-gateway/internal/crypto"
 	"token-gateway/internal/database"
 	"token-gateway/internal/gateway"
@@ -29,11 +30,15 @@ type Handler struct {
 	DB      *gorm.DB
 	Cipher  *crypto.Cipher
 	Client  *http.Client
-	Breaker *gateway.Breaker // 手动启用渠道时清零熔断连续失败计数
+	Breaker *gateway.Breaker  // 手动启用渠道时清零熔断连续失败计数
+	Coord   coord.Coordinator // Key 冷却查询/清除（管理台"冷却中"角标与"清除冷却"按钮）
 }
 
-func NewHandler(db *gorm.DB, cipher *crypto.Cipher, client *http.Client, breaker *gateway.Breaker) *Handler {
-	return &Handler{DB: db, Cipher: cipher, Client: client, Breaker: breaker}
+func NewHandler(db *gorm.DB, cipher *crypto.Cipher, client *http.Client, breaker *gateway.Breaker, cd coord.Coordinator) *Handler {
+	if cd == nil {
+		cd = coord.Nop{}
+	}
+	return &Handler{DB: db, Cipher: cipher, Client: client, Breaker: breaker, Coord: cd}
 }
 
 // ---------------- 客户管理 ----------------
@@ -920,9 +925,14 @@ func (h *Handler) ListChannelKeys(c *gin.Context) {
 		if derr != nil {
 			plain = ""
 		}
+		// 冷却状态（选路同款 scope）：厂商侧限额恢复后管理员据此点"清除冷却"，
+		// 不必等指数退避自然到期（配额类起步 10min，连击翻倍封顶 24h）
+		scope := fmt.Sprintf("ck:%d:%d", id, k.ID)
+		quota := h.Coord.IsQuotaCooling(scope)
 		list = append(list, gin.H{
 			"id": k.ID, "key_masked": maskKey(plain), "weight": k.Weight,
 			"status": k.Status, "remark": k.Remark,
+			"cooling": h.Coord.IsCooling(scope), "quota_cooling": quota,
 			"created_at": k.CreatedAt, "updated_at": k.UpdatedAt,
 		})
 	}
@@ -961,6 +971,28 @@ func (h *Handler) UpdateChannelKeyStatus(c *gin.Context) {
 		return
 	}
 	httpx.OK(c, gin.H{"message": "已更新"})
+}
+
+// ClearChannelKeyCooldown POST /api/platform/channels/:id/keys/:kid/cooldown/clear
+// 立即解除该 Key 的冷却（含配额标记与退避连击计数）。厂商侧限额恢复/排障后用，
+// 不必等指数退避自然到期
+func (h *Handler) ClearChannelKeyCooldown(c *gin.Context) {
+	id, ok := httpx.PathID(c)
+	if !ok {
+		return
+	}
+	kid, err := strconv.ParseInt(c.Param("kid"), 10, 64)
+	if err != nil || kid <= 0 {
+		httpx.Fail(c, http.StatusBadRequest, "invalid key id")
+		return
+	}
+	var cnt int64
+	if err := h.DB.Raw("SELECT COUNT(*) FROM channel_keys WHERE id = ? AND channel_id = ?", kid, id).Scan(&cnt).Error; err != nil || cnt == 0 {
+		httpx.Fail(c, http.StatusNotFound, "Key 不存在")
+		return
+	}
+	h.Coord.ClearCooldown(fmt.Sprintf("ck:%d:%d", id, kid))
+	httpx.OK(c, gin.H{"message": "已清除冷却"})
 }
 
 // AddChannelKeys POST /api/platform/channels/:id/keys：向 Key 池追加（单把或批量，不覆盖现有）

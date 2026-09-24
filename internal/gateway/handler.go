@@ -485,7 +485,15 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 				"upstream keys cannot be decrypted (aes_key changed?), please contact the platform admin")
 			return
 		default:
-			// 所有 Key 冷却中：语义是"上游限流中"，回 429 而非 503
+			// 全部 Key 均因配额耗尽冷却（厂商侧限额，火山 SetLimitExceeded 等）：
+			// 重试不可能恢复 → 402（与额度预检同口径），429 会让客户端盲退避
+			if selStats.QuotaCoolingKeys > 0 && selStats.QuotaCoolingKeys == selStats.CoolingKeys {
+				rec.Status, rec.Error = http.StatusPaymentRequired, "no available key (all quota cooling)"
+				werr(c, http.StatusPaymentRequired, "upstream_quota_exceeded",
+					"upstream vendor quota is exhausted, please contact the platform admin")
+				return
+			}
+			// 其余冷却（普通限流）语义不变：所有 Key 冷却中 → 429 而非 503
 			rec.Status, rec.Error = http.StatusTooManyRequests, "no available key (all cooling)"
 			h.writeRetryAfter(c, h.KeyCooldown)
 			werr(c, http.StatusTooManyRequests, "upstream_busy",
@@ -515,6 +523,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 	var lastErr string
 	onlyRateLimited := true // 全部失败均因 429/排队超时 → 最终回 429 而非 502
 	authOnly := true        // 全部失败均因 401/403（Key 失效自动禁用）→ 回 503 而非 502
+	quotaOnly := true       // 全部失败均因配额类 429（厂商侧限额）→ 回 402 而非 429
 	coolApplied := time.Duration(0) // 本请求实际应用过的最大 Key 冷却时长（429 耗尽时如实回报客户端）
 	tryCandidate := func(cand Candidate) attemptResult {
 		// 渠道并发闸门（有界等待）。超时换渠道：同渠道其他 Key 面对同一个满闸门，重试无意义。
@@ -532,7 +541,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 				h.Metrics.QueueTimeouts.Inc()
 			}
 			lastErr = fmt.Sprintf("queue wait timeout on channel %s", cand.ChannelName)
-			onlyRateLimited, authOnly = false, false
+			onlyRateLimited, authOnly, quotaOnly = false, false, false
 			return attemptNextChannel
 		}
 		if h.Metrics != nil {
@@ -548,14 +557,14 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		upBody, merr := json.Marshal(bm)
 		if merr != nil {
 			lastErr = merr.Error()
-			onlyRateLimited, authOnly = false, false
+			onlyRateLimited, authOnly, quotaOnly = false, false, false
 			return attemptNextKey
 		}
 		req, rerr := http.NewRequestWithContext(c.Request.Context(), http.MethodPost,
 			endpointURL(cand.BaseURL, cand.Path, spec.fixedPath), bytes.NewReader(upBody))
 		if rerr != nil {
 			lastErr = rerr.Error()
-			onlyRateLimited, authOnly = false, false
+			onlyRateLimited, authOnly, quotaOnly = false, false, false
 			return attemptNextKey
 		}
 		req.Header.Set("Content-Type", "application/json")
@@ -573,7 +582,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 				return attemptDone
 			}
 			lastErr = derr.Error()
-			onlyRateLimited, authOnly = false, false
+			onlyRateLimited, authOnly, quotaOnly = false, false, false
 			// 原始错误（含上游地址）只进服务端日志供平台管理员排障，客户侧出口统一消毒
 			slog.Warn("上游连接失败", "channel_id", cand.ChannelID, "channel", cand.ChannelName, "err", lastErr)
 			h.noteChannelFailure(cand)
@@ -612,6 +621,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 				slog.Warn("上游配额类 429，该 Key 指数退避冷却（同渠道其它 Key 不连坐）",
 					"channel_id", cand.ChannelID, "channel", cand.ChannelName,
 					"key_id", cand.KeyID, "code", qc, "cooldown", d.String())
+				h.Coord.MarkQuotaCooling(cand.KeyScope(), d) // 供选路无候选时区分"配额冷却"→ 402
 				lastErr = fmt.Sprintf("upstream %s returned %d %s (key %d quota cooldown %s)",
 					cand.ChannelName, resp.StatusCode, qc, cand.KeyID, d)
 				authOnly = false
@@ -627,14 +637,14 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			h.coolKeys(cands, cand, cd)
 			lastErr = fmt.Sprintf("upstream %s returned %d (key %d cooling %s)",
 				cand.ChannelName, resp.StatusCode, cand.KeyID, cd)
-			authOnly = false
+			authOnly, quotaOnly = false, false
 			return attemptNextKey
 
 		case codeMatch(h.DisableKeyCodes, resp.StatusCode):
 			// 401/403（默认）：Key 失效 → 禁用该 Key → 同渠道下一把 Key（主 Key 报错自动切备用；
 			// 候选列表只前进不回看，被禁 Key 不会在本请求内重复选中）
 			drain()
-			onlyRateLimited = false
+			onlyRateLimited, quotaOnly = false, false
 			h.disableKey(cand, resp.StatusCode)
 			lastErr = fmt.Sprintf("upstream %s key %d returned %d", cand.ChannelName, cand.KeyID, resp.StatusCode)
 			return attemptNextKey
@@ -642,7 +652,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		case codeMatch(h.RetryChannelCodes, resp.StatusCode):
 			// 5xx（默认）：渠道级故障，熔断计数并跳过该渠道全部剩余 Key（同 endpoint 换 Key 无意义）
 			drain()
-			onlyRateLimited, authOnly = false, false
+			onlyRateLimited, authOnly, quotaOnly = false, false, false
 			lastErr = fmt.Sprintf("upstream %s returned %d", cand.ChannelName, resp.StatusCode)
 			h.noteChannelFailure(cand)
 			return attemptNextChannel
@@ -719,7 +729,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 				rec.Status, rec.Error = 499, "client disconnected"
 				return attemptDone
 			}
-			onlyRateLimited, authOnly = false, false
+			onlyRateLimited, authOnly, quotaOnly = false, false, false
 			lastErr = rerr2.Error()
 			h.noteChannelFailure(cand)
 			return attemptNextChannel // 尚未向客户端写出字节，可换渠道
@@ -758,7 +768,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		case protoAnthropic:
 			out, u, eerr := encodeAnthropicResponse(data, modelName)
 			if eerr != nil {
-				onlyRateLimited, authOnly = false, false
+				onlyRateLimited, authOnly, quotaOnly = false, false, false
 				lastErr = "translate response: " + eerr.Error()
 				h.noteChannelFailure(cand)
 				return attemptNextChannel
@@ -767,7 +777,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		case protoResponses:
 			out, u, eerr := encodeResponsesResponse(data, modelName)
 			if eerr != nil {
-				onlyRateLimited, authOnly = false, false
+				onlyRateLimited, authOnly, quotaOnly = false, false, false
 				lastErr = "translate response: " + eerr.Error()
 				h.noteChannelFailure(cand)
 				return attemptNextChannel
@@ -791,7 +801,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		return attemptDone
 	}
 
-	tried := 0
+	tried, skipped, skippedQuota := 0, 0, 0
 	for i := 0; i < len(cands); i++ {
 		if c.Request.Context().Err() != nil {
 			rec.Status, rec.Error = 499, "client disconnected"
@@ -799,6 +809,10 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		}
 		// 选择后可能已被置入冷却（本请求的渠道级冷却、或并发请求的 429）：尝试前再过滤一次
 		if h.Coord.IsCooling(cands[i].KeyScope()) {
+			skipped++
+			if h.Coord.IsQuotaCooling(cands[i].KeyScope()) {
+				skippedQuota++
+			}
 			continue
 		}
 		// 重试预算熔线：单请求最多尝试 N 个候选（渠道×Key），防止极端配置下打爆上游。
@@ -819,9 +833,16 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		}
 	}
 
-	// 全部候选耗尽：按失败原因分类回错（429 限流 / 503 密钥失效 / 502 其他上游故障）
+	// 全部候选耗尽：按失败原因分类回错（402 配额耗尽 / 429 限流 / 503 密钥失效 / 502 其他上游故障）
 	rec.Error = truncateStr("all channels failed: "+lastErr, 500)
 	switch {
+	case quotaOnly && skipped == skippedQuota && (tried > 0 || skipped > 0):
+		// 全部失败/跳过均因配额类 429（厂商侧限额耗尽，火山 SetLimitExceeded 等）：
+		// 重试不可能恢复 → 402（与额度预检同口径）。429 会让 OpenAI 系客户端
+		// （codex 等）指数退避重试到上限，把真实原因丢成 "exceeded retry limit"
+		rec.Status = http.StatusPaymentRequired
+		werr(c, http.StatusPaymentRequired, "upstream_quota_exceeded",
+			"upstream vendor quota is exhausted, please contact the platform admin")
 	case onlyRateLimited:
 		// 仅剩限流类失败 → 429（OpenAI SDK 对 429 有专门退避）。
 		// Retry-After 如实回报本请求实际应用的冷却时长（上游 Retry-After 可能远短于

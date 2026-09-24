@@ -51,7 +51,7 @@ func newPlatformEnv(t *testing.T) (*gin.Engine, *gorm.DB, string) {
 	engine := gin.New()
 	pg := engine.Group("/api/platform", middleware.JWTAuth(secret, db))
 	cipher, _ := crypto.NewCipher("")
-	h := NewHandler(db, cipher, &http.Client{}, nil)
+	h := NewHandler(db, cipher, &http.Client{}, nil, nil)
 	pg.POST("/orgs", h.CreateOrg)
 	pg.PUT("/orgs/:id/quota", h.SetOrgQuota)
 	return engine, db, token
@@ -135,7 +135,7 @@ func TestVendorBillDiff(t *testing.T) {
 	// 复用脚手架库：补挂对账路由
 	pg := engine.Routes()
 	_ = pg
-	h := NewHandler(db, nil, nil, nil)
+	h := NewHandler(db, nil, nil, nil, nil)
 	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
 	g.GET("/vendor-bills", h.ListVendorBills)
 	g.PUT("/vendor-bills", h.UpsertVendorBill)
@@ -240,7 +240,7 @@ func TestHandleRechargeConcurrentApproveOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	cipher, _ := crypto.NewCipher("")
-	h := NewHandler(db, cipher, &http.Client{}, nil)
+	h := NewHandler(db, cipher, &http.Client{}, nil, nil)
 	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
 	g.PUT("/recharges/:id", h.HandleRecharge)
 
@@ -300,7 +300,7 @@ func TestDeleteOrgCleansAccessTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	cipher, _ := crypto.NewCipher("")
-	h := NewHandler(db, cipher, &http.Client{}, nil)
+	h := NewHandler(db, cipher, &http.Client{}, nil, nil)
 	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
 	g.DELETE("/orgs/:id", h.DeleteOrg)
 
@@ -327,7 +327,7 @@ func TestUpsertVendorBillConcurrent(t *testing.T) {
 		VALUES (3, 'race-ch', 'https://z', 1, ?, ?)`, now, now).Error; err != nil {
 		t.Fatal(err)
 	}
-	h := NewHandler(db, nil, nil, nil)
+	h := NewHandler(db, nil, nil, nil, nil)
 	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
 	g.PUT("/vendor-bills", h.UpsertVendorBill)
 
@@ -368,7 +368,7 @@ func TestUpsertVendorBillConcurrent(t *testing.T) {
 // 成本价（cost_input/output_price）与售卖价同样不允许为负
 func TestModelCostPriceRejectsNegative(t *testing.T) {
 	engine, db, token := newPlatformEnv(t)
-	h := NewHandler(db, nil, nil, nil)
+	h := NewHandler(db, nil, nil, nil, nil)
 	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
 	g.POST("/models", h.CreateModel)
 	g.PUT("/models/:id", h.UpdateModel)
@@ -409,7 +409,7 @@ func TestHandleRechargeOverflowRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	cipher, _ := crypto.NewCipher("")
-	h := NewHandler(db, cipher, &http.Client{}, nil)
+	h := NewHandler(db, cipher, &http.Client{}, nil, nil)
 	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
 	g.PUT("/recharges/:id", h.HandleRecharge)
 
@@ -463,7 +463,7 @@ func TestCreateOrgRejectNegativeQuota(t *testing.T) {
 // （池内启用 Key 或 legacy 密文），无密钥 / 渠道停用 / 池 Key 全禁用均不计
 func TestListModelsChannelCount(t *testing.T) {
 	engine, db, token := newPlatformEnv(t)
-	h := NewHandler(db, nil, nil, nil)
+	h := NewHandler(db, nil, nil, nil, nil)
 	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
 	g.GET("/models", h.ListModels)
 
@@ -534,7 +534,7 @@ func TestUpstreamModelsByForm(t *testing.T) {
 	defer up.Close()
 
 	engine, db, token := newPlatformEnv(t)
-	h := NewHandler(db, nil, up.Client(), nil)
+	h := NewHandler(db, nil, up.Client(), nil, nil)
 	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
 	g.POST("/upstream-models", h.UpstreamModelsByForm)
 
@@ -595,7 +595,7 @@ func TestUpstreamModelsByForm(t *testing.T) {
 func TestChannelSyncModelPrices(t *testing.T) {
 	engine, db, token := newPlatformEnv(t)
 	cipher, _ := crypto.NewCipher("")
-	h := NewHandler(db, cipher, nil, nil)
+	h := NewHandler(db, cipher, nil, nil, nil)
 	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
 	g.POST("/channels", h.CreateChannel)
 	g.PUT("/channels/:id", h.UpdateChannel)
@@ -681,7 +681,7 @@ func TestChannelSyncModelPrices(t *testing.T) {
 func TestChannelRequiresKeyForModels(t *testing.T) {
 	engine, db, token := newPlatformEnv(t)
 	cipher, _ := crypto.NewCipher("")
-	h := NewHandler(db, cipher, nil, nil)
+	h := NewHandler(db, cipher, nil, nil, nil)
 	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
 	g.POST("/channels", h.CreateChannel)
 	g.PUT("/channels/:id", h.UpdateChannel)

@@ -144,6 +144,41 @@ func (r *RedisCoord) Backoff(scope string, base, max time.Duration) time.Duratio
 	return time.Duration(dMs) * time.Millisecond
 }
 
+// ---- 配额冷却标记 ----
+
+// 配额类冷却标记独立成键（tg:qcd:{scope}，TTL 与本次冷却同长，Backoff 升档续期时
+// 由调用方刷新）：冷却键的值已兼作 Backoff 连击计数，不塞第二个语义；
+// TTL 过期即自动消失，与冷却键生命周期大致同步（独立键略有漂移只影响
+// 无候选时的错误分类，不影响调度——冷却键才是过滤依据）
+func (r *RedisCoord) MarkQuotaCooling(scope string, ttl time.Duration) {
+	if ttl <= 0 {
+		return
+	}
+	ctx, cancel := withTimeout()
+	defer cancel()
+	err := r.client.Set(ctx, "tg:qcd:"+scope, 1, ttl).Err()
+	r.err(ctx, "mark_quota_cooling", err)
+}
+
+func (r *RedisCoord) IsQuotaCooling(scope string) bool {
+	ctx, cancel := withTimeout()
+	defer cancel()
+	n, err := r.client.Exists(ctx, "tg:qcd:"+scope).Result()
+	if r.err(ctx, "is_quota_cooling", err) {
+		return false // fail-open
+	}
+	return n > 0
+}
+
+// ClearCooldown 立即解除冷却：连击计数键与配额标记键一并删除
+// （连击随键消失即归零，下次配额 429 从退避起步档重新计）
+func (r *RedisCoord) ClearCooldown(scope string) {
+	ctx, cancel := withTimeout()
+	defer cancel()
+	err := r.client.Del(ctx, "tg:cd:"+scope, "tg:qcd:"+scope).Err()
+	r.err(ctx, "clear_cooldown", err)
+}
+
 // ---- 并发闸门 ----
 
 // acquireLua 原子占坑：清过期成员 → 未满则 ZADD 租约

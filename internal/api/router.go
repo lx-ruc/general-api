@@ -140,7 +140,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 	authed.POST("/playground/chat", pg.Chat)
 
 	// 系统管理员
-	ph := platform.NewHandler(db, cipher, gw.Client, gw.Breaker)
+	ph := platform.NewHandler(db, cipher, gw.Client, gw.Breaker, coordinator)
 	plat := authed.Group("/platform", middleware.RequireRole(model.RolePlatformAdmin))
 	{
 		plat.GET("/orgs", ph.ListOrgs)
@@ -174,6 +174,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		plat.POST("/channels/:id/keys", ph.AddChannelKeys)
 		plat.DELETE("/channels/:id/keys/:kid", ph.DeleteChannelKey)
 		plat.PUT("/channels/:id/keys/:kid/status", ph.UpdateChannelKeyStatus)
+		plat.POST("/channels/:id/keys/:kid/cooldown/clear", ph.ClearChannelKeyCooldown)
 
 		plat.GET("/models", ph.ListModels)
 		plat.POST("/models", ph.CreateModel)

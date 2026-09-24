@@ -89,6 +89,32 @@ func TestMemBackoffResetsAfterExpiry(t *testing.T) {
 	}
 }
 
+// 配额标记：MarkQuotaCooling 置位（IsQuotaCooling ⊆ IsCooling）；
+// ClearCooldown 立即解除冷却与标记，且连击归零（下次退避回起步档）
+func TestMemQuotaCoolingAndClear(t *testing.T) {
+	m := NewMem(0)
+	d := m.Backoff("ck:1:2", time.Hour, 24*time.Hour)
+	m.MarkQuotaCooling("ck:1:2", d)
+	if !m.IsCooling("ck:1:2") || !m.IsQuotaCooling("ck:1:2") {
+		t.Fatal("配额冷却后 IsCooling/IsQuotaCooling 均应为真")
+	}
+	m.ClearCooldown("ck:1:2")
+	if m.IsCooling("ck:1:2") || m.IsQuotaCooling("ck:1:2") {
+		t.Fatal("清除后不应再冷却（含配额标记）")
+	}
+	// 连击随清除归零：下次退避从起步档而非翻倍档开始
+	if got := m.Backoff("ck:1:2", time.Hour, 24*time.Hour); got != time.Hour {
+		t.Fatalf("清除后连击应归零，下次退避应为起步档，got %v", got)
+	}
+	// 未标记过的 scope 恒不构成配额冷却
+	m.SetCooldown("ck:1:3", time.Minute)
+	if m.IsQuotaCooling("ck:1:3") {
+		t.Fatal("普通冷却不应被误判为配额冷却")
+	}
+	// 清除不存在的 scope 是无害 no-op
+	m.ClearCooldown("ck:9:9")
+}
+
 func TestMemSlotQueueAndTimeout(t *testing.T) {
 	m := NewMem(0)
 	ctx := context.Background()
@@ -299,6 +325,26 @@ func TestRedisCoord(t *testing.T) {
 	time.Sleep(35 * time.Millisecond)
 	if d := rc.Backoff("t:bk3", 30*time.Millisecond, time.Minute); d != 30*time.Millisecond {
 		t.Fatalf("普通冷却过期后应从起步档开始，got %v", d)
+	}
+
+	// 配额标记与清除：标记后 IsQuotaCooling ⊆ IsCooling；清除立即生效且连击归零
+	if d := rc.Backoff("t:qc", time.Hour, 24*time.Hour); d != time.Hour {
+		t.Fatalf("首次退避应为 base，got %v", d)
+	}
+	rc.MarkQuotaCooling("t:qc", time.Hour)
+	if !rc.IsCooling("t:qc") || !rc.IsQuotaCooling("t:qc") {
+		t.Fatal("配额冷却后 IsCooling/IsQuotaCooling 均应为真")
+	}
+	rc.ClearCooldown("t:qc")
+	if rc.IsCooling("t:qc") || rc.IsQuotaCooling("t:qc") {
+		t.Fatal("清除后不应再冷却（含配额标记）")
+	}
+	if d := rc.Backoff("t:qc", time.Hour, 24*time.Hour); d != time.Hour {
+		t.Fatalf("清除后连击应归零（DEL 连击键），下次退避应为起步档，got %v", d)
+	}
+	rc.SetCooldown("t:nc", time.Minute)
+	if rc.IsQuotaCooling("t:nc") {
+		t.Fatal("普通冷却不应被误判为配额冷却")
 	}
 
 	// 闸门（scope 带唯一后缀：防上一轮未释放的租约残留让本轮排队等 45s）

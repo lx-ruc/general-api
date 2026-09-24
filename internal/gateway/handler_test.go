@@ -365,8 +365,9 @@ func TestQuota429CoolsOnlyOffendingKey(t *testing.T) {
 	}
 }
 
-// 全部 Key 都是配额类 429 → 回 429，Retry-After 如实回报长效冷却（10×key_cooldown，
-// 下限 10min），错误码落 usage_logs 便于排障
+// 全部 Key 都是配额类 429 → 回 402（重试不可能恢复，与额度预检同口径；429 会让
+// OpenAI 系客户端盲退避到重试上限，把真实原因丢成 "exceeded retry limit"）。
+// 冷却期内再请求 → 选路即无候选，同样 402
 func TestQuota429AllKeysExhausted(t *testing.T) {
 	e := newTestEnv(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -377,15 +378,21 @@ func TestQuota429AllKeysExhausted(t *testing.T) {
 	e.seedUpstreamChannel(t, 1, "ch", up.URL, []string{"k1", "k2"}, 10)
 
 	w := e.post(chatBody("q", ""))
-	if w.Code != http.StatusTooManyRequests {
-		t.Fatalf("全配额 429 应回 429，got %d body=%s", w.Code, w.Body)
+	if w.Code != http.StatusPaymentRequired {
+		t.Fatalf("全配额 429 应回 402，got %d body=%s", w.Code, w.Body)
 	}
-	// key_cooldown=60s → 10×=600s，且 ≥10min 下限不放大
-	if got := w.Header().Get("Retry-After"); got != "600" {
-		t.Fatalf("Retry-After 应为长效冷却 600s，got %q", got)
+	// 402 是终态判定：不得引导客户端退避重试
+	if w.Header().Get("Retry-After") != "" {
+		t.Fatalf("402 不应携带 Retry-After，got %q", w.Header().Get("Retry-After"))
+	}
+	if !strings.Contains(w.Body.String(), "upstream_quota_exceeded") {
+		t.Fatalf("错误码应为 upstream_quota_exceeded: %s", w.Body)
 	}
 	if !e.cd.IsCooling("ck:1:1") || !e.cd.IsCooling("ck:1:2") {
 		t.Fatal("两把肇事 Key 都应各自进入长效冷却")
+	}
+	if !e.cd.IsQuotaCooling("ck:1:1") || !e.cd.IsQuotaCooling("ck:1:2") {
+		t.Fatal("配额冷却标记应随冷却一起写入（供选路区分配额耗尽 → 402）")
 	}
 	var errText string
 	if err := e.f.db.Raw("SELECT COALESCE(error,'') FROM usage_logs WHERE id = ?", e.lastUsage(t)).Scan(&errText).Error; err != nil {
@@ -393,6 +400,36 @@ func TestQuota429AllKeysExhausted(t *testing.T) {
 	}
 	if !strings.Contains(errText, "SetLimitExceeded") {
 		t.Fatalf("usage_log 错误应含配额错误码便于排障，got %q", errText)
+	}
+
+	// 冷却期内第二笔：选路直接无候选（全部 Key 配额冷却），同样 402 而非 429
+	w2 := e.post(chatBody("q", ""))
+	if w2.Code != http.StatusPaymentRequired {
+		t.Fatalf("冷却期内应走无候选 402，got %d body=%s", w2.Code, w2.Body)
+	}
+	if !strings.Contains(w2.Body.String(), "upstream_quota_exceeded") {
+		t.Fatalf("无候选路径错误码应为 upstream_quota_exceeded: %s", w2.Body)
+	}
+}
+
+// 混合失败（配额 429 + 渠道 5xx）→ 502 而非 402：quotaOnly 分类只在全部失败均因
+// 配额类 429 时成立，任何其它失败原因都要保留各自的错误语义
+func TestQuota429MixedWith5xxReturns502(t *testing.T) {
+	e := newTestEnv(t)
+	up429 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"code":"SetLimitExceeded","message":"has reached the set usage limit"}}`))
+	}))
+	defer up429.Close()
+	up500 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer up500.Close()
+	e.seedUpstreamChannel(t, 1, "ch-quota", up429.URL, []string{"k1"}, 1)
+	e.seedUpstreamChannel(t, 2, "ch-500", up500.URL, nil, 1)
+
+	if w := e.post(chatBody("q", "")); w.Code != http.StatusBadGateway {
+		t.Fatalf("混合失败应回 502（配额分类不得越权吞掉其它失败原因），got %d body=%s", w.Code, w.Body)
 	}
 }
 

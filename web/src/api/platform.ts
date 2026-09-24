@@ -77,6 +77,8 @@ export interface ChannelKeyRow {
   weight: number
   status: number
   remark: string
+  cooling: boolean
+  quota_cooling: boolean
   created_at: number
   updated_at: number
 }
@@ -106,6 +108,9 @@ export const apiListChannelKeys = (id: number) =>
   http.get<any, ChannelKeyRow[]>(`/api/platform/channels/${id}/keys`)
 export const apiUpdateChannelKeyStatus = (id: number, kid: number, status: number) =>
   http.put<any, any>(`/api/platform/channels/${id}/keys/${kid}/status`, { status })
+// 立即解除该 Key 的冷却（含配额标记）：厂商侧限额恢复后用，不必等指数退避自然到期
+export const apiClearChannelKeyCooldown = (id: number, kid: number) =>
+  http.post<any, { message: string }>(`/api/platform/channels/${id}/keys/${kid}/cooldown/clear`)
 
 // ---- 模型 ----
 export interface MModel {

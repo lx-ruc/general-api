@@ -5,7 +5,7 @@ import {
   apiListChannels, apiCreateChannel, apiUpdateChannel, apiUpdateChannelStatus,
   apiDeleteChannel, apiTestChannel, apiListModels, apiListChannelKeys, apiFetchUpstreamModels,
   apiFetchUpstreamModelsByForm, apiCreateModel, apiUpdateModel,
-  apiUpdateChannelKeyStatus, apiAddChannelKeys, apiDeleteChannelKey,
+  apiUpdateChannelKeyStatus, apiAddChannelKeys, apiDeleteChannelKey, apiClearChannelKeyCooldown,
   type Channel, type ChannelKeyRow, type MModel,
 } from '../../api/platform'
 import { fmtTime, fmtPrice, yuanToPoints, pointsToYuan } from '../../utils/format'
@@ -310,6 +310,7 @@ const keysChannel = ref<Channel | null>(null)
 const keyList = ref<ChannelKeyRow[]>([])
 const keysLoading = ref(false)
 const keyToggling = ref(0)
+const cooldownClearing = ref(0)
 
 async function openKeys(ch: Channel) {
   keysChannel.value = ch
@@ -331,6 +332,19 @@ async function toggleKey(row: ChannelKeyRow) {
     load()
   } finally {
     keyToggling.value = 0
+  }
+}
+
+// 清除冷却：厂商侧限额恢复/排障后立即把 Key 放回轮询池，不必等指数退避到期
+async function clearCooldown(row: ChannelKeyRow) {
+  if (!keysChannel.value) return
+  cooldownClearing.value = row.id
+  try {
+    await apiClearChannelKeyCooldown(keysChannel.value.id, row.id)
+    ElMessage.success('已清除冷却，该 Key 立即回到轮询池')
+    keyList.value = await apiListChannelKeys(keysChannel.value.id)
+  } finally {
+    cooldownClearing.value = 0
   }
 }
 
@@ -672,11 +686,27 @@ async function savePricing() {
           </el-tag>
         </template>
       </el-table-column>
+      <el-table-column label="冷却" width="110" align="center">
+        <template #default="{ row }">
+          <el-tooltip v-if="row.quota_cooling" content="上游厂商侧配额耗尽（如火山限额），已回 402 并指数退避；限额恢复后点「清除冷却」立即复用"
+            placement="top">
+            <el-tag type="warning" effect="plain" size="small">配额冷却</el-tag>
+          </el-tooltip>
+          <el-tooltip v-else-if="row.cooling" content="上游 429 限流冷却中，到期自动恢复" placement="top">
+            <el-tag type="info" effect="plain" size="small">冷却中</el-tag>
+          </el-tooltip>
+          <span v-else class="dim">—</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="remark" label="备注" min-width="140" show-overflow-tooltip />
-      <el-table-column label="操作" width="150">
+      <el-table-column label="操作" width="220">
         <template #default="{ row }">
           <el-button size="small" :loading="keyToggling === row.id" @click="toggleKey(row)">
             {{ row.status === 1 ? '禁用' : '启用' }}
+          </el-button>
+          <el-button v-if="row.cooling" size="small" type="warning"
+            :loading="cooldownClearing === row.id" @click="clearCooldown(row)">
+            清除冷却
           </el-button>
           <el-button size="small" type="danger" :loading="keyDeleting === row.id" @click="removeKey(row)">
             删除
@@ -687,7 +717,8 @@ async function savePricing() {
 
     <div class="tip keys-tip">
       权重 = 同渠道内各把 Key 分摊请求的比例（3:1 即平均每 4 次请求各担 3 次与 1 次），与渠道间的优先级/权重无关；
-      上游 401/403 自动禁用对应 Key（可在此恢复），429 冷却到期自动恢复。
+      上游 401/403 自动禁用对应 Key（可在此恢复）；普通 429 冷却到期自动恢复，
+      厂商侧配额耗尽（配额冷却）起步 10 分钟、连击翻倍封顶 24 小时——限额恢复后点「清除冷却」立即复用。
     </div>
   </el-dialog>
 
