@@ -267,6 +267,14 @@ func decodeResponsesRequest(raw []byte) (map[string]json.RawMessage, error) {
 
 // ---------------- 出站：OpenAI 响应 → Responses（非流式）----------------
 
+// toolArgsString 工具调用参数 → Responses 协议的字符串形态。function_call.arguments
+// 是「JSON 编码后的字符串」——codex 的 FunctionCall.arguments 为 String 类型，发对象
+// 会让 output_item.done 反序列化失败、整个条目被客户端静默丢弃（表现为界面无下文）；
+// Anthropic 端点的 tool_use.input 才是对象（toolArgsJSON），两者形态不同勿混用
+func toolArgsString(args string) string {
+	return string(toolArgsJSON(args))
+}
+
 // respUsage OpenAI usage → Responses usage 形状。
 // input_tokens_details 用 Responses 官方命名 cached_tokens（codex 0.142 的
 // ResponseCompleted 反序列化把该字段视为必填，缺失会导致客户端判流断开重试）
@@ -334,7 +342,7 @@ func encodeResponsesResponse(data []byte, fallbackModel string) ([]byte, *Usage,
 			output = append(output, map[string]any{
 				"id": fmt.Sprintf("fc_%d", i), "type": "function_call", "status": "completed",
 				"name": tc.Function.Name, "call_id": tc.ID,
-				"arguments": toolArgsJSON(tc.Function.Arguments),
+				"arguments": toolArgsString(tc.Function.Arguments),
 			})
 		}
 	}
@@ -473,7 +481,7 @@ func (t *respStreamTranslator) closeItem() error {
 		t.output = append(t.output, item)
 		return t.emit("response.output_item.done", map[string]any{"output_index": idx, "item": item})
 	default: // function_call
-		args := t.argsBuf.String()
+		args := toolArgsString(t.argsBuf.String())
 		if err := t.emit("response.function_call_arguments.done", map[string]any{
 			"item_id": t.fcID, "output_index": idx, "arguments": args,
 		}); err != nil {
@@ -481,7 +489,7 @@ func (t *respStreamTranslator) closeItem() error {
 		}
 		item := map[string]any{
 			"id": t.fcID, "type": "function_call", "status": "completed",
-			"name": t.fcName, "call_id": t.callID, "arguments": toolArgsJSON(args),
+			"name": t.fcName, "call_id": t.callID, "arguments": args,
 		}
 		t.output = append(t.output, item)
 		return t.emit("response.output_item.done", map[string]any{"output_index": idx, "item": item})

@@ -207,9 +207,12 @@ func TestEncodeResponsesResponse(t *testing.T) {
 	if fc["type"] != "function_call" || fc["call_id"] != "call_1" || fc["name"] != "get_weather" {
 		t.Fatalf("function_call item 错: %+v", fc)
 	}
-	fcArgs, _ := fc["arguments"].(map[string]any)
-	if fcArgs["city"] != "北京" {
-		t.Fatalf("function_call arguments 应为对象: %v", fc["arguments"])
+	// arguments 必须是「JSON 编码后的字符串」而非对象：codex 的 FunctionCall.arguments
+	// 为 String 类型，发对象会让整个 output_item 反序列化失败被静默丢弃（界面无下文）
+	fcArgs, _ := fc["arguments"].(string)
+	var argObj map[string]any
+	if err := json.Unmarshal([]byte(fcArgs), &argObj); err != nil || argObj["city"] != "北京" {
+		t.Fatalf("function_call arguments 应为合法 JSON 字符串: %v", fc["arguments"])
 	}
 	u, _ := m["usage"].(map[string]any)
 	if u["input_tokens"] != float64(10) || u["output_tokens"] != float64(5) || u["total_tokens"] != float64(15) {
@@ -333,6 +336,40 @@ func TestResponsesPipeSSEToolCall(t *testing.T) {
 	if strings.Count(out, "event: response.output_item.done") != 1 {
 		t.Fatalf("工具 item 应恰好一个 done 事件:\n%s", out)
 	}
+	// done 条目的 arguments 必须是字符串形态（codex FunctionCall.arguments: String，
+	// 发对象会被反序列化丢弃——生产实测「扫描当前项目」触发首次工具调用即无下文）
+	var doneEvt struct {
+		Item struct {
+			Type      string `json:"type"`
+			Arguments string `json:"arguments"`
+		} `json:"item"`
+	}
+	if !parseSSEEvent(t, out, "response.output_item.done", &doneEvt) {
+		t.Fatalf("缺少 output_item.done 事件:\n%s", out)
+	}
+	if doneEvt.Item.Type != "function_call" {
+		t.Fatalf("done 条目类型错: %+v", doneEvt.Item)
+	}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(doneEvt.Item.Arguments), &args); err != nil || args["city"] != "北京" {
+		t.Fatalf("done 条目 arguments 应为可解析回对象的 JSON 字符串: %q", doneEvt.Item.Arguments)
+	}
+}
+
+// parseSSEEvent 从翻译器输出的事件流中取指定事件的 data JSON
+func parseSSEEvent(t *testing.T, stream, event string, out any) bool {
+	t.Helper()
+	lines := strings.Split(stream, "\n")
+	for i, l := range lines {
+		if strings.TrimSpace(l) == "event: "+event && i+1 < len(lines) {
+			data := strings.TrimPrefix(strings.TrimSpace(lines[i+1]), "data: ")
+			if err := json.Unmarshal([]byte(data), out); err != nil {
+				t.Fatalf("解析 %s 事件 data 失败: %v\n%s", event, err, data)
+			}
+			return true
+		}
+	}
+	return false
 }
 
 func TestResponsesPipeSSEEmptyThenEOF(t *testing.T) {
@@ -537,9 +574,11 @@ func TestResponsesToolRoundtripE2E(t *testing.T) {
 	if fc["type"] != "function_call" || fc["name"] != "get_weather" || fc["call_id"] != "c1" {
 		t.Fatalf("function_call 翻译错: %+v", fc)
 	}
-	args, _ := fc["arguments"].(map[string]any)
-	if args["city"] != "北京" {
-		t.Fatalf("function_call arguments 应为对象: %v", fc["arguments"])
+	// arguments 必须是「JSON 编码后的字符串」而非对象（codex FunctionCall.arguments: String）
+	fcArgs, _ := fc["arguments"].(string)
+	var args map[string]any
+	if err := json.Unmarshal([]byte(fcArgs), &args); err != nil || args["city"] != "北京" {
+		t.Fatalf("function_call arguments 应为合法 JSON 字符串: %v", fc["arguments"])
 	}
 
 	// 第二轮回放（多轮会话形态）：上游应收到 assistant(tool_calls) + tool 两条消息
