@@ -282,7 +282,15 @@ async function test(ch: Channel) {
   try {
     const r = await apiTestChannel(ch.id)
     if (r.ok) {
-      ElMessage.success(`连通正常，耗时 ${r.latency_ms}ms`)
+      // 探测成功即已清除该 Key 的冷却（后端行为）：顺手刷新 Key 池角标
+      ElMessage.success(`连通正常，耗时 ${r.latency_ms}ms${r.key ? `（${r.key}）` : ''}`)
+      if (keysVisible.value && keysChannel.value?.id === ch.id) {
+        keyList.value = await apiListChannelKeys(ch.id)
+      }
+    } else if (r.quota_exhausted) {
+      // 配额耗尽 ≠ 渠道故障：渠道与其它 Key 不受影响，明确区分展示
+      ElMessageBox.alert(r.error || '上游配额耗尽', '上游配额耗尽（厂商侧限额）', { type: 'warning' })
+      load()
     } else {
       ElMessageBox.alert(r.error || `HTTP ${r.status}`, '连通失败', { type: 'error' })
     }

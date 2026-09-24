@@ -438,7 +438,7 @@ func TestQuota429MixedWith5xxReturns502(t *testing.T) {
 	}
 }
 
-// quota429Code：OpenAI 形状 error.code 识别（大小写不敏感），非配额类/畸形体返回空
+// Quota429Code：OpenAI 形状 error.code 识别（大小写不敏感），非配额类/畸形体返回空
 func TestQuota429Code(t *testing.T) {
 	cases := []struct {
 		name string
@@ -455,7 +455,7 @@ func TestQuota429Code(t *testing.T) {
 		{"畸形体", `not json`, ""},
 	}
 	for _, c := range cases {
-		if got := quota429Code([]byte(c.body)); got != c.want {
+		if got := Quota429Code([]byte(c.body)); got != c.want {
 			t.Errorf("%s: got %q want %q", c.name, got, c.want)
 		}
 	}

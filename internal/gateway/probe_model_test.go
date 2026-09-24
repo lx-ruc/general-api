@@ -24,9 +24,9 @@ func TestProbePicksChatModelOverEmbedding(t *testing.T) {
 	// 字母序 embedding-3 在前；另挂一个 chat 模型
 	mustExec(t, e.f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (1, 'embedding-3')`)
 
-	ok, _, errStr := probeChannel(e.h, 1)
-	if !ok || errStr != "" {
-		t.Fatalf("健康渠道应探测成功，got ok=%v err=%s", ok, errStr)
+	res := ProbeChannel(e.h.DB, e.h.Cipher, e.h.Client, e.h.Coord, e.h.KeyCooldown, 1)
+	if !res.OK || res.Err != "" {
+		t.Fatalf("健康渠道应探测成功，got ok=%v err=%s", res.OK, res.Err)
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -53,9 +53,9 @@ func TestProbeEmbeddingsOnlyChannel(t *testing.T) {
 	mustExec(t, e.f, `DELETE FROM channel_abilities WHERE channel_id = 1`)
 	mustExec(t, e.f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (1, 'text-embedding-v4')`)
 
-	ok, _, errStr := probeChannel(e.h, 1)
-	if !ok || errStr != "" {
-		t.Fatalf("纯 embedding 渠道应探测成功，got ok=%v err=%s", ok, errStr)
+	res := ProbeChannel(e.h.DB, e.h.Cipher, e.h.Client, e.h.Coord, e.h.KeyCooldown, 1)
+	if !res.OK || res.Err != "" {
+		t.Fatalf("纯 embedding 渠道应探测成功，got ok=%v err=%s", res.OK, res.Err)
 	}
 	mu.Lock()
 	defer mu.Unlock()

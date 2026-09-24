@@ -610,7 +610,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			if h.Metrics != nil {
 				h.Metrics.Upstream429.Inc()
 			}
-			if qc := quota429Code(eb); qc != "" {
+			if qc := Quota429Code(eb); qc != "" {
 				d := h.Coord.Backoff(cand.KeyScope(), h.KeyCooldown, quota429CooldownMax)
 				if h.Metrics != nil {
 					h.Metrics.KeyCooldown.Inc()
@@ -998,7 +998,7 @@ func longKeyCooldown(kc time.Duration) time.Duration {
 }
 
 // quota429Code 从上游错误体提取配额类错误码（OpenAI 形状 error.code，大小写不敏感）；非配额类返回空
-func quota429Code(body []byte) string {
+func Quota429Code(body []byte) string {
 	var er struct {
 		Error struct {
 			Code string `json:"code"`

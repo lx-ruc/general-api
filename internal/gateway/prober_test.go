@@ -254,3 +254,79 @@ func TestChannelTestLoopDisabledAndRecoveryHandoff(t *testing.T) {
 		t.Fatal("渠道应已自动恢复启用")
 	}
 }
+
+// ---- 配额类 429 的探测语义（管理台「测试」/体检共用内核）----
+
+// 探测命中配额类 429 → 显式分类（Quota=true、错误文案说配额耗尽而非裸 429），
+// 且只给探测用的那把 Key 标记配额冷却（其它 Key 不连坐）
+func TestProbeQuotaClassifiedAndCoolsOnlyProbedKey(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"code":"SetLimitExceeded","message":"has reached the set usage limit"}}`))
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, []string{"k1", "k2"}, 10)
+
+	res := ProbeChannel(e.h.DB, e.h.Cipher, e.h.Client, e.h.Coord, e.h.KeyCooldown, 1)
+	if res.OK || !res.Quota {
+		t.Fatalf("配额 429 应分类为 Quota（非裸 429/故障），got ok=%v quota=%v err=%s", res.OK, res.Quota, res.Err)
+	}
+	if !strings.Contains(res.Err, "配额耗尽") || !strings.Contains(res.Err, "SetLimitExceeded") {
+		t.Fatalf("错误文案应明确说上游配额耗尽并带错误码，got %q", res.Err)
+	}
+	if !e.cd.IsCooling("ck:1:1") || !e.cd.IsQuotaCooling("ck:1:1") {
+		t.Fatal("被探测的 Key 应进入配额冷却")
+	}
+	if e.cd.IsCooling("ck:1:2") {
+		t.Fatal("未探测的 Key 不应连坐冷却")
+	}
+}
+
+// 探测成功 → 清除该 Key 冷却：厂商侧限额恢复后点一次「测试」，Key 立即回池
+func TestProbeSuccessClearsCooldown(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(okBody))
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, []string{"k1"}, 10)
+
+	// 预置配额冷却（模拟此前配额耗尽）
+	d := e.cd.Backoff("ck:1:1", time.Minute, 24*time.Hour)
+	e.cd.MarkQuotaCooling("ck:1:1", d)
+	res := ProbeChannel(e.h.DB, e.h.Cipher, e.h.Client, e.h.Coord, e.h.KeyCooldown, 1)
+	if !res.OK {
+		t.Fatalf("探测应成功，got err=%s", res.Err)
+	}
+	if e.cd.IsCooling("ck:1:1") || e.cd.IsQuotaCooling("ck:1:1") {
+		t.Fatal("探测成功应清除该 Key 的冷却（含配额标记）")
+	}
+}
+
+// 体检遇到配额耗尽：不计连续失败、不禁用渠道——配额是 Key/账户级问题，
+// 渠道本身与其它 Key 健康（否则限额恢复前渠道被整条拉黑）
+func TestChannelTestQuotaNeverDisables(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"code":"SetLimitExceeded"}}`))
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, []string{"k1"}, 10)
+
+	failures := map[int64]int{}
+	for i := 0; i < 5; i++ { // 远超阈值 3
+		if n, err := ChannelTestOnce(e.h, 3, failures); err != nil || n != 0 {
+			t.Fatalf("配额耗尽任何一轮都不应禁用渠道，第 %d 轮 got n=%d err=%v", i+1, n, err)
+		}
+	}
+	var row struct{ Status, LastTestOk int64 }
+	_ = e.f.db.Raw("SELECT status, last_test_ok FROM channels WHERE id = 1").Scan(&row)
+	if row.Status != 1 {
+		t.Fatalf("配额耗尽不应禁用渠道，got status=%d", row.Status)
+	}
+	if row.LastTestOk != 0 {
+		t.Fatalf("测试结果仍应如实记失败（last_test_ok=0），got %d", row.LastTestOk)
+	}
+}

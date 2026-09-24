@@ -10,6 +10,8 @@ import (
 
 	"gorm.io/gorm"
 
+	"token-gateway/internal/coord"
+	"token-gateway/internal/crypto"
 	"token-gateway/internal/model"
 	"token-gateway/internal/service"
 )
@@ -72,7 +74,8 @@ func ChannelTestOnce(h *Handler, failThreshold int, failures map[int64]int) (int
 	}
 	disabled := 0
 	for _, ch := range chans {
-		ok, _, errStr := probeChannel(h, ch.ID)
+		pr := ProbeChannel(h.DB, h.Cipher, h.Client, h.Coord, h.KeyCooldown, ch.ID)
+		ok, errStr := pr.OK, pr.Err
 		now := time.Now().Unix()
 		if h.Metrics != nil {
 			if ok {
@@ -85,6 +88,16 @@ func ChannelTestOnce(h *Handler, failThreshold int, failures map[int64]int) (int
 			delete(failures, ch.ID) // 成功一次即清零连续失败计数
 			_ = h.DB.Exec("UPDATE channels SET last_test_at = ?, last_test_ok = 1, updated_at = ? WHERE id = ?",
 				now, now, ch.ID).Error
+			continue
+		}
+		if pr.Quota {
+			// 厂商侧配额耗尽是 Key/账户级问题：渠道本身与其它 Key 健康，数据面已按
+			// 配额冷却处理（全部耗尽时对客户端回 402）。不计连续失败、不禁用渠道——
+			// 否则限额恢复前渠道被整条拉黑，恢复后还要多等一轮探测
+			_ = h.DB.Exec("UPDATE channels SET last_test_at = ?, last_test_ok = 0, updated_at = ? WHERE id = ?",
+				now, now, ch.ID).Error
+			slog.Warn("定时体检：上游配额耗尽（不计渠道故障）", "channel_id", ch.ID, "channel", ch.Name,
+				"key", pr.KeyDesc, "err", truncateStr(errStr, 200))
 			continue
 		}
 		failures[ch.ID]++
@@ -126,7 +139,8 @@ func AutoProbeOnce(h *Handler) (int, error) {
 	}
 	recovered := 0
 	for _, ch := range chans {
-		ok, latency, errStr := probeChannel(h, ch.ID)
+		res := ProbeChannel(h.DB, h.Cipher, h.Client, h.Coord, h.KeyCooldown, ch.ID)
+		ok, latency, errStr := res.OK, res.LatencyMs, res.Err
 		now := time.Now().Unix()
 		if ok {
 			// 一次成功即恢复：清禁用标记、记测试结果、清零熔断计数
@@ -157,30 +171,64 @@ func AutoProbeOnce(h *Handler) (int, error) {
 	return recovered, nil
 }
 
-// probeChannel 实发一次 max_tokens=1 请求测连通（Key 选择与数据面/管理台测试一致：
-// 池内第一把启用 Key → 回退 legacy 单 Key）
-func probeChannel(h *Handler, channelID int64) (ok bool, latencyMs int64, errMsg string) {
+// ProbeResult 单次渠道探测结果。管理台「渠道测试」按钮与体检/自动恢复共用同一内核，
+// 错误语义保持一致（配额耗尽 ≠ 渠道故障）。
+type ProbeResult struct {
+	OK        bool
+	Status    int    // 上游 HTTP 状态码（网络失败/配置问题为 0）
+	LatencyMs int64
+	Err       string
+	KeyDesc   string // 探测使用的 Key 描述（如 "池内 Key #3" / "legacy 单 Key"）
+	Quota     bool   // 失败是否因厂商侧配额耗尽（SetLimitExceeded 等）——换 Key/等恢复可解，禁用渠道无意义
+}
+
+// ProbeChannel 实发一次 max_tokens=1 请求测连通。Key 选择与数据面选路同口径：
+// 池内优先挑非冷却的启用 Key（全部冷却时仍取第一把——管理员点测试通常就是想看它为什么不行），
+// 回退 legacy 单 Key。keyCooldown <= 0 时按 60s（探测侧标记配额冷却用）。
+//
+// 探测同时充当 Key 自愈入口：成功即 ClearCooldown（配额恢复后点一次「测试」，
+// 被冷却的 Key 立即回池，不必等冷却到期）；配额类 429 则按数据面同款策略标记
+// 该 Key 的配额冷却（其它 Key 不连坐）。
+func ProbeChannel(db *gorm.DB, cipher *crypto.Cipher, client *http.Client, cd coord.Coordinator,
+	keyCooldown time.Duration, channelID int64) ProbeResult {
 	var ch model.Channel
-	if err := h.DB.Where("id = ?", channelID).First(&ch).Error; err != nil {
-		return false, 0, "channel not found: " + err.Error()
+	if err := db.Where("id = ?", channelID).First(&ch).Error; err != nil {
+		return ProbeResult{Err: "channel not found: " + err.Error()}
 	}
 	var ab model.ChannelAbility
 	// 优先挑 chat 模型探测：embedding 模型不吃 messages，用 chat 请求探测必然 400，
 	// 会把健康渠道误判为故障（体检误杀）。渠道全是 embedding 模型时改发 embeddings 请求
-	ab, isEmbed, err := PickProbeAbility(h.DB, channelID)
+	ab, isEmbed, err := PickProbeAbility(db, channelID)
 	if err != nil {
-		return false, 0, "渠道未配置模型，无法探测"
+		return ProbeResult{Err: "渠道未配置模型，无法探测"}
 	}
-	key := ""
-	var poolKey model.ChannelKey
-	if h.DB.Where("channel_id = ? AND status = 1", channelID).Order("id").First(&poolKey).Error == nil {
-		key, _ = h.Cipher.Decrypt(poolKey.KeyEnc)
+	if keyCooldown <= 0 {
+		keyCooldown = time.Minute
+	}
+
+	// Key 选择：池内优先非冷却 → 全冷却取第一把 → 回退 legacy 单 Key
+	key, scope, keyDesc := "", "", ""
+	var poolKeys []model.ChannelKey
+	if err := db.Where("channel_id = ? AND status = 1", channelID).Order("id").Find(&poolKeys).Error; err == nil && len(poolKeys) > 0 {
+		pick := poolKeys[0]
+		for _, k := range poolKeys {
+			if s := fmt.Sprintf("ck:%d:%d", channelID, k.ID); !cd.IsCooling(s) {
+				pick = k
+				break
+			}
+		}
+		scope = fmt.Sprintf("ck:%d:%d", channelID, pick.ID)
+		keyDesc = fmt.Sprintf("池内 Key #%d", pick.ID)
+		key, _ = cipher.Decrypt(pick.KeyEnc)
 	} else if ch.UpstreamKeyEnc != "" {
-		key, _ = h.Cipher.Decrypt(ch.UpstreamKeyEnc)
+		key, _ = cipher.Decrypt(ch.UpstreamKeyEnc)
+		scope = fmt.Sprintf("ck:%d:legacy", channelID)
+		keyDesc = "legacy 单 Key"
 	}
 	if key == "" {
-		return false, 0, "渠道无可用 Key（池内全部禁用或未配置）"
+		return ProbeResult{Err: "渠道无可用 Key（池内全部禁用或未配置）"}
 	}
+
 	upModel := ab.ModelName
 	if ab.UpstreamModelName != nil && *ab.UpstreamModelName != "" {
 		upModel = *ab.UpstreamModelName
@@ -193,24 +241,41 @@ func probeChannel(h *Handler, channelID int64) (ok bool, latencyMs int64, errMsg
 	}
 	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(ch.BaseURL, "/")+probePath(ch.Path, isEmbed), strings.NewReader(body))
 	if err != nil {
-		return false, 0, err.Error()
+		return ProbeResult{Err: err.Error()}
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("User-Agent", "token-gateway")
 
 	start := time.Now()
-	resp, derr := h.Client.Do(req)
+	resp, derr := client.Do(req)
 	latency := time.Since(start).Milliseconds()
 	if derr != nil {
-		return false, latency, derr.Error()
+		return ProbeResult{LatencyMs: latency, Err: derr.Error(), KeyDesc: keyDesc}
 	}
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	_ = resp.Body.Close()
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return true, latency, ""
+		if scope != "" {
+			cd.ClearCooldown(scope) // 探测成功即证明可用：立即回池（配额恢复后的手动自愈入口）
+		}
+		return ProbeResult{OK: true, Status: resp.StatusCode, LatencyMs: latency, KeyDesc: keyDesc}
 	}
-	return false, latency, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncateStr(string(data), 300))
+	// 配额类 429：Key/账户级问题，按数据面同款策略只冷却该 Key（不连坐），
+	// 并显式分类——体检据此不计渠道故障，管理台据此展示「配额耗尽」而非裸 429
+	if resp.StatusCode == http.StatusTooManyRequests {
+		if qc := Quota429Code(data); qc != "" {
+			if scope != "" {
+				d := cd.Backoff(scope, keyCooldown, quota429CooldownMax)
+				cd.MarkQuotaCooling(scope, d)
+			}
+			return ProbeResult{Status: resp.StatusCode, LatencyMs: latency, KeyDesc: keyDesc, Quota: true,
+				Err: fmt.Sprintf("上游配额耗尽（%s）：厂商侧限额暂停，渠道与其它 Key 不受影响；限额恢复后冷却到期（约 %s）自动回池，也可在 Key 池点「清除冷却」立即复用。原始响应：HTTP 429 %s",
+					qc, keyCooldown, truncateStr(string(data), 200))}
+		}
+	}
+	return ProbeResult{Status: resp.StatusCode, LatencyMs: latency, KeyDesc: keyDesc,
+		Err: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncateStr(string(data), 300))}
 }
 
 // isEmbeddingModel 按 openai 生态惯例：embedding 系模型名都含 "embedding"

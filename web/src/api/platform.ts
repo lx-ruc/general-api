@@ -86,7 +86,7 @@ export interface ChannelKeyRow {
 export const apiListChannels = () => http.get<any, Channel[]>('/api/platform/channels')
 // 创建返回新渠道 id：供前端创建后自动探活
 export interface ChannelCreateResult { id: number; message: string; key_count: number }
-export interface ChannelTestResult { ok: boolean; status: number; latency_ms: number; error?: string; key?: string }
+export interface ChannelTestResult { ok: boolean; status: number; latency_ms: number; error?: string; key?: string; quota_exhausted?: boolean }
 export const apiCreateChannel = (data: any) => http.post<any, ChannelCreateResult>('/api/platform/channels', data)
 export const apiGetChannel = (id: number) => http.get<any, any>(`/api/platform/channels/${id}`)
 export const apiUpdateChannel = (id: number, data: any) => http.put<any, any>(`/api/platform/channels/${id}`, data)

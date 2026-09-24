@@ -1083,6 +1083,9 @@ func (h *Handler) DeleteChannelKey(c *gin.Context) {
 }
 
 // TestChannel POST /api/platform/channels/:id/test：实发一次 max_tokens=1 请求测连通
+// TestChannel POST /api/platform/channels/:id/test：探测内核与定时体检/自动恢复共用
+// （gateway.ProbeChannel——Key 选择、配额分类、成功清冷却完全一致）。测试成功即清除
+// 该 Key 冷却：厂商侧限额恢复后点一次「测试」，被冷却的 Key 立即回池
 func (h *Handler) TestChannel(c *gin.Context) {
 	id, ok := httpx.PathID(c)
 	if !ok {
@@ -1093,71 +1096,18 @@ func (h *Handler) TestChannel(c *gin.Context) {
 		httpx.Fail(c, http.StatusNotFound, "渠道不存在")
 		return
 	}
-	var ab model.ChannelAbility
-	// 选模与体检/自动恢复共用：优先 chat 模型；纯 embedding 渠道改发 embeddings 请求
-	ab, isEmbed, perr := gateway.PickProbeAbility(h.DB, id)
-	if perr != nil {
-		httpx.Fail(c, http.StatusBadRequest, "渠道未配置模型，无法测试")
-		return
-	}
-	// Key 选择与数据面一致：池内第一把启用 Key → 回退 legacy 单 Key
-	key, keyDesc := "", ""
-	var poolKey model.ChannelKey
-	if h.DB.Where("channel_id = ? AND status = 1", id).Order("id").First(&poolKey).Error == nil {
-		key, _ = h.Cipher.Decrypt(poolKey.KeyEnc)
-		keyDesc = fmt.Sprintf("池内 Key #%d", poolKey.ID)
-	} else if ch.UpstreamKeyEnc != "" {
-		key, _ = h.Cipher.Decrypt(ch.UpstreamKeyEnc)
-		keyDesc = "legacy 单 Key"
-	}
-	if key == "" {
-		httpx.Fail(c, http.StatusBadRequest, "渠道未配置上游密钥")
-		return
-	}
-	upModel := ab.ModelName
-	if ab.UpstreamModelName != nil && *ab.UpstreamModelName != "" {
-		upModel = *ab.UpstreamModelName
-	}
-	var body, path string
-	if isEmbed {
-		body = fmt.Sprintf(`{"model":%q,"input":"ping"}`, upModel)
-		// embeddings 路径由聊天路径派生（与数据面 relaySpec 同规则）
-		if s, found := strings.CutSuffix(ch.Path, "/chat/completions"); found {
-			path = s + "/embeddings"
-		} else if idx := strings.LastIndex(ch.Path, "/"); idx >= 0 {
-			path = ch.Path[:idx] + "/embeddings"
-		} else {
-			path = "/embeddings"
-		}
-	} else {
-		body = fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":1,"stream":false}`, upModel)
-		path = ch.Path
-	}
-	url := strings.TrimRight(ch.BaseURL, "/") + path
-	req, _ := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+key)
-
-	start := time.Now()
-	resp, derr := h.Client.Do(req)
-	latency := time.Since(start).Milliseconds()
-	okFlag, errMsg := false, ""
-	statusCode := 0
-	if derr != nil {
-		errMsg = derr.Error()
-	} else {
-		statusCode = resp.StatusCode
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
-		_ = resp.Body.Close()
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			okFlag = true
-		} else {
-			errMsg = fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncateStr(string(data), 300))
+	res := gateway.ProbeChannel(h.DB, h.Cipher, h.Client, h.Coord, 0, id)
+	if res.Err != "" && res.Status == 0 && !res.OK {
+		// 探测未发出（渠道无模型/无 Key/参数非法）：回 400 让前端直接看到原因
+		if strings.Contains(res.Err, "未配置") {
+			httpx.Fail(c, http.StatusBadRequest, res.Err)
+			return
 		}
 	}
 	_ = h.DB.Exec("UPDATE channels SET last_test_at = ?, last_test_ok = ?, updated_at = ? WHERE id = ?",
-		time.Now().Unix(), b2i(okFlag), time.Now().Unix(), id).Error
-	httpx.OK(c, gin.H{"ok": okFlag, "status": statusCode, "latency_ms": latency, "error": errMsg, "key": keyDesc})
+		time.Now().Unix(), b2i(res.OK), time.Now().Unix(), id).Error
+	httpx.OK(c, gin.H{"ok": res.OK, "status": res.Status, "latency_ms": res.LatencyMs,
+		"error": res.Err, "key": res.KeyDesc, "quota_exhausted": res.Quota})
 }
 
 // fetchUpstreamModelNames 按给定的 base / 聊天路径 / 密钥实时拉取上游模型列表（OpenAI 兼容 /models 格式），
