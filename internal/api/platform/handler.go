@@ -301,6 +301,41 @@ func (h *Handler) AddOrgQuota(c *gin.Context) {
 	httpx.OK(c, gin.H{"message": fmt.Sprintf("已追加 %d token%s", req.Amount, notifyNote)})
 }
 
+// SetOrgQuota PUT /api/platform/orgs/:id/quota —— 限额"设值"调整（区别于 POST 的追加/冲减）：
+// 把上限直接置为目标值，差值自动入审计流水（Σgrants == quota_limit 不变量与追加同源）
+func (h *Handler) SetOrgQuota(c *gin.Context) {
+	id, ok := httpx.PathID(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Limit  int64  `json:"limit"`
+		Remark string `json:"remark"`
+	}
+	if !httpx.BindJSON(c, &req) {
+		return
+	}
+	if req.Limit < 0 {
+		httpx.Fail(c, http.StatusBadRequest, "额度上限不能为负")
+		return
+	}
+	delta, err := service.SetOrgQuota(h.DB, id, req.Limit, middleware.GetUID(c), req.Remark)
+	if err != nil {
+		if err == service.ErrNotFound {
+			httpx.Fail(c, http.StatusNotFound, "客户不存在")
+			return
+		}
+		if err == service.ErrQuotaOverflow {
+			httpx.Fail(c, http.StatusBadRequest, "额度数值非法")
+			return
+		}
+		httpx.Fail(c, http.StatusInternalServerError, "调整额度失败")
+		return
+	}
+	notifyNote := notifyOrgQuota(h.DB, id, delta, req.Remark)
+	httpx.OK(c, gin.H{"message": fmt.Sprintf("额度上限已调整为 %d token%s", req.Limit, notifyNote)})
+}
+
 // notifyOrgQuota 组装授权详情并通知；返回附在响应里的通知状态说明
 func notifyOrgQuota(db *gorm.DB, orgID, amount int64, remark string) string {
 	var org model.Org

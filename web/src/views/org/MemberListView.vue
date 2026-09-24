@@ -58,11 +58,16 @@ function openQuota(m: Member) {
   quotaVisible.value = true
 }
 async function submitQuota() {
-  if (!quotaForm.member || !quotaForm.amount) return
-  await apiAddMemberQuota(quotaForm.member.id, Math.round(quotaForm.amount * M), quotaForm.remark)
+  if (!quotaForm.member) return
+  // input-number 清空后是 null（falsy）：追加 0 无意义跳过，但月限等后续步骤必须照常提交，
+  // 否则「只改单月上限」点确定无任何反应
+  const amount = Math.round((quotaForm.amount || 0) * M)
+  if (amount !== 0) {
+    await apiAddMemberQuota(quotaForm.member.id, amount, quotaForm.remark)
+  }
   // 单月上限走设值更新（0=不限；与追加额度独立，总是提交保持一致）
-  await apiUpdateMember(quotaForm.member.id, { monthly_quota: Math.round(quotaForm.monthly * M) || 0 })
-  ElMessage.success('额度与月限已更新')
+  await apiUpdateMember(quotaForm.member.id, { monthly_quota: Math.round((quotaForm.monthly || 0) * M) || 0 })
+  ElMessage.success(amount !== 0 ? '额度与月限已更新' : '单月上限已更新')
   quotaVisible.value = false
   load()
 }

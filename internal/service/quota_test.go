@@ -346,3 +346,105 @@ func TestPointsPerYuanOverflow(t *testing.T) {
 		t.Fatalf("超长数字应回退默认 1e6，got %d", got)
 	}
 }
+
+// SetOrgQuota 设值调整：目标值直接落 quota_limit，差值入流水，Σgrants 不变量恒成立；
+// 设高解除欠费停服、设低不主动停服（与追加同口径）、同值重设无流水、负值拒绝
+func TestSetOrgQuota(t *testing.T) {
+	gdb, err := database.Open(config.Database{Driver: "sqlite", Path: t.TempDir() + "/setq.db"})
+	if err != nil {
+		t.Fatalf("打开测试库失败: %v", err)
+	}
+	if err := database.Migrate(gdb); err != nil {
+		t.Fatalf("迁移失败: %v", err)
+	}
+	t.Cleanup(func() { sqlDB, _ := gdb.DB(); _ = sqlDB.Close() })
+	now := time.Now().Unix()
+
+	// 31 正常额度；32 手动停用（不得被设值误恢复）。
+	// 初始额度同笔入流水（与生产 CreateOrg 走 AddOrgQuotaTx 一致），Σgrants 从成立起步
+	seed := func(id, limit int64, status int) {
+		_ = gdb.Exec(`INSERT INTO orgs (id, name, quota_limit, quota_used, status, created_at, updated_at)
+			VALUES (?, ?, ?, 400000, ?, ?, ?)`, id, fmt.Sprintf("setq-%d", id), limit, status, now, now).Error
+		_ = gdb.Exec(`INSERT INTO quota_grants (subject_type, subject_id, amount, remark, created_at)
+			VALUES ('org', ?, ?, '初始额度', ?)`, id, limit, now).Error
+	}
+	seed(31, 1_000_000, 1)
+	seed(32, 1_000_000, 0)
+
+	sumGrants := func(id int64) int64 {
+		var s int64
+		_ = gdb.Raw(`SELECT COALESCE(SUM(amount), 0) FROM quota_grants WHERE subject_type='org' AND subject_id = ?`, id).Scan(&s).Error
+		return s
+	}
+	limitOf := func(id int64) int64 {
+		var v int64
+		_ = gdb.Raw("SELECT quota_limit FROM orgs WHERE id = ?", id).Scan(&v).Error
+		return v
+	}
+	statusOf := func(id int64) int {
+		var s int
+		_ = gdb.Raw("SELECT status FROM orgs WHERE id = ?", id).Scan(&s).Error
+		return s
+	}
+	assertInvariant := func(id int64, step string) {
+		t.Helper()
+		if g, l := sumGrants(id), limitOf(id); g != l {
+			t.Fatalf("[%s org %d] Σgrants=%d 但 limit=%d，审计链断裂", step, id, g, l)
+		}
+	}
+
+	// 设高：limit 1M→2M，差值 +1M 入流水
+	if d, err := SetOrgQuota(gdb, 31, 2_000_000, 1, "设高"); err != nil || d != 1_000_000 {
+		t.Fatalf("设高失败: delta=%d err=%v", d, err)
+	}
+	assertInvariant(31, "设高")
+
+	// 设低于消耗（300k < used 400k）：允许，不主动停服；Precheck 拦截兜底
+	if _, err := SetOrgQuota(gdb, 31, 300_000, 1, "设低"); err != nil {
+		t.Fatalf("设低失败: %v", err)
+	}
+	assertInvariant(31, "设低")
+	if s := statusOf(31); s != 1 {
+		t.Fatalf("[31] 设低不主动停服，got %d", s)
+	}
+
+	// 设高解除欠费停服：置 status=2 后设出富余 → 自动恢复 1
+	_ = gdb.Exec("UPDATE orgs SET status = 2 WHERE id = 31").Error
+	if _, err := SetOrgQuota(gdb, 31, 600_000, 1, "欠费后设富余"); err != nil {
+		t.Fatalf("欠费后设值失败: %v", err)
+	}
+	if s := statusOf(31); s != 1 {
+		t.Fatalf("[31] 设出富余应解除欠费停服，got %d", s)
+	}
+
+	// 同值重设：无新流水
+	before := sumGrants(31)
+	if d, err := SetOrgQuota(gdb, 31, 600_000, 1, "同值"); err != nil || d != 0 {
+		t.Fatalf("同值重设应无操作: delta=%d err=%v", d, err)
+	}
+	if after := sumGrants(31); after != before {
+		t.Fatalf("同值重设不应产生流水，%d → %d", before, after)
+	}
+
+	// 手动停用（0）不得被设值误恢复
+	if _, err := SetOrgQuota(gdb, 32, 9_000_000, 1, "手动停用下设值"); err != nil {
+		t.Fatalf("[32] 设值失败: %v", err)
+	}
+	if s := statusOf(32); s != 0 {
+		t.Fatalf("[32] 手动停用不得被误恢复，got %d", s)
+	}
+
+	// 负值拒绝：limit 不变、无流水
+	if _, err := SetOrgQuota(gdb, 31, -1, 1, "负值"); err != ErrQuotaOverflow {
+		t.Fatalf("负值应拒绝，got %v", err)
+	}
+	if l := limitOf(31); l != 600_000 {
+		t.Fatalf("负值拒绝后 limit 不应变，got %d", l)
+	}
+	assertInvariant(31, "负值拒绝后")
+
+	// 不存在的客户
+	if _, err := SetOrgQuota(gdb, 999, 100, 1, ""); err != ErrNotFound {
+		t.Fatalf("不存在客户应 ErrNotFound，got %v", err)
+	}
+}

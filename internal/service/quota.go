@@ -141,6 +141,44 @@ func AddOrgQuotaTx(tx *gorm.DB, orgID, amount, operatorID int64, remark string, 
 	}).Error
 }
 
+// SetOrgQuota 平台对客户限额"设值"调整（quota_limit 直接置为目标值）：
+// 与追加同一条不变量——同事务锁行读旧值 → 写新值 → 差值入流水，Σgrants == quota_limit 恒成立。
+// 设高后有富余自动解除欠费停服（与追加同法）；设低/设零不主动停服（迁移只在结算点，Precheck 拦截兜底）。
+// org 的 0 是零额度而非不限（Precheck 无 >0 守卫），limit<0 拒绝。返回差值供调用方组织通知文案。
+func SetOrgQuota(db *gorm.DB, orgID, limit, operatorID int64, remark string) (int64, error) {
+	if limit < 0 {
+		return 0, ErrQuotaOverflow
+	}
+	now := time.Now().Unix()
+	var delta int64
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var o model.Org
+		if err := lockFirst(tx, &o, orgID); err != nil {
+			return err
+		}
+		delta = limit - o.QuotaLimit
+		if err := tx.Exec("UPDATE orgs SET quota_limit = ?, updated_at = ? WHERE id = ?",
+			limit, now, orgID).Error; err != nil {
+			return err
+		}
+		if err := tx.Exec(`UPDATE orgs SET status = 1, updated_at = ?
+			WHERE id = ? AND status = 2 AND quota_limit > quota_used`, now, orgID).Error; err != nil {
+			return err
+		}
+		if delta == 0 {
+			return nil // 同值重设：欠费恢复动作可重放，差值 0 无流水必要
+		}
+		return tx.Create(&model.QuotaGrant{
+			SubjectType: "org", SubjectID: orgID, Amount: delta,
+			Remark: remark, OperatorID: opID(operatorID), CreatedAt: now,
+		}).Error
+	})
+	if err != nil {
+		return 0, err
+	}
+	return delta, nil
+}
+
 // AddUserQuota 客户管理员给子账号追加限额；强制 org 归属校验防越权。
 // 同 AddOrgQuota：锁行 + 回绕拒绝（quota_limit NULL 视作 0 基线）
 func AddUserQuota(db *gorm.DB, orgID, userID, amount, operatorID int64, remark string) error {

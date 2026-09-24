@@ -53,6 +53,7 @@ func newPlatformEnv(t *testing.T) (*gin.Engine, *gorm.DB, string) {
 	cipher, _ := crypto.NewCipher("")
 	h := NewHandler(db, cipher, &http.Client{}, nil)
 	pg.POST("/orgs", h.CreateOrg)
+	pg.PUT("/orgs/:id/quota", h.SetOrgQuota)
 	return engine, db, token
 }
 
@@ -79,6 +80,51 @@ func TestCreateOrgInitialGrant(t *testing.T) {
 	_ = db.Raw(`SELECT quota_limit FROM orgs WHERE id=1`).Scan(&limit).Error
 	if limit != 5_000_000 {
 		t.Fatalf("org limit 应 5,000,000，得 %d", limit)
+	}
+}
+
+// PUT /orgs/:id/quota 设值调整：差值入流水、0 合法（零额度）、负值 400、客户不存在 404
+func TestSetOrgQuotaHandler(t *testing.T) {
+	engine, db, token := newPlatformEnv(t)
+	now := time.Now().Unix()
+	_ = db.Exec(`INSERT INTO orgs (id, name, quota_limit, status, created_at, updated_at)
+		VALUES (41, 'setqh', 1000000, 1, ?, ?)`, now, now).Error
+	_ = db.Exec(`INSERT INTO quota_grants (subject_type, subject_id, amount, remark, created_at)
+		VALUES ('org', 41, 1000000, '初始额度', ?)`, now).Error
+
+	put := func(body string, orgID string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPut, "/api/platform/orgs/"+orgID+"/quota", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+		return w
+	}
+
+	if w := put(`{"limit":2500000,"remark":"设高"}`, "41"); w.Code != http.StatusOK {
+		t.Fatalf("设高应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	var limit, sumGrants int64
+	_ = db.Raw("SELECT quota_limit FROM orgs WHERE id = 41").Scan(&limit).Error
+	_ = db.Raw(`SELECT COALESCE(SUM(amount), 0) FROM quota_grants WHERE subject_type='org' AND subject_id=41`).Scan(&sumGrants).Error
+	if limit != 2_500_000 || sumGrants != 2_500_000 {
+		t.Fatalf("设高后 limit=%d Σgrants=%d，应均为 2,500,000", limit, sumGrants)
+	}
+
+	// 0 合法：零额度是明确的业务语义，不得被 required/校验吞掉
+	if w := put(`{"limit":0,"remark":"清零"}`, "41"); w.Code != http.StatusOK {
+		t.Fatalf("设 0 应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	_ = db.Raw("SELECT quota_limit FROM orgs WHERE id = 41").Scan(&limit).Error
+	if limit != 0 {
+		t.Fatalf("设 0 后 limit 应 0，得 %d", limit)
+	}
+
+	if w := put(`{"limit":-1}`, "41"); w.Code != http.StatusBadRequest {
+		t.Fatalf("负值应 400，得 %d: %s", w.Code, w.Body.String())
+	}
+	if w := put(`{"limit":100}`, "999"); w.Code != http.StatusNotFound {
+		t.Fatalf("客户不存在应 404，得 %d: %s", w.Code, w.Body.String())
 	}
 }
 

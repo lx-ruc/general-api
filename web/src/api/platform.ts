@@ -34,6 +34,9 @@ export const apiUpdateOrg = (id: number, data: any) => http.put<any, any>(`/api/
 export const apiDeleteOrg = (id: number) => http.delete<any, any>(`/api/platform/orgs/${id}`)
 export const apiAddOrgQuota = (id: number, amount: number, remark: string) =>
   http.post<any, any>(`/api/platform/orgs/${id}/quota`, { amount, remark })
+// 限额设值调整：quota_limit 直接置为目标值（区别于 POST 的追加/冲减），差值自动入流水
+export const apiSetOrgQuota = (id: number, limit: number, remark: string) =>
+  http.put<any, any>(`/api/platform/orgs/${id}/quota`, { limit, remark })
 
 // 客户用量统计（含每个模型的用量明细 by_model / 每个子账号 by_user）
 export const apiOrgDetailStats = (id: number) => http.get<any, any>(`/api/platform/orgs/${id}/stats`)
