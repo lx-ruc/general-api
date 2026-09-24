@@ -359,3 +359,38 @@ func TestChannelTestQuotaNeverDisables(t *testing.T) {
 		t.Fatalf("测试结果仍应如实记失败（last_test_ok=0），got %d", row.LastTestOk)
 	}
 }
+
+// ---- 网络层失败的中文分类（管理台「测试」按钮直接展示，不再是裸英文 Go 错误）----
+
+// 探测命中超时：错误文案含中文分类（上游超时）与原始错误
+func TestProbeTimeoutDescribed(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		_, _ = w.Write([]byte(okBody))
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 3, "slow", up.URL, []string{"k1"}, 10)
+
+	res := ProbeChannel(e.h.DB, e.h.Cipher, NewHTTPClient(50*time.Millisecond), e.h.Coord, e.h.KeyCooldown, 3)
+	if res.OK || !strings.Contains(res.Err, "上游超时") || !strings.Contains(res.Err, "原始错误") {
+		t.Fatalf("探测超时应回中文分类文案，got ok=%v err=%q", res.OK, res.Err)
+	}
+	if res.Status != 0 {
+		t.Fatalf("网络层失败无上游状态码，got %d", res.Status)
+	}
+}
+
+// 探测连接被拒绝（端口已关）：分类指向 base_url / 防火墙排查方向
+func TestProbeRefusedDescribed(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	baseURL := up.URL
+	up.Close() // 立即关闭 → 端口不再监听，连接被拒
+	e.seedUpstreamChannel(t, 4, "dead", baseURL, []string{"k1"}, 10)
+
+	res := ProbeChannel(e.h.DB, e.h.Cipher, e.h.Client, e.h.Coord, e.h.KeyCooldown, 4)
+	if res.OK || !strings.Contains(res.Err, "连接被拒绝") {
+		t.Fatalf("探测被拒应回中文分类文案，got ok=%v err=%q", res.OK, res.Err)
+	}
+}

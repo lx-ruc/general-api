@@ -524,6 +524,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 	onlyRateLimited := true // 全部失败均因 429/排队超时 → 最终回 429 而非 502
 	authOnly := true        // 全部失败均因 401/403（Key 失效自动禁用）→ 回 503 而非 502
 	quotaOnly := true       // 全部失败均因配额类 429（厂商侧限额）→ 回 402 而非 429
+	timeoutOnly := true     // 全部失败均因上游超时（等待响应头/建连）→ 回 504 而非 502
 	coolApplied := time.Duration(0) // 本请求实际应用过的最大 Key 冷却时长（429 耗尽时如实回报客户端）
 	tryCandidate := func(cand Candidate) attemptResult {
 		// 渠道并发闸门（有界等待）。超时换渠道：同渠道其他 Key 面对同一个满闸门，重试无意义。
@@ -541,7 +542,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 				h.Metrics.QueueTimeouts.Inc()
 			}
 			lastErr = fmt.Sprintf("queue wait timeout on channel %s", cand.ChannelName)
-			onlyRateLimited, authOnly, quotaOnly = false, false, false
+			onlyRateLimited, authOnly, quotaOnly, timeoutOnly = false, false, false, false
 			return attemptNextChannel
 		}
 		if h.Metrics != nil {
@@ -557,14 +558,14 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		upBody, merr := json.Marshal(bm)
 		if merr != nil {
 			lastErr = merr.Error()
-			onlyRateLimited, authOnly, quotaOnly = false, false, false
+			onlyRateLimited, authOnly, quotaOnly, timeoutOnly = false, false, false, false
 			return attemptNextKey
 		}
 		req, rerr := http.NewRequestWithContext(c.Request.Context(), http.MethodPost,
 			endpointURL(cand.BaseURL, cand.Path, spec.fixedPath), bytes.NewReader(upBody))
 		if rerr != nil {
 			lastErr = rerr.Error()
-			onlyRateLimited, authOnly, quotaOnly = false, false, false
+			onlyRateLimited, authOnly, quotaOnly, timeoutOnly = false, false, false, false
 			return attemptNextKey
 		}
 		req.Header.Set("Content-Type", "application/json")
@@ -582,9 +583,14 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 				return attemptDone
 			}
 			lastErr = derr.Error()
+			kind, _ := classifyNetErr(derr)
 			onlyRateLimited, authOnly, quotaOnly = false, false, false
+			if kind != netErrTimeout {
+				timeoutOnly = false
+			}
 			// 原始错误（含上游地址）只进服务端日志供平台管理员排障，客户侧出口统一消毒
-			slog.Warn("上游连接失败", "channel_id", cand.ChannelID, "channel", cand.ChannelName, "err", lastErr)
+			slog.Warn("上游连接失败", "channel_id", cand.ChannelID, "channel", cand.ChannelName,
+				"class", kindString(kind), "err", lastErr)
 			h.noteChannelFailure(cand)
 			return attemptNextChannel // 网络失败 → 跳过该渠道（尚未向客户端写出任何字节）
 		}
@@ -626,7 +632,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 				go service.NotifyKeyQuotaCooling(h.DB, cand.ChannelID, cand.KeyID, cand.ChannelName, cand.UpstreamKey, qc)
 				lastErr = fmt.Sprintf("upstream %s returned %d %s (key %d quota cooldown %s)",
 					cand.ChannelName, resp.StatusCode, qc, cand.KeyID, d)
-				authOnly = false
+				authOnly, timeoutOnly = false, false
 				return attemptNextKey
 			}
 			cd := parseRetryAfter(resp.Header.Get("Retry-After"))
@@ -639,14 +645,14 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			h.coolKeys(cands, cand, cd)
 			lastErr = fmt.Sprintf("upstream %s returned %d (key %d cooling %s)",
 				cand.ChannelName, resp.StatusCode, cand.KeyID, cd)
-			authOnly, quotaOnly = false, false
+			authOnly, quotaOnly, timeoutOnly = false, false, false
 			return attemptNextKey
 
 		case codeMatch(h.DisableKeyCodes, resp.StatusCode):
 			// 401/403（默认）：Key 失效 → 禁用该 Key → 同渠道下一把 Key（主 Key 报错自动切备用；
 			// 候选列表只前进不回看，被禁 Key 不会在本请求内重复选中）
 			drain()
-			onlyRateLimited, quotaOnly = false, false
+			onlyRateLimited, quotaOnly, timeoutOnly = false, false, false
 			h.disableKey(cand, resp.StatusCode)
 			lastErr = fmt.Sprintf("upstream %s key %d returned %d", cand.ChannelName, cand.KeyID, resp.StatusCode)
 			return attemptNextKey
@@ -654,7 +660,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		case codeMatch(h.RetryChannelCodes, resp.StatusCode):
 			// 5xx（默认）：渠道级故障，熔断计数并跳过该渠道全部剩余 Key（同 endpoint 换 Key 无意义）
 			drain()
-			onlyRateLimited, authOnly, quotaOnly = false, false, false
+			onlyRateLimited, authOnly, quotaOnly, timeoutOnly = false, false, false, false
 			lastErr = fmt.Sprintf("upstream %s returned %d", cand.ChannelName, resp.StatusCode)
 			h.noteChannelFailure(cand)
 			return attemptNextChannel
@@ -731,7 +737,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 				rec.Status, rec.Error = 499, "client disconnected"
 				return attemptDone
 			}
-			onlyRateLimited, authOnly, quotaOnly = false, false, false
+			onlyRateLimited, authOnly, quotaOnly, timeoutOnly = false, false, false, false
 			lastErr = rerr2.Error()
 			h.noteChannelFailure(cand)
 			return attemptNextChannel // 尚未向客户端写出字节，可换渠道
@@ -770,7 +776,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		case protoAnthropic:
 			out, u, eerr := encodeAnthropicResponse(data, modelName)
 			if eerr != nil {
-				onlyRateLimited, authOnly, quotaOnly = false, false, false
+				onlyRateLimited, authOnly, quotaOnly, timeoutOnly = false, false, false, false
 				lastErr = "translate response: " + eerr.Error()
 				h.noteChannelFailure(cand)
 				return attemptNextChannel
@@ -779,7 +785,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		case protoResponses:
 			out, u, eerr := encodeResponsesResponse(data, modelName)
 			if eerr != nil {
-				onlyRateLimited, authOnly, quotaOnly = false, false, false
+				onlyRateLimited, authOnly, quotaOnly, timeoutOnly = false, false, false, false
 				lastErr = "translate response: " + eerr.Error()
 				h.noteChannelFailure(cand)
 				return attemptNextChannel
@@ -835,7 +841,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		}
 	}
 
-	// 全部候选耗尽：按失败原因分类回错（402 配额耗尽 / 429 限流 / 503 密钥失效 / 502 其他上游故障）
+	// 全部候选耗尽：按失败原因分类回错（402 配额耗尽 / 504 超时 / 429 限流 / 503 密钥失效 / 502 其他上游故障）
 	rec.Error = truncateStr("all channels failed: "+lastErr, 500)
 	switch {
 	case quotaOnly && skipped == skippedQuota && (tried > 0 || skipped > 0):
@@ -845,6 +851,12 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		rec.Status = http.StatusPaymentRequired
 		werr(c, http.StatusPaymentRequired, "upstream_quota_exceeded",
 			"upstream vendor quota is exhausted, please contact the platform admin")
+	case timeoutOnly:
+		// 全部失败均因上游超时（等待响应头/建连超时）→ 504 网关超时（网关惯例），
+		// 与 502 其它上游故障区分：语义是"慢"而非"坏"，客户端可稍后重试
+		rec.Status = http.StatusGatewayTimeout
+		werr(c, http.StatusGatewayTimeout, "upstream_timeout",
+			"upstream timed out awaiting response, please retry later")
 	case onlyRateLimited:
 		// 仅剩限流类失败 → 429（OpenAI SDK 对 429 有专门退避）。
 		// Retry-After 如实回报本请求实际应用的冷却时长（上游 Retry-After 可能远短于

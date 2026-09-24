@@ -253,7 +253,9 @@ func ProbeChannel(db *gorm.DB, cipher *crypto.Cipher, client *http.Client, cd co
 	resp, derr := client.Do(req)
 	latency := time.Since(start).Milliseconds()
 	if derr != nil {
-		return ProbeResult{LatencyMs: latency, Err: derr.Error(), KeyDesc: keyDesc}
+		// 网络层失败（超时/拒绝连接/DNS/证书）分类成中文可读描述，附原始错误供排障——
+		// 管理台「测试」按钮直接展示，不再是一段英文 Go 错误
+		return ProbeResult{LatencyMs: latency, Err: DescribeNetErr(derr), KeyDesc: keyDesc}
 	}
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	_ = resp.Body.Close()

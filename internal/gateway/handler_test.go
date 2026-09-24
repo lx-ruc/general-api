@@ -1021,3 +1021,54 @@ func TestSSEErrorEventScrubbed(t *testing.T) {
 		t.Fatalf("正文内容里的合法链接不应被误伤: %s", body)
 	}
 }
+
+// 上游超时专属终态：全部候选因等待响应头超时失败 → 504 upstream_timeout（与 502 其它故障区分）；
+// usage_logs 如实记录 504
+func TestUpstreamTimeoutReturns504(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		_, _ = w.Write([]byte(okBody))
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "slow", up.URL, []string{"k1"}, 10)
+	e.h.Client = NewHTTPClient(50 * time.Millisecond)
+
+	w := e.post(chatBody("q", ""))
+	if w.Code != http.StatusGatewayTimeout {
+		t.Fatalf("全部上游超时应 504，got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "upstream_timeout") {
+		t.Fatalf("错误码应为 upstream_timeout: %s", w.Body.String())
+	}
+	var st int64
+	_ = e.f.db.Raw("SELECT status FROM usage_logs ORDER BY id DESC LIMIT 1").Scan(&st)
+	if st != http.StatusGatewayTimeout {
+		t.Fatalf("usage_logs 应记 504，got %d", st)
+	}
+}
+
+// 超时与其它故障混发（超时 + 5xx）：不满足 timeoutOnly → 维持 502 upstream_error 兜底
+func TestUpstreamTimeoutMixedWith5xxReturns502(t *testing.T) {
+	e := newTestEnv(t)
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		_, _ = w.Write([]byte(okBody))
+	}))
+	defer slow.Close()
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer bad.Close()
+	e.seedUpstreamChannel(t, 1, "slow", slow.URL, []string{"k1"}, 10) // 高优先级先试
+	e.seedUpstreamChannel(t, 2, "bad", bad.URL, []string{"k1"}, 1)
+	e.h.Client = NewHTTPClient(50 * time.Millisecond)
+
+	w := e.post(chatBody("q", ""))
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("超时混 5xx 应回兜底 502，got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "upstream_error") {
+		t.Fatalf("错误码应为 upstream_error: %s", w.Body.String())
+	}
+}

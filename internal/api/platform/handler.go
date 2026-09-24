@@ -1116,7 +1116,8 @@ func (h *Handler) fetchUpstreamModelNames(c *gin.Context, baseURL, chatPath, key
 	req.Header.Set("Authorization", "Bearer "+key)
 	resp, err := h.Client.Do(req)
 	if err != nil {
-		httpx.Fail(c, http.StatusBadGateway, "请求上游失败："+err.Error())
+		// 网络层失败分类成中文可读描述（超时/拒绝连接/DNS/证书），原始错误附后供排障
+		httpx.Fail(c, http.StatusBadGateway, "请求上游失败："+gateway.DescribeNetErr(err))
 		return
 	}
 	defer resp.Body.Close()
