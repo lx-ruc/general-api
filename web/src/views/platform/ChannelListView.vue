@@ -688,7 +688,7 @@ async function savePricing() {
       </el-table-column>
       <el-table-column label="冷却" width="110" align="center">
         <template #default="{ row }">
-          <el-tooltip v-if="row.quota_cooling" content="上游厂商侧配额耗尽（如火山限额），已回 402 并指数退避；限额恢复后点「清除冷却」立即复用"
+          <el-tooltip v-if="row.quota_cooling" content="上游厂商侧配额耗尽（如火山限额），冷却期内该渠道全部 Key 耗尽时回 402；冷却按 key_cooldown 起步（默认 1 分钟）到期自动再探测，限额恢复后也可点「清除冷却」立即复用"
             placement="top">
             <el-tag type="warning" effect="plain" size="small">配额冷却</el-tag>
           </el-tooltip>
@@ -717,8 +717,9 @@ async function savePricing() {
 
     <div class="tip keys-tip">
       权重 = 同渠道内各把 Key 分摊请求的比例（3:1 即平均每 4 次请求各担 3 次与 1 次），与渠道间的优先级/权重无关；
-      上游 401/403 自动禁用对应 Key（可在此恢复）；普通 429 冷却到期自动恢复，
-      厂商侧配额耗尽（配额冷却）起步 10 分钟、连击翻倍封顶 24 小时——限额恢复后点「清除冷却」立即复用。
+      上游 401/403 自动禁用对应 Key（可在此恢复）；429 冷却（含厂商侧配额耗尽）按 key_cooldown 起步
+      （默认 1 分钟），到期由真实流量自动再探测、无需人工干预——配额恢复后下一笔请求即成功，
+      等不及的话点「清除冷却」立即复用。
     </div>
   </el-dialog>
 

@@ -401,6 +401,11 @@ func TestQuota429AllKeysExhausted(t *testing.T) {
 	if !strings.Contains(errText, "SetLimitExceeded") {
 		t.Fatalf("usage_log 错误应含配额错误码便于排障，got %q", errText)
 	}
+	// 配额冷却起步与 key_cooldown 同档（测试环境 60s = 1 分钟）：
+	// 到期即由真实流量再探测，厂商侧限额恢复后下一笔请求就成功
+	if !strings.Contains(errText, "quota cooldown 1m0s") {
+		t.Fatalf("配额冷却应从 key_cooldown 起步（1m0s），got %q", errText)
+	}
 
 	// 冷却期内第二笔：选路直接无候选（全部 Key 配额冷却），同样 402 而非 429
 	w2 := e.post(chatBody("q", ""))

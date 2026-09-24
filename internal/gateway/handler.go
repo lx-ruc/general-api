@@ -600,9 +600,9 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			// 429（默认）→ 同渠道下一把 Key。先读错误体区分两类语义：
 			// 配额类（火山 SetLimitExceeded / OpenAI insufficient_quota 等）是持久的账户
 			// 配额暂停而非瞬时限流——只冷却该 Key（Key 池可能跨账户混布，同渠道其它
-			// Key 不应连坐）并按指数退避拉长冷却（起步 10×KeyCooldown ≥10min，连击翻倍
-			// 封顶 24h：死 Key 的探测开销随时间衰减到每天一次；冷却到期归零，配额恢复后
-			// 自动回池），错误码写入 lastErr 落 usage_logs 便于排障；
+			// Key 不应连坐），冷却起步与 key_cooldown 同档（默认 1 分钟：到期即由真实
+			// 流量再探测，配额恢复后下一笔请求就成功，无需人工干预），本请求内就地换
+			// 下一把 Key 继续；错误码写入 lastErr 落 usage_logs 便于排障；
 			// 普通限流 429 维持原语义：按 key_cooldown_scope 冷却（Retry-After 优先，
 			// channel 粒度时同渠道全部 Key 一起冷却——厂商限额按账户，逐个试错纯浪费）
 			eb, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -611,7 +611,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 				h.Metrics.Upstream429.Inc()
 			}
 			if qc := quota429Code(eb); qc != "" {
-				d := h.Coord.Backoff(cand.KeyScope(), longKeyCooldown(h.KeyCooldown), quota429CooldownMax)
+				d := h.Coord.Backoff(cand.KeyScope(), h.KeyCooldown, quota429CooldownMax)
 				if h.Metrics != nil {
 					h.Metrics.KeyCooldown.Inc()
 				}
@@ -987,7 +987,8 @@ var quota429Codes = map[string]struct{}{
 const quota429CooldownMax = 24 * time.Hour
 
 // longKeyCooldown 长效冷却起步档：10×key_cooldown、下限 10min。
-// 配额 429 指数退避的 base 与 legacy 单 Key 401/403 的长效冷却共用此式
+// 仅用于 legacy 单 Key 401/403（Key 失效重试无意义，拉长冷却降低无效探测；
+// 池内 Key 401/403 直接禁用不走此处）
 func longKeyCooldown(kc time.Duration) time.Duration {
 	d := 10 * kc
 	if d < 10*time.Minute {
