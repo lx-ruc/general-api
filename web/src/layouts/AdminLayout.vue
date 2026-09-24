@@ -262,7 +262,7 @@ async function revokeToken(row: AccessToken) {
       <div class="side-foot">
         <div class="meter" aria-hidden="true">
           <span class="meter-dot"></span>
-          <span class="num meter-label">gateway online</span>
+          <span class="meter-label">网关在线</span>
         </div>
       </div>
     </aside>

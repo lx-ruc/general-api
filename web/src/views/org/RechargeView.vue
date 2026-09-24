@@ -6,7 +6,9 @@ import { fmtTime, fmtQuota } from '../../utils/format'
 
 const bankInfo = ref('')
 const list = ref<any[]>([])
-const form = reactive({ amount: 10000000, voucher: '' })
+// 额度录入统一按 M tokens 填写（与其余五个入口一致），提交时换算回点数
+const M = 1_000_000
+const form = reactive({ amount: 10, voucher: '' })
 const submitting = ref(false)
 
 async function load() {
@@ -23,7 +25,7 @@ async function submit() {
   }
   submitting.value = true
   try {
-    const r = await apiCreateRecharge(form.amount, form.voucher)
+    const r = await apiCreateRecharge(Math.round(form.amount * M), form.voucher)
     ElMessage.success(r.message || '已提交')
     form.voucher = ''
     load()
@@ -46,8 +48,9 @@ const statusName = (s: string) => ({ pending: '待确认', approved: '已到账'
       </el-alert>
       <el-divider content-position="left">第二步：提交充值申请（平台确认后额度自动到账并邮件通知）</el-divider>
       <el-form inline>
-        <el-form-item label="充值金额（token）">
-          <el-input-number v-model="form.amount" :min="1000000" :step="5000000" />
+        <el-form-item label="充值金额（M tokens）">
+          <el-input-number v-model="form.amount" :min="1" :step="5" />
+          <span class="tip">= {{ fmtQuota(Math.round(form.amount * M)) }}</span>
         </el-form-item>
         <el-form-item label="转账凭证">
           <el-input v-model="form.voucher" placeholder="银行流水号 / 转账时间 / 户名" style="width: 260px" />

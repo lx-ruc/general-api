@@ -140,6 +140,7 @@ async function copy(text: string) {
       <el-descriptions-item label="向量接口"><code>POST {{ baseURL }}/embeddings</code></el-descriptions-item>
       <el-descriptions-item label="模型列表"><code>GET {{ baseURL }}/models</code></el-descriptions-item>
       <el-descriptions-item label="可用模型">
+        <span v-if="!models.length" class="dim">暂无——请联系客户管理员在「模型授权」中为你勾选</span>
         <el-tag v-for="m in models" :key="m.name" style="margin: 2px">{{ m.name }}</el-tag>
       </el-descriptions-item>
     </el-descriptions>

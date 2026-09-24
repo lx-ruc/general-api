@@ -41,7 +41,7 @@ async function submit() {
       <!-- 右：登录 -->
       <section class="form-wrap">
         <form class="form" @submit.prevent="submit">
-          <h2 class="form-title">登录general API</h2>
+          <h2 class="form-title">登录 慧沐引擎</h2>
 
           <label class="field">
             <span class="field-label">用户名</span>

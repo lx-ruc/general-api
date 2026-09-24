@@ -16,7 +16,8 @@ export interface DayPoint {
 
 function baseOption(dates: string[]) {
   return {
-    grid: { left: 44, right: 14, top: 26, bottom: 26 },
+    // containLabel：Y 轴标签宽度自适应，避免 6~7 位数标签被左边界裁切（与 barOption 一致）
+    grid: { left: 8, right: 14, top: 26, bottom: 26, containLabel: true },
     tooltip: {
       trigger: 'axis',
       axisPointer: { type: 'line', lineStyle: { color: AXIS, width: 1 } },

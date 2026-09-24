@@ -18,7 +18,9 @@ const modelOptions = ref<string[]>([])
 // 有效期表单：永久 / 30 天 / 90 天 / 自定义天数（保存时从当前时刻起算）
 const expiryMode = ref<'never' | '30' | '90' | 'custom'>('never')
 const customDays = ref(30)
-const quotaPoints = ref(10_000_000) // 默认 10M token
+// 额度录入统一按 M tokens 填写（与其余入口一致），保存时换算回点数
+const M = 1_000_000
+const quotaM = ref(10) // 默认 10M token
 const selectedModels = ref<string[]>([])
 
 // 已加载配置导出的有效期签名：保存时仅当用户改动过才提交 expires_at
@@ -31,7 +33,7 @@ function expirySig(): string {
 
 function applyCfg(c: DemoKeyConfig) {
   cfg.value = c
-  quotaPoints.value = c.org.quota_limit > 0 ? c.org.quota_limit : 10_000_000
+  quotaM.value = c.org.quota_limit > 0 ? c.org.quota_limit / M : 10
   selectedModels.value = [...c.models]
   if (!c.expires_at) {
     expiryMode.value = 'never'
@@ -123,7 +125,7 @@ async function save() {
   saving.value = true
   try {
     const body: Record<string, unknown> = {
-      quota_points: quotaPoints.value,
+      quota_points: Math.round(quotaM.value * M),
       models: selectedModels.value,
     }
     if (expirySig() !== loadedExpirySig) {
@@ -183,8 +185,9 @@ async function save() {
     <el-card shadow="never" style="margin-top: 16px">
       <template #header><span>体验配置</span></template>
       <el-form label-width="110px" style="max-width: 640px">
-        <el-form-item label="体验总额度">
-          <el-input-number v-model="quotaPoints" :min="0" :step="1_000_000" style="width: 220px" />
+        <el-form-item label="体验总额度（M tokens）">
+          <el-input-number v-model="quotaM" :min="0.1" :step="1" style="width: 220px" />
+          <span class="hint" style="margin-left: 8px">= {{ fmtQuota(Math.round(quotaM * M)) }}</span>
           <div class="hint">当前 {{ fmtQuota(cfg?.org.quota_limit) }}，已耗 {{ fmtQuota(cfg?.org.quota_used) }}</div>
         </el-form-item>
         <el-form-item v-if="cfg?.provisioned" label="用量水位">
