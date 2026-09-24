@@ -13,7 +13,8 @@ import (
 
 // RedisCoord 多实例全局协调实现。
 //
-//   - 冷却：keep-longer 原子设置（tg:cd:{scope}，仅当新冷却更长才覆盖）
+//   - 冷却：keep-longer 原子设置（tg:cd:{scope}，仅当新冷却更长才覆盖）；
+//     键值兼作 Backoff 连击计数（INCR 后按指数重设 TTL，冷却过期键消失即归零）
 //   - 闸门：ZSET lease（tg:slot:{scope}），member=请求 uuid、score=租约到期 ms；
 //     拿到名额后心跳续租（lease/3），进程崩溃最迟 lease 时长自动回收名额；
 //     排队者按 50→200ms 退避轮询，ctx 取消立即退出
@@ -110,9 +111,37 @@ func (r *RedisCoord) SetCooldown(scope string, d time.Duration) {
 	}
 	ctx, cancel := withTimeout()
 	defer cancel()
+	// 值写 "0"（=Backoff 连击计数起点）：普通冷却不继承退避连击，与 Mem 实现语义对齐
 	err := cooldownLua.Run(ctx, r.client, []string{"tg:cd:" + scope},
-		"1", d.Milliseconds()).Err()
+		"0", d.Milliseconds()).Err()
 	r.err(ctx, "set_cooldown", err)
+}
+
+// backoffLua 原子指数退避：键值即连击计数，INCR 后按 base×2^(n-1) 封顶 max 算时长
+// 并重设 TTL。计数与 TTL 同生命周期——冷却过期键即消失，INCR 从 1 重新起步（探测成功
+// 无人续期 → 自然归零）。退避档单调递增且 base ≥ 任何普通冷却，重设 TTL 不会缩短在期冷却
+var backoffLua = redis.NewScript(`
+local hits = redis.call('INCR', KEYS[1])
+local shift = hits - 1
+if shift > 30 then shift = 30 end
+local d = tonumber(ARGV[1]) * (2 ^ shift)
+local cap = tonumber(ARGV[2])
+if d > cap then d = cap end
+redis.call('PEXPIRE', KEYS[1], d)
+return math.floor(d)`)
+
+func (r *RedisCoord) Backoff(scope string, base, max time.Duration) time.Duration {
+	if base <= 0 {
+		return 0
+	}
+	ctx, cancel := withTimeout()
+	defer cancel()
+	dMs, err := backoffLua.Run(ctx, r.client, []string{"tg:cd:" + scope},
+		base.Milliseconds(), max.Milliseconds()).Int64()
+	if r.err(ctx, "backoff", err) {
+		return 0 // fail-open：未冷却，如实回报
+	}
+	return time.Duration(dMs) * time.Millisecond
 }
 
 // ---- 并发闸门 ----

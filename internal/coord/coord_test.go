@@ -46,6 +46,49 @@ func TestMemCooldownKeepLonger(t *testing.T) {
 	}
 }
 
+// Backoff 指数退避：连击翻倍、封顶 max、冷却到期连击归零重新起步
+func TestMemBackoffStaircase(t *testing.T) {
+	m := NewMem(0)
+	base, cap := 10*time.Minute, 24*time.Hour
+	want := []time.Duration{
+		10 * time.Minute, 20 * time.Minute, 40 * time.Minute, 80 * time.Minute,
+		160 * time.Minute, 320 * time.Minute, 640 * time.Minute, 1280 * time.Minute,
+		24 * time.Hour, 24 * time.Hour, // 第 9 次起封顶
+	}
+	for i, w := range want {
+		if got := m.Backoff("k:bk", base, cap); got != w {
+			t.Fatalf("第 %d 次退避应为 %v，got %v", i+1, w, got)
+		}
+	}
+	if !m.IsCooling("k:bk") {
+		t.Fatal("退避后应处于冷却期")
+	}
+	// 普通冷却重置连击：SetCooldown 覆盖（keep-longer 成立，须比剩余退避长）后
+	// 下一次 Backoff 回到起步档
+	mr := NewMem(0)
+	mr.Backoff("k:rs", base, cap)            // 10min
+	mr.SetCooldown("k:rs", 12*time.Hour)     // 更长 → 覆盖且连击归零
+	if got := mr.Backoff("k:rs", base, cap); got != 10*time.Minute {
+		t.Fatalf("普通冷却后连击应归零，got %v", got)
+	}
+}
+
+// 冷却到期（探测成功无人续期）→ 连击自然归零，下一次从起步档重来
+func TestMemBackoffResetsAfterExpiry(t *testing.T) {
+	m := NewMem(0)
+	if got := m.Backoff("k:exp", 30*time.Millisecond, time.Minute); got != 30*time.Millisecond {
+		t.Fatalf("首次应为 base，got %v", got)
+	}
+	time.Sleep(40 * time.Millisecond) // 30ms 冷却过期
+	if got := m.Backoff("k:exp", 30*time.Millisecond, time.Minute); got != 30*time.Millisecond {
+		t.Fatalf("到期后应回到起步档而非翻倍，got %v", got)
+	}
+	time.Sleep(40 * time.Millisecond)
+	if m.IsCooling("k:exp") {
+		t.Fatal("起步档到期后不应再冷却")
+	}
+}
+
 func TestMemSlotQueueAndTimeout(t *testing.T) {
 	m := NewMem(0)
 	ctx := context.Background()
@@ -233,6 +276,29 @@ func TestRedisCoord(t *testing.T) {
 	time.Sleep(1000 * time.Millisecond) // 1200ms 已过，1500ms 未到
 	if !rc.IsCooling("t:cd4") {
 		t.Fatal("短冷却不得截断长冷却（秒级边界）")
+	}
+
+	// 指数退避：连击翻倍、封顶 max、到期归零；普通冷却覆盖后连击重置
+	if d := rc.Backoff("t:bk1", 50*time.Millisecond, time.Hour); d != 50*time.Millisecond {
+		t.Fatalf("首次退避应为 base，got %v", d)
+	}
+	if d := rc.Backoff("t:bk1", 50*time.Millisecond, time.Hour); d != 100*time.Millisecond {
+		t.Fatalf("第二次应翻倍，got %v", d)
+	}
+	if d := rc.Backoff("t:bk1", 50*time.Millisecond, 120*time.Millisecond); d != 120*time.Millisecond {
+		t.Fatalf("应封顶 max，got %v", d)
+	}
+	if d := rc.Backoff("t:bk2", 40*time.Millisecond, time.Minute); d != 40*time.Millisecond {
+		t.Fatalf("首次退避应为 base，got %v", d)
+	}
+	time.Sleep(50 * time.Millisecond) // 40ms 冷却过期
+	if d := rc.Backoff("t:bk2", 40*time.Millisecond, time.Minute); d != 40*time.Millisecond {
+		t.Fatalf("到期后应回到起步档，got %v", d)
+	}
+	rc.SetCooldown("t:bk3", 30*time.Millisecond) // 值 "0"：不继承连击
+	time.Sleep(35 * time.Millisecond)
+	if d := rc.Backoff("t:bk3", 30*time.Millisecond, time.Minute); d != 30*time.Millisecond {
+		t.Fatalf("普通冷却过期后应从起步档开始，got %v", d)
 	}
 
 	// 闸门（scope 带唯一后缀：防上一轮未释放的租约残留让本轮排队等 45s）

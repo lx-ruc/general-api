@@ -583,8 +583,9 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			// 429（默认）→ 同渠道下一把 Key。先读错误体区分两类语义：
 			// 配额类（火山 SetLimitExceeded / OpenAI insufficient_quota 等）是持久的账户
 			// 配额暂停而非瞬时限流——只冷却该 Key（Key 池可能跨账户混布，同渠道其它
-			// Key 不应连坐）并拉长冷却（10×KeyCooldown，≥10min），错误码写入 lastErr
-			// 落 usage_logs 便于排障；
+			// Key 不应连坐）并按指数退避拉长冷却（起步 10×KeyCooldown ≥10min，连击翻倍
+			// 封顶 24h：死 Key 的探测开销随时间衰减到每天一次；冷却到期归零，配额恢复后
+			// 自动回池），错误码写入 lastErr 落 usage_logs 便于排障；
 			// 普通限流 429 维持原语义：按 key_cooldown_scope 冷却（Retry-After 优先，
 			// channel 粒度时同渠道全部 Key 一起冷却——厂商限额按账户，逐个试错纯浪费）
 			eb, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -593,18 +594,14 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 				h.Metrics.Upstream429.Inc()
 			}
 			if qc := quota429Code(eb); qc != "" {
-				d := 10 * h.KeyCooldown
-				if d < 10*time.Minute {
-					d = 10 * time.Minute
-				}
-				h.Coord.SetCooldown(cand.KeyScope(), d)
+				d := h.Coord.Backoff(cand.KeyScope(), longKeyCooldown(h.KeyCooldown), quota429CooldownMax)
 				if h.Metrics != nil {
 					h.Metrics.KeyCooldown.Inc()
 				}
 				if d > coolApplied {
 					coolApplied = d
 				}
-				slog.Warn("上游配额类 429，该 Key 长效冷却（同渠道其它 Key 不连坐）",
+				slog.Warn("上游配额类 429，该 Key 指数退避冷却（同渠道其它 Key 不连坐）",
 					"channel_id", cand.ChannelID, "channel", cand.ChannelName,
 					"key_id", cand.KeyID, "code", qc, "cooldown", d.String())
 				lastErr = fmt.Sprintf("upstream %s returned %d %s (key %d quota cooldown %s)",
@@ -953,6 +950,20 @@ var quota429Codes = map[string]struct{}{
 	"exceeded_current_quota": {}, // OpenAI 计费文案变体
 }
 
+// quota429CooldownMax 配额类 429 指数退避的冷却封顶：死 Key 衰减到每 24h 最多探测一次。
+// 默认档位序列：10m→20m→40m→1h20m→2h40m→5h20m→10h40m→21h20m→24h（连击翻倍、到期归零）
+const quota429CooldownMax = 24 * time.Hour
+
+// longKeyCooldown 长效冷却起步档：10×key_cooldown、下限 10min。
+// 配额 429 指数退避的 base 与 legacy 单 Key 401/403 的长效冷却共用此式
+func longKeyCooldown(kc time.Duration) time.Duration {
+	d := 10 * kc
+	if d < 10*time.Minute {
+		d = 10 * time.Minute
+	}
+	return d
+}
+
 // quota429Code 从上游错误体提取配额类错误码（OpenAI 形状 error.code，大小写不敏感）；非配额类返回空
 func quota429Code(body []byte) string {
 	var er struct {
@@ -999,10 +1010,7 @@ func (h *Handler) coolKeys(cands []Candidate, cur Candidate, d time.Duration) {
 // legacy 单 Key 用长效冷却代替禁用（到期自动恢复，避免把渠道一刀切死）
 func (h *Handler) disableKey(cand Candidate, status int) {
 	if cand.KeyID == 0 {
-		d := 10 * h.KeyCooldown
-		if d < 10*time.Minute {
-			d = 10 * time.Minute
-		}
+		d := longKeyCooldown(h.KeyCooldown)
 		h.Coord.SetCooldown(cand.KeyScope(), d)
 		slog.Warn("上游 401/403，legacy 单 Key 进入长效冷却",
 			"channel_id", cand.ChannelID, "status", status, "cooldown", d.String())

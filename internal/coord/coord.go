@@ -18,6 +18,11 @@ type Coordinator interface {
 	IsCooling(scope string) bool
 	// SetCooldown 设置/刷新冷却
 	SetCooldown(scope string, d time.Duration)
+	// Backoff 指数退避冷却：按 scope 记连续触发次数，第 n 次冷却 = base×2^(n-1)，
+	// 封顶 max，返回本次实际冷却时长（供日志与 Retry-After）。连击计数与冷却同
+	// 生命周期：冷却到期即归零——配额恢复后探测成功无人续期、自然重新起步，
+	// 到期后无人探测同样归零（退档无害）。用于配额类 429 这类可恢复的持久故障。
+	Backoff(scope string, base, max time.Duration) time.Duration
 
 	// AcquireSlot 获取并发闸门名额（内含有界等待）。
 	// 返回 release（幂等，可安全多次调用）与是否获得；max<=0 视为不限流，直接放行。
@@ -33,6 +38,7 @@ type Nop struct{}
 
 func (Nop) IsCooling(string) bool                     { return false }
 func (Nop) SetCooldown(string, time.Duration)         {}
+func (Nop) Backoff(string, time.Duration, time.Duration) time.Duration { return 0 }
 func (Nop) AcquireSlot(context.Context, string, int) (func(), bool) { return func() {}, true }
 func (Nop) CacheGet(string) ([]byte, bool)            { return nil, false }
 func (Nop) CacheSet(string, []byte, time.Duration)    {}

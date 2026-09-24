@@ -11,7 +11,7 @@ import (
 // 闸门与冷却为 per-node：多实例部署时实际并发 ≈ max × 节点数（见 docs/高并发设计.md 的取舍声明）。
 type Mem struct {
 	mu       sync.Mutex
-	cooldown map[string]time.Time // scope → 冷却截止
+	cooldown map[string]cdEntry // scope → 冷却截止 + Backoff 连击计数
 
 	slotsMu sync.Mutex
 	slots   map[string]chan struct{}
@@ -19,10 +19,17 @@ type Mem struct {
 	cache *memCache
 }
 
+// cdEntry 冷却条目：hits 为 Backoff 连击次数（SetCooldown 不动它），
+// 冷却到期（惰性清理或下次 Backoff 发现过期）即连同计数一起消失
+type cdEntry struct {
+	until time.Time
+	hits  int
+}
+
 // NewMem maxCacheItems 内存 LRU 条数上限（<=0 视为不限，仅靠 TTL）
 func NewMem(maxCacheItems int) *Mem {
 	return &Mem{
-		cooldown: map[string]time.Time{},
+		cooldown: map[string]cdEntry{},
 		slots:    map[string]chan struct{}{},
 		cache:    newMemCache(maxCacheItems),
 	}
@@ -31,11 +38,11 @@ func NewMem(maxCacheItems int) *Mem {
 func (m *Mem) IsCooling(scope string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	until, ok := m.cooldown[scope]
+	e, ok := m.cooldown[scope]
 	if !ok {
 		return false
 	}
-	if time.Now().After(until) {
+	if time.Now().After(e.until) {
 		delete(m.cooldown, scope) // 惰性清理
 		return false
 	}
@@ -49,10 +56,33 @@ func (m *Mem) SetCooldown(scope string, d time.Duration) {
 		return
 	}
 	m.mu.Lock()
-	if until, ok := m.cooldown[scope]; !ok || time.Now().Add(d).After(until) {
-		m.cooldown[scope] = time.Now().Add(d)
+	if e, ok := m.cooldown[scope]; !ok || time.Now().Add(d).After(e.until) {
+		m.cooldown[scope] = cdEntry{until: time.Now().Add(d)} // hits 归零：普通冷却不继承退避连击
 	}
 	m.mu.Unlock()
+}
+
+// Backoff 指数退避冷却：base×2^(hits-1) 封顶 max。退避档单调递增且 base 不小于任何
+// 普通冷却时长，直接覆盖写不会截断在期冷却
+func (m *Mem) Backoff(scope string, base, max time.Duration) time.Duration {
+	if base <= 0 {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	e, ok := m.cooldown[scope]
+	if !ok || now.After(e.until) {
+		e = cdEntry{} // 冷却已到期：连击归零重新起步
+	}
+	e.hits++
+	d := base << min(e.hits-1, 30) // 移位上限防溢出（base<<30 必然已超任何 max）
+	if d > max {
+		d = max
+	}
+	e.until = now.Add(d)
+	m.cooldown[scope] = e
+	return d
 }
 
 func (m *Mem) AcquireSlot(ctx context.Context, scope string, max int) (func(), bool) {
