@@ -226,6 +226,14 @@ function remove(m: Member) {
 
   <el-dialog v-model="quotaVisible" :title="`额度 / 月限：${quotaForm.member?.display_name || quotaForm.member?.username || ''}`" width="440px">
     <el-form label-width="100px">
+      <el-form-item label="当前总额度">
+        <span v-if="quotaForm.member?.quota_limit == null" class="unlimited">不限（下面的追加在此基数上累加）</span>
+        <span v-else>
+          已用 {{ fmtQuota(quotaForm.member.quota_used) }} / 上限 {{ fmtQuota(quotaForm.member.quota_limit) }}
+          <span v-if="quotaForm.member.quota_limit - quotaForm.member.quota_used < 0" class="red">（已超限，调用会被拦截）</span>
+          <span class="dim">；要解除上限请用「更多 → 设为不限额」</span>
+        </span>
+      </el-form-item>
       <el-form-item label="追加（M tokens）">
         <el-input-number v-model="quotaForm.amount" :step="1" />
         <span class="tip">负数为回收；= {{ fmtQuota(Math.round(quotaForm.amount * M)) }}</span>

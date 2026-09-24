@@ -22,8 +22,9 @@ const usedPct = computed(() => {
       <div class="pool-row">
         <div class="pool-item">
           <div class="pool-label">可用额度</div>
-          <div class="pool-value num green">
-            {{ data.quota_limit == null ? '不限' : fmtQuota(data.quota_limit - data.quota_used) }}
+          <div class="pool-value num" :class="data.quota_limit == null || data.quota_limit - data.quota_used > 0 ? 'green' : 'red'">
+            {{ data.quota_limit == null ? '不限' : data.quota_limit - data.quota_used > 0
+              ? fmtQuota(data.quota_limit - data.quota_used) : '已超限 ' + fmtQuota(data.quota_used - data.quota_limit) }}
           </div>
         </div>
         <div class="pool-item">
@@ -38,9 +39,11 @@ const usedPct = computed(() => {
         </div>
         <div v-if="usedPct != null" class="pool-meter-wrap">
           <div class="pool-meter" aria-hidden="true">
-            <div class="pool-meter-fill" :style="{ width: `${Math.max(0.8, Math.min(100, usedPct))}%` }"></div>
+            <div class="pool-meter-fill" :class="{ over: usedPct > 100 }" :style="{ width: `${Math.max(0.8, Math.min(100, usedPct))}%` }"></div>
           </div>
-          <span class="pool-meter-label num">已用 {{ usedPct.toFixed(2) }}%</span>
+          <span class="pool-meter-label num" :class="{ over: usedPct > 100 }">
+            {{ usedPct > 100 ? `已超限 ${(usedPct - 100).toFixed(2)}%` : `已用 ${usedPct.toFixed(2)}%` }}
+          </span>
         </div>
         <div class="pool-cta">
           <router-link to="/member/docs" class="docs-link">如何调用 →</router-link>
@@ -82,7 +85,9 @@ const usedPct = computed(() => {
 .pool-meter-wrap { flex: 1; min-width: 160px; display: flex; align-items: center; gap: 10px; }
 .pool-meter { flex: 1; height: 8px; background: var(--tg-green-wash); border-radius: 4px; overflow: hidden; }
 .pool-meter-fill { height: 100%; background: var(--tg-green); border-radius: 4px; }
+.pool-meter-fill.over { background: var(--tg-red); }
 .pool-meter-label { font-size: 11.5px; color: var(--tg-muted); white-space: nowrap; }
+.pool-meter-label.over { color: var(--tg-red); }
 
 .pool-cta { margin-left: auto; }
 .docs-link { color: var(--tg-green-ink); text-decoration: none; font-size: 13px; }
