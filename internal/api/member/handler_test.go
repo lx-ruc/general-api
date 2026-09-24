@@ -17,6 +17,7 @@ import (
 	"token-gateway/internal/config"
 	"token-gateway/internal/database"
 	"token-gateway/internal/middleware"
+	"token-gateway/internal/service"
 )
 
 type memberEnv struct {
@@ -63,6 +64,7 @@ func newMemberEnv(t *testing.T) *memberEnv {
 	api.GET("/cost-centers", h.ListCostCenters)
 	api.GET("/stats/usage", h.UsageBreakdown)
 	api.GET("/usage", h.ListUsage)
+	api.GET("/models", h.ListModels)
 	return &memberEnv{engine: engine, db: db, token: token}
 }
 
@@ -344,5 +346,50 @@ func TestListUsageKeyFilter(t *testing.T) {
 	}
 	if resp.Total != 2 {
 		t.Fatalf("key_id=12 应 2 行，得 %d", resp.Total)
+	}
+}
+
+// 我的额度读数：月上限与当月累计都返回给前端（跨月惰性清零的读侧：非当前账期按 0）
+func TestListModelsMonthlyQuota(t *testing.T) {
+	e := newMemberEnv(t)
+	now := time.Now().Unix()
+	period := service.PeriodOf(service.BillingLoc(), now)
+	prev := service.PeriodOf(service.BillingLoc(), now-31*86400)
+	_ = e.db.Exec(`INSERT INTO users (id, org_id, username, password_hash, role, status, monthly_quota, monthly_period, monthly_cost, created_at, updated_at)
+		VALUES (2, 1, 'm2', 'x', 'member', 1, 2000000, ?, 1740040, ?, ?)`, period, now, now).Error
+	_ = e.db.Exec(`INSERT INTO users (id, org_id, username, password_hash, role, status, monthly_quota, monthly_period, monthly_cost, created_at, updated_at)
+		VALUES (3, 1, 'm3', 'x', 'member', 1, 2000000, ?, 999999, ?, ?)`, prev, now, now).Error
+
+	get := func(userID int64) map[string]any {
+		t.Helper()
+		orgID := int64(1)
+		token, err := auth.GenerateToken("test-secret", time.Hour, userID, "member", &orgID, "")
+		if err != nil {
+			t.Fatalf("生成 token 失败: %v", err)
+		}
+		req := httptest.NewRequest(http.MethodGet, "/api/member/models", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		e.engine.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("user %d 应 200，得 %d: %s", userID, w.Code, w.Body.String())
+		}
+		var m map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+
+	m2 := get(2)
+	if m2["monthly_quota"] != float64(2_000_000) || m2["monthly_used"] != float64(1_740_040) {
+		t.Fatalf("当前账期应返回月限与累计: quota=%v used=%v", m2["monthly_quota"], m2["monthly_used"])
+	}
+	m3 := get(3)
+	if m3["monthly_quota"] != float64(2_000_000) || m3["monthly_used"] != float64(0) {
+		t.Fatalf("过期账期累计应按 0 读: quota=%v used=%v", m3["monthly_quota"], m3["monthly_used"])
+	}
+	if m1 := get(1); m1["monthly_quota"] != float64(0) {
+		t.Fatalf("未设月限应为 0: %v", m1["monthly_quota"])
 	}
 }

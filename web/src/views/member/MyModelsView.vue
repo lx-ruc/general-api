@@ -30,6 +30,12 @@ const usedPct = computed(() => {
           <div class="pool-label">已消耗</div>
           <div class="pool-value num">{{ fmtQuota(data.quota_used) }}</div>
         </div>
+        <div v-if="data.monthly_quota > 0" class="pool-item">
+          <div class="pool-label">本月上限</div>
+          <div class="pool-value num" :class="data.monthly_used >= data.monthly_quota ? 'red' : ''">
+            {{ fmtQuota(data.monthly_used) }}<span class="pool-unit"> / {{ fmtQuota(data.monthly_quota) }}</span>
+          </div>
+        </div>
         <div v-if="usedPct != null" class="pool-meter-wrap">
           <div class="pool-meter" aria-hidden="true">
             <div class="pool-meter-fill" :style="{ width: `${Math.max(0.8, Math.min(100, usedPct))}%` }"></div>
@@ -70,6 +76,7 @@ const usedPct = computed(() => {
 .pool-label { font-size: 12px; color: var(--tg-graphite); margin-bottom: 6px; }
 .pool-value { font-size: 21px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .pool-value.green { color: var(--tg-green-ink); }
+.pool-value.red { color: var(--tg-red); }
 .pool-unit { font-size: 12px; color: var(--tg-muted); font-weight: 400; }
 
 .pool-meter-wrap { flex: 1; min-width: 160px; display: flex; align-items: center; gap: 10px; }

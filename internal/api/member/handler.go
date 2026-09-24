@@ -207,10 +207,17 @@ func (h *Handler) ListModels(c *gin.Context) {
 	}
 	var u model.User
 	_ = h.DB.Where("id = ?", uid(c)).First(&u).Error
+	// 月累计仅在存储账期为当前月时有效（跨月惰性清零的读侧，与 Precheck 同口径）
+	monthlyUsed := int64(0)
+	if u.MonthlyPeriod == service.PeriodOf(service.BillingLoc(), time.Now().Unix()) {
+		monthlyUsed = u.MonthlyCost
+	}
 	httpx.OK(c, gin.H{
 		"models":           models,
 		"quota_limit":      u.QuotaLimit,
 		"quota_used":       u.QuotaUsed,
+		"monthly_quota":    u.MonthlyQuota,
+		"monthly_used":     monthlyUsed,
 		"points_per_yuan":  service.PointsPerYuan(h.DB),
 	})
 }
