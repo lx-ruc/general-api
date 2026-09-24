@@ -17,7 +17,11 @@ async function load() {
   list.value = data.list || []
   requireCC.value = data.require_cost_center
 }
-onMounted(load)
+// 进页即拉当月报表：没建中心时「未归集」消耗也能直接看到，页面不再一片空白
+onMounted(() => {
+  load()
+  loadReport()
+})
 
 const createVisible = ref(false)
 const newName = ref('')
