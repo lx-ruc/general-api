@@ -392,14 +392,17 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 	// 系统管理员在线体验无客户归属（OrgID=0），无额度语义，跳过。
 	if ki.OrgID > 0 {
 		if err := service.Precheck(h.DB, ki.UserID); err != nil {
+			// 额度/月限不足用 402（DeepSeek 官方同款口径）：重试不可能恢复，
+			// 429 会让 OpenAI 系客户端（codex 等）指数退避重试到上限再报
+			// "exceeded retry limit"，把真正的月限信息丢掉
 			if errors.Is(err, service.ErrUserQuota) || errors.Is(err, service.ErrOrgQuota) {
-				rec.Status, rec.Error = http.StatusTooManyRequests, err.Error()
-				werr(c, http.StatusTooManyRequests, "insufficient_balance", err.Error())
+				rec.Status, rec.Error = http.StatusPaymentRequired, err.Error()
+				werr(c, http.StatusPaymentRequired, "insufficient_balance", err.Error())
 				return
 			}
 			if errors.Is(err, service.ErrUserMonthly) || errors.Is(err, service.ErrOrgMonthly) {
-				rec.Status, rec.Error = http.StatusTooManyRequests, err.Error()
-				werr(c, http.StatusTooManyRequests, "monthly_limit_exceeded", err.Error())
+				rec.Status, rec.Error = http.StatusPaymentRequired, err.Error()
+				werr(c, http.StatusPaymentRequired, "monthly_limit_exceeded", err.Error())
 				return
 			}
 			rec.Status, rec.Error = http.StatusInternalServerError, err.Error()

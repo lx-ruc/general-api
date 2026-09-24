@@ -246,18 +246,18 @@ func TestArrearsOrgBlocked(t *testing.T) {
 	e := newPGEnv(t)
 	mustExec(t, e.db, `UPDATE orgs SET status = 2 WHERE id = 1`)
 	w := e.chat(t, e.token(t, 2, "member", i64(1)), "m1", "")
-	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "arrears") {
-		t.Fatalf("欠费客户应 403 arrears，得 %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "arrears") {
+		t.Fatalf("欠费客户应 402 arrears，得 %d: %s", w.Code, w.Body.String())
 	}
 }
 
-// 子账号额度耗尽：复用数据面预检语义（429 insufficient_balance）
+// 子账号额度耗尽：复用数据面预检语义（402 insufficient_balance，重试无意义）
 func TestMemberQuotaExhausted(t *testing.T) {
 	e := newPGEnv(t)
 	mustExec(t, e.db, `UPDATE users SET quota_limit = 10, quota_used = 10 WHERE id = 2`)
 	w := e.chat(t, e.token(t, 2, "member", i64(1)), "m1", "")
-	if w.Code != http.StatusTooManyRequests || !strings.Contains(w.Body.String(), "insufficient_balance") {
-		t.Fatalf("额度耗尽应 429 insufficient_balance，得 %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "insufficient_balance") {
+		t.Fatalf("额度耗尽应 402 insufficient_balance，得 %d: %s", w.Code, w.Body.String())
 	}
 }
 

@@ -77,7 +77,8 @@ func APIKeyAuth(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 		if row.OrgStatus == 2 { // 欠费停服：额度耗尽自动置位，充值后自动恢复
-			v1Abort(c, http.StatusForbidden, "insufficient_balance",
+			// 402 与数据面预检同口径：重试不可能恢复的错误，避免客户端按 429 退避重试
+			v1Abort(c, http.StatusPaymentRequired, "insufficient_balance",
 				"organization suspended for arrears (quota exhausted), please contact the platform admin to recharge")
 			return
 		}

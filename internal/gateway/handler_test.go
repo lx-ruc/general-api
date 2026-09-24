@@ -829,3 +829,43 @@ func TestAllKeysUndecryptableReturns503(t *testing.T) {
 		t.Fatalf("usage_log 应记 503，got %d", status)
 	}
 }
+
+// 额度类拒绝一律 402（非 429）：月限/额度耗尽是重试不可能恢复的错误，
+// 429 会让 OpenAI 系客户端（codex 等）退避重试到上限再报 "exceeded retry limit"，
+// 把真正的月限信息丢掉。真限流（per-key 限速/上游 429）才用 429。
+func TestQuotaRejectionStatus402(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(okBody))
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, nil, 1)
+	month := time.Now().Format("2006-01")
+
+	// 月限用尽：402 monthly_limit_exceeded，usage_logs 同码落账
+	mustExec(t, e.f, `UPDATE users SET monthly_quota = 1000, monthly_period = ?, monthly_cost = 1000`, month)
+	w := e.post(chatBody("hi", ""))
+	if w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "monthly_limit_exceeded") {
+		t.Fatalf("月限用尽应 402 monthly_limit_exceeded，得 %d: %s", w.Code, w.Body.String())
+	}
+	var st int64
+	_ = e.f.db.Raw("SELECT status FROM usage_logs ORDER BY id DESC LIMIT 1").Scan(&st).Error
+	if st != http.StatusPaymentRequired {
+		t.Fatalf("usage_logs 应记 402，得 %d", st)
+	}
+
+	// 总额度用尽：402 insufficient_balance
+	mustExec(t, e.f, `UPDATE users SET monthly_quota = 0, quota_limit = 10, quota_used = 10`)
+	w = e.post(chatBody("hi", ""))
+	if w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "insufficient_balance") {
+		t.Fatalf("额度用尽应 402 insufficient_balance，得 %d: %s", w.Code, w.Body.String())
+	}
+
+	// 欠费停服（org status=2）：鉴权层拦截同样 402
+	mustExec(t, e.f, `UPDATE users SET quota_limit = NULL, quota_used = 0`)
+	mustExec(t, e.f, `UPDATE orgs SET status = 2`)
+	w = e.post(chatBody("hi", ""))
+	if w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "arrears") {
+		t.Fatalf("欠费停服应 402 arrears，得 %d: %s", w.Code, w.Body.String())
+	}
+}

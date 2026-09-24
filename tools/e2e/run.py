@@ -394,8 +394,8 @@ def main():
     st2, _, _ = chat(m_priced, kq, content=f'quota-2 {TS}')
     st3, _, r3 = chat(m_priced, kq, content=f'quota-3 {TS}')
     ecode = (r3.get('error') or {}).get('code') if isinstance(r3, dict) else None
-    check('A18 额度耗尽 → 429 insufficient_balance（允许首次超扣）',
-          st1 == 200 and st2 == 200 and st3 == 429 and ecode == 'insufficient_balance',
+    check('A18 额度耗尽 → 402 insufficient_balance（允许首次超扣）',
+          st1 == 200 and st2 == 200 and st3 == 402 and ecode == 'insufficient_balance',
           f'{st1}/{st2}/{st3} {ecode}')
 
     big = json.dumps({'model': m_free, 'messages': [{'role': 'user', 'content': 'x' * (11 * 1024 * 1024)}]}).encode()

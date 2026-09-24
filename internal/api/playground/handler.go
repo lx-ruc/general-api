@@ -147,8 +147,8 @@ func (h *Handler) Chat(c *gin.Context) {
 			openaiFail(c, http.StatusForbidden, "permission_error", "account or organization is disabled")
 			return
 		}
-		if st.OrgStatus == 2 { // 欠费停服：与数据面口径一致
-			openaiFail(c, http.StatusForbidden, "insufficient_balance",
+		if st.OrgStatus == 2 { // 欠费停服：与数据面口径一致（402，重试无意义）
+			openaiFail(c, http.StatusPaymentRequired, "insufficient_balance",
 				"organization suspended for arrears (quota exhausted), please contact the platform admin to recharge")
 			return
 		}
