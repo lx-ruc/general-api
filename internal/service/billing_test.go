@@ -284,3 +284,48 @@ func TestStatementDetailOrdering(t *testing.T) {
 		t.Fatalf("未归集应排在最后: %+v", st.Rows[1])
 	}
 }
+
+// 被拒尝试不进账单明细：403/404/429 零成本行不出现在模型 × 中心 × 日明细；
+// 已计费的非 200 行（如 499 中断部分结算）保留；TotalRows 与消耗Σ口径勾稽
+func TestStatementDetailExcludesRejectedAttempts(t *testing.T) {
+	f := newBillingDB(t)
+	sh := BillingLocation("Asia/Shanghai")
+	oid := int64(3)
+	f.insertOrg(oid, 10_000_000, 0)
+	augS, _, _ := PeriodBounds(sh, "2026-08")
+	ins := func(model string, status, cost, at int64) {
+		f.t.Helper()
+		if err := f.db.Exec(`INSERT INTO usage_logs (org_id, user_id, api_key_id, model_name,
+			status, cost, prompt_tokens, completion_tokens, created_at)
+			VALUES (?, 1, 1, ?, ?, ?, 0, 0, ?)`, oid, model, status, cost, at).Error; err != nil {
+			f.t.Fatalf("造日志失败: %v", err)
+		}
+	}
+	ins("m1", 200, 10_000, augS+100) // 真实消耗
+	ins("glm-5.3", 403, 0, augS+110) // 未授权模型的被拒尝试
+	ins("ghost", 404, 0, augS+120)   // 不存在的模型名
+	ins("m1", 429, 0, augS+130)      // 限流被拒
+	ins("m2", 499, 5_000, augS+140)  // 中断但已部分计费 —— 保留
+
+	st, err := BuildBillStatement(f.db, sh, oid, "2026-08", false, 100)
+	if err != nil {
+		t.Fatalf("BuildBillStatement 失败: %v", err)
+	}
+	if len(st.Rows) != 2 {
+		t.Fatalf("明细应只剩 2 行，得 %d: %+v", len(st.Rows), st.Rows)
+	}
+	for _, r := range st.Rows {
+		if r.ModelName == "glm-5.3" || r.ModelName == "ghost" {
+			t.Fatalf("被拒尝试的模型不应出现在账单明细: %+v", r)
+		}
+	}
+	if st.TotalRows != 2 {
+		t.Fatalf("TotalRows 应与过滤后行数一致（2），得 %d", st.TotalRows)
+	}
+	if st.TotalCostSum != 15_000 {
+		t.Fatalf("明细Σ应 15000，得 %d", st.TotalCostSum)
+	}
+	if st.Consumption != 15_000 {
+		t.Fatalf("消耗Σ应 15000（被拒尝试零成本不影响），得 %d", st.Consumption)
+	}
+}

@@ -704,10 +704,13 @@ func (h *Handler) Billing(c *gin.Context) {
 		Cost     int64  `json:"cost"`
 	}
 	var byModel []modelRow
+	// 模型明细只统计真实消耗（status=200 或有计费）：被拒尝试（403 未授权/404 不存在等
+	// 零成本行）不得以 0 成本行出现——与成本报表/账单同口径；上方汇总请求数仍计全量
 	_ = h.DB.Raw(`SELECT model_name AS name, COUNT(*) AS requests,
 		COALESCE(SUM(prompt_tokens + completion_tokens),0) AS tokens,
 		COALESCE(SUM(cost),0) AS cost
 		FROM usage_logs WHERE org_id = ? AND created_at >= ? AND created_at < ?
+		  AND (status = 200 OR cost > 0)
 		GROUP BY model_name ORDER BY cost DESC`, oid, s, e).Scan(&byModel).Error
 	if byModel == nil {
 		byModel = []modelRow{}

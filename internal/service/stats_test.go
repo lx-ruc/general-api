@@ -99,3 +99,44 @@ func TestStatsOverviewEmptyArraysContract(t *testing.T) {
 }
 
 func ptrInt64(v int64) *int64 { return &v }
+
+// 模型 Top 只统计真实消耗：被拒尝试（403 未授权/404 不存在/429 限流的零成本行）
+// 不得以 0 token 行上榜；总请求数与错误数仍计全量（运营口径）
+func TestStatsByModelExcludesRejectedAttempts(t *testing.T) {
+	gdb, err := database.Open(config.Database{Driver: "sqlite", Path: t.TempDir() + "/test.db"})
+	if err != nil {
+		t.Fatalf("打开测试库失败: %v", err)
+	}
+	if err := database.Migrate(gdb); err != nil {
+		t.Fatalf("迁移测试库失败: %v", err)
+	}
+	t.Cleanup(func() { sqlDB, _ := gdb.DB(); _ = sqlDB.Close() })
+
+	now := time.Now().Unix()
+	if err := gdb.Exec(`INSERT INTO orgs (id, name, quota_limit, status, created_at, updated_at)
+		VALUES (1, 'o', 100000000, 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := gdb.Exec(`INSERT INTO usage_logs (org_id, user_id, api_key_id, model_name, status, error, prompt_tokens, completion_tokens, cost, created_at)
+		VALUES (1, 1, 1, 'm1', 200, '', 10, 5, 60, ?)`, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []string{"glm-5.3", "ghost"} {
+		if err := gdb.Exec(`INSERT INTO usage_logs (org_id, user_id, api_key_id, model_name, status, error, prompt_tokens, completion_tokens, cost, created_at)
+			VALUES (1, 1, 1, ?, 403, 'model_not_allowed', 0, 0, 0, ?)`, m, now).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ov, err := StatsOverview(gdb, Scope{})
+	if err != nil {
+		t.Fatalf("StatsOverview 失败: %v", err)
+	}
+	if len(ov.ByModel) != 1 || ov.ByModel[0].Name != "m1" {
+		t.Fatalf("ByModel 应只含 m1（被拒尝试不上榜）: %+v", ov.ByModel)
+	}
+	// 运营口径不回归：总请求数与错误数仍统计全部 3 条
+	if ov.Total.Requests != 3 || ov.Total.Errors != 2 {
+		t.Fatalf("总请求/错误应 3/2，得 %d/%d", ov.Total.Requests, ov.Total.Errors)
+	}
+}

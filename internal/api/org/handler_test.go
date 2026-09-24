@@ -64,6 +64,7 @@ func newOrgEnv(t *testing.T) *orgEnv {
 	og.PUT("/cost-centers/config", h.UpdateCostCenterConfig)
 	og.PUT("/cost-centers/:id", h.UpdateCostCenter)
 	og.GET("/reports/cost-centers", h.CostCenterReport)
+	og.GET("/billing", h.Billing)
 	og.PUT("/keys/:id/cost-center", h.ReassignKeyCenter)
 	return &orgEnv{engine: engine, db: db, token: token}
 }

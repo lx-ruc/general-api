@@ -270,6 +270,8 @@ func BuildBillStatement(db *gorm.DB, loc *time.Location, orgID int64, period str
 	}
 
 	// ---- 明细段：模型 × 成本中心 × 日（未归集置底）----
+	// 只列真实消耗（status=200 或有计费）：被拒尝试（403/404/402/429 零成本行）不得
+	// 以 0 成本行混进账单明细——与成本中心报表同口径；消耗Σ不受影响（失败行 cost=0）
 	// 日分桶按账期时区：Go 侧算出该月的固定偏移秒数（无夏令时区的月份内恒定），
 	// SQL 里对 unix 秒整体平移后按 UTC 渲染日期 —— SQLite/PG 同一表达式，避免 localtime 依赖服务器时区
 	// 注意限定 l.：明细段 JOIN cost_centers（也有 created_at）
@@ -292,6 +294,7 @@ func BuildBillStatement(db *gorm.DB, loc *time.Location, orgID int64, period str
 		       COALESCE(SUM(l.cost),0) AS cost%s
 		FROM usage_logs l LEFT JOIN cost_centers cc ON cc.id = l.cost_center_id
 		WHERE l.org_id = ? AND l.created_at >= ? AND l.created_at < ?
+		  AND (l.status = 200 OR l.cost > 0)
 		GROUP BY day, l.model_name, l.cost_center_id, cc.name
 		ORDER BY (l.cost_center_id IS NULL), day DESC, cost DESC
 		LIMIT ?`, dayExpr, vendorSel)
@@ -307,10 +310,14 @@ func BuildBillStatement(db *gorm.DB, loc *time.Location, orgID int64, period str
 		}
 	}
 	var cnt int64
-	_ = db.Raw(`SELECT COUNT(*) FROM (
+	// dayExpr 必须经 Sprintf 拼进 SQL（原代码把 %s 当占位参数传给 Raw，
+	// 语法错误被 _= 吞掉，TotalRows 恒为 0——账单明细行数一直是错的）
+	_ = db.Raw(fmt.Sprintf(`SELECT COUNT(*) FROM (
 		SELECT %s AS day, l.model_name, l.cost_center_id FROM usage_logs l
 		WHERE l.org_id = ? AND created_at >= ? AND created_at < ?
-		GROUP BY day, l.model_name, l.cost_center_id) t`, dayExpr, orgID, s, e).Scan(&cnt).Error
+		  AND (l.status = 200 OR l.cost > 0)
+		GROUP BY day, l.model_name, l.cost_center_id) t`, dayExpr),
+		orgID, s, e).Scan(&cnt).Error
 	st.Rows, st.TotalRows = rows, int(cnt)
 	for _, r := range rows {
 		st.TotalCostSum += r.Cost

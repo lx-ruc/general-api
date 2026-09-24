@@ -9,7 +9,9 @@ import (
 // CostCenterCrossReport GET /api/platform/reports/cost-centers?start&end&org_id
 // 平台视角：org × 中心交叉聚合，含厂商成本与毛利列（org 视角永远不可见）。
 func (h *Handler) CostCenterCrossReport(c *gin.Context) {
-	cond, args := "1=1", []any{}
+	// 与 org 成本报表同口径：被拒尝试（403/404/402/429 零成本行）不进交叉报表，
+	// 否则只有失败流量的 org 会以全零行出现
+	cond, args := "(l.status = 200 OR l.cost > 0)", []any{}
 	if v := httpx.QueryInt64(c, "start", 0); v > 0 {
 		cond += " AND l.created_at >= ?"
 		args = append(args, v)

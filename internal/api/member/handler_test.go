@@ -393,3 +393,36 @@ func TestListModelsMonthlyQuota(t *testing.T) {
 		t.Fatalf("未设月限应为 0: %v", m1["monthly_quota"])
 	}
 }
+
+// 模型明细同口径：被拒尝试（403 未授权/404 不存在的零成本行）不出现在 by_model；
+// by_key 与各汇总仍计全量（用户能看到自己 key 的失败情况）
+func TestUsageBreakdownByModelExcludesRejected(t *testing.T) {
+	e := newMemberEnv(t)
+	now := time.Now().Unix()
+	e.insertULog(t, 1, 1, "m1", 10, 5, 60, now, 200)
+	e.insertULog(t, 1, 1, "glm-5.3", 0, 0, 0, now, 403)
+	e.insertULog(t, 1, 1, "ghost", 0, 0, 0, now, 404)
+
+	// 显式区间：默认区间 [月初, now) 的 end 不含当前秒，同一秒内造的数据会被排除
+	w := e.getUsage(fmt.Sprintf("?start=1&end=%d", now+60))
+	if w.Code != http.StatusOK {
+		t.Fatalf("stats/usage 应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	var rep struct {
+		ByModel []struct {
+			Name string `json:"name"`
+		} `json:"by_model"`
+		Range struct {
+			Requests int64 `json:"requests"`
+		} `json:"range"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rep); err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if len(rep.ByModel) != 1 || rep.ByModel[0].Name != "m1" {
+		t.Fatalf("by_model 应只含 m1: %+v", rep.ByModel)
+	}
+	if rep.Range.Requests != 3 {
+		t.Fatalf("区间总请求数仍应计全量 3，得 %d", rep.Range.Requests)
+	}
+}

@@ -151,12 +151,15 @@ func StatsOverview(db *gorm.DB, scope Scope) (*Overview, error) {
 			return nil, err
 		}
 	}
+	// 模型 Top10 只统计真实消耗（status=200 或有计费）：被拒尝试（403 未授权/404 不存在等
+	// 零成本行）不得以 0 token 行上榜——否则未授权模型名会出现在用量榜。总量/错误数仍计全量（运营口径）
 	ov.ByModel, err = queryGroups(db, fmt.Sprintf(`
 		SELECT 0 AS id, l.model_name AS name, COUNT(*) AS requests,
 		       COALESCE(SUM(l.prompt_tokens + l.completion_tokens), 0) AS tokens,
 		       COALESCE(SUM(l.cost), 0) AS cost, COALESCE(SUM(l.vendor_cost), 0) AS vendor_cost
 		FROM usage_logs l
-		WHERE %s AND l.model_name != '' GROUP BY l.model_name ORDER BY tokens DESC, requests DESC LIMIT 10`, cond), args)
+		WHERE %s AND l.model_name != '' AND (l.status = 200 OR l.cost > 0)
+		GROUP BY l.model_name ORDER BY tokens DESC, requests DESC LIMIT 10`, cond), args)
 	if err != nil {
 		return nil, err
 	}

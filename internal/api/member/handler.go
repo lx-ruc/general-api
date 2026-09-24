@@ -310,6 +310,9 @@ func (h *Handler) UsageBreakdown(c *gin.Context) {
 	}
 
 	var byModel []usageAgg
+	// 模型明细只统计真实消耗（status=200 或有计费）：被拒尝试（403 未授权/404 不存在等
+	// 零成本行）不得以 0 token 行出现——与成本报表/账单同口径；上方各汇总与按 key 统计
+	// （含 errors）仍计全量，用户能看到自己 key 的失败情况
 	_ = h.DB.Raw(fmt.Sprintf(`
 		SELECT 0 AS id, l.model_name AS name, COUNT(*) AS requests,
 		       COALESCE(SUM(l.prompt_tokens + l.completion_tokens), 0) AS tokens,
@@ -317,6 +320,7 @@ func (h *Handler) UsageBreakdown(c *gin.Context) {
 		       COALESCE(SUM(%s), 0) AS errors
 		FROM usage_logs l
 		WHERE l.user_id = ? AND l.created_at >= ? AND l.created_at < ? AND l.model_name != ''
+		  AND (l.status = 200 OR l.cost > 0)
 		GROUP BY l.model_name ORDER BY tokens DESC, requests DESC`, usageErrExpr),
 		id, start, end).Scan(&byModel).Error
 	if byModel == nil {

@@ -190,7 +190,10 @@ func (h *Handler) CostCenterReport(c *gin.Context) {
 	if !ok {
 		return
 	}
-	cond, args := "l.org_id = ?", []any{oid}
+	// 只统计真实消耗：被拒尝试（403 未授权 / 404 模型不存在 / 402 / 429 等零成本失败行）
+	// 不进成本报表——否则未授权/不存在的模型名会以 0 成本行混进来，看起来像"用了却没授权"。
+	// status=200 或有计费（如 499 中断已部分结算）都保留；调用日志（ListUsage）仍看全量供排障
+	cond, args := "l.org_id = ? AND (l.status = 200 OR l.cost > 0)", []any{oid}
 	if v := httpx.QueryInt64(c, "start", 0); v > 0 {
 		cond += " AND l.created_at >= ?"
 		args = append(args, v)

@@ -129,3 +129,86 @@ func TestCostCenterOrgIsolation(t *testing.T) {
 		t.Fatalf("他 org 中心不应被改动，得 %q", name)
 	}
 }
+
+// 被拒尝试不进成本报表：403 未授权 / 404 模型不存在 / 429 限流等零成本行
+// 不得以 0 成本模型行出现（否则看起来像"用了未授权的模型"）；已计费的非 200 行保留
+func TestCostCenterReportExcludesRejectedAttempts(t *testing.T) {
+	e := newOrgEnv(t)
+	now := time.Now().Unix()
+	ins := func(model string, status, cost int64) {
+		t.Helper()
+		if err := e.db.Exec(`INSERT INTO usage_logs (org_id, user_id, api_key_id, model_name,
+			status, cost, prompt_tokens, completion_tokens, created_at)
+			VALUES (1, 2, 1, ?, ?, ?, 0, 0, ?)`, model, status, cost, now).Error; err != nil {
+			t.Fatalf("造日志失败: %v", err)
+		}
+	}
+	ins("deepseek-chat", 200, 100) // 真实消耗
+	ins("glm-5.3", 403, 0)         // 未授权模型的被拒尝试
+	ins("gpt-6-astra", 404, 0)     // 不存在的模型名
+	ins("deepseek-chat", 429, 0)   // 授权模型上的限流被拒（噪音）
+	ins("glm-5-2", 499, 50)        // 客户端中断但已部分计费 —— 必须保留
+
+	w := e.do(http.MethodGet, "/api/org/reports/cost-centers", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("报表应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	var rep struct {
+		List []struct {
+			ModelName string `json:"model_name"`
+			Requests  int64  `json:"requests"`
+			Cost      int64  `json:"cost"`
+		} `json:"list"`
+		TotalCost int64 `json:"total_cost"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rep); err != nil {
+		t.Fatalf("解析报表失败: %v", err)
+	}
+	if len(rep.List) != 2 {
+		t.Fatalf("应只剩 2 个模型行（真实消耗 + 部分计费），得 %d: %+v", len(rep.List), rep.List)
+	}
+	for _, r := range rep.List {
+		if r.ModelName == "glm-5.3" || r.ModelName == "gpt-6-astra" {
+			t.Fatalf("被拒尝试的模型不应出现在报表: %+v", r)
+		}
+		if r.ModelName == "deepseek-chat" && r.Requests != 1 {
+			t.Fatalf("限流被拒不应计入请求数，deepseek-chat 行 requests 应 1，得 %d", r.Requests)
+		}
+	}
+	if rep.TotalCost != 150 {
+		t.Fatalf("合计应 150，得 %d", rep.TotalCost)
+	}
+}
+
+// 月度汇总（Billing）的按模型明细同口径：被拒尝试不出现在 by_model
+func TestBillingByModelExcludesRejectedAttempts(t *testing.T) {
+	e := newOrgEnv(t)
+	now := time.Now().Unix()
+	ins := func(model string, status, cost int64) {
+		t.Helper()
+		if err := e.db.Exec(`INSERT INTO usage_logs (org_id, user_id, api_key_id, model_name,
+			status, cost, prompt_tokens, completion_tokens, created_at)
+			VALUES (1, 2, 1, ?, ?, ?, 0, 0, ?)`, model, status, cost, now).Error; err != nil {
+			t.Fatalf("造日志失败: %v", err)
+		}
+	}
+	ins("m1", 200, 100)
+	ins("glm-5.3", 403, 0)
+	ins("gpt-6-astra", 404, 0)
+
+	w := e.do(http.MethodGet, "/api/org/billing", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("月度汇总应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	var rep struct {
+		ByModel []struct {
+			Name string `json:"name"`
+		} `json:"by_model"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rep); err != nil {
+		t.Fatalf("解析月度汇总失败: %v", err)
+	}
+	if len(rep.ByModel) != 1 || rep.ByModel[0].Name != "m1" {
+		t.Fatalf("by_model 应只剩 m1，得 %+v", rep.ByModel)
+	}
+}
