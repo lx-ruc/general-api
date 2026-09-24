@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"token-gateway/internal/scrub"
 )
 
 // pipeSSE 流式转发：按 SSE 事件（空行分隔）逐块写客户端并立即 flush，
@@ -43,18 +45,27 @@ func pipeSSE(w io.Writer, ctx context.Context, body io.Reader, modelSwap [2]stri
 		}
 		line, rerr := reader.ReadString('\n')
 		if line != "" {
-			event.WriteString(line)
 			if t := strings.TrimSpace(line); strings.HasPrefix(t, "data:") {
 				payload := strings.TrimSpace(strings.TrimPrefix(t, "data:"))
 				if payload != "" && payload != "[DONE]" {
 					var ur struct {
-						Usage *Usage `json:"usage"`
+						Usage *Usage          `json:"usage"`
+						Error json.RawMessage `json:"error"`
 					}
-					if json.Unmarshal([]byte(payload), &ur) == nil && ur.Usage != nil {
-						usage = ur.Usage
+					if json.Unmarshal([]byte(payload), &ur) == nil {
+						if ur.Usage != nil {
+							usage = ur.Usage
+						}
+						// 上游错误事件（data: {"error":{...}}）：消毒后再透传。
+						// 只动含 error 键的块——正文 delta 里合法出现链接属于客户内容，不碰
+						if len(ur.Error) > 0 {
+							payload = string(scrub.Bytes([]byte(payload)))
+							line = "data: " + payload + "\n"
+						}
 					}
 				}
 			}
+			event.WriteString(line)
 		}
 		if rerr != nil {
 			_ = writeEvent() // 尽力冲掉残留

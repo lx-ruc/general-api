@@ -26,6 +26,7 @@ import (
 	"token-gateway/internal/metrics"
 	"token-gateway/internal/middleware"
 	"token-gateway/internal/model"
+	"token-gateway/internal/scrub"
 	"token-gateway/internal/service"
 )
 
@@ -198,9 +199,11 @@ func mulAdd128(a, b, c, d, e, f int64) (hi, lo uint64) {
 	return
 }
 
+// openaiError 数据面 OpenAI 形状错误出口：消息统一消毒（不携带任何 URL/主机——
+// 网络类 err.Error() 的标准形态是 `Post "https://上游地址": ...`，会把渠道拓扑漏给客户）
 func openaiError(c *gin.Context, status int, errType, msg string) {
 	c.JSON(status, gin.H{
-		"error": gin.H{"message": msg, "type": errType, "code": errType},
+		"error": gin.H{"message": scrub.Str(msg), "type": errType, "code": errType},
 	})
 }
 
@@ -571,6 +574,8 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			}
 			lastErr = derr.Error()
 			onlyRateLimited, authOnly = false, false
+			// 原始错误（含上游地址）只进服务端日志供平台管理员排障，客户侧出口统一消毒
+			slog.Warn("上游连接失败", "channel_id", cand.ChannelID, "channel", cand.ChannelName, "err", lastErr)
 			h.noteChannelFailure(cand)
 			return attemptNextChannel // 网络失败 → 跳过该渠道（尚未向客户端写出任何字节）
 		}
@@ -725,20 +730,23 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		// 模型映射：缓存与客户端拿到的都是外部名（缓存回放不泄漏上游名）
 		data = rewriteModel(data, modelSwap)
 		if resp.StatusCode >= 400 {
-			// 上游错误体：提取 message 记日志；Anthropic 端点包成 Anthropic 错误形状再透传
+			// 上游错误体：提取 message 记日志；Anthropic 端点包成 Anthropic 错误形状再透传。
+			// 透传前消毒——部分厂商错误体里带文档链接，且 usage_logs 的 error 列客户管理员可见
 			var er struct {
 				Error struct {
 					Message string `json:"message"`
 				} `json:"error"`
 			}
 			_ = json.Unmarshal(data, &er)
-			msg := er.Error.Message
+			msg := scrub.Str(er.Error.Message)
 			if msg == "" {
 				msg = fmt.Sprintf("upstream returned %d", resp.StatusCode)
 			}
 			rec.Error = truncateStr(msg, 500)
 			if spec.proto == protoAnthropic {
 				data = anthropicErrorBody(msg)
+			} else {
+				data = scrub.Bytes(data)
 			}
 			c.Data(resp.StatusCode, ct, data)
 			return attemptDone

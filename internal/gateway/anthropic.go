@@ -17,15 +17,18 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+
+	"token-gateway/internal/scrub"
 )
 
 // ---------------- 错误形状 ----------------
 
-// anthropicError Anthropic 错误形状（Claude 系客户端只认 {"type":"error","error":{...}}）
+// anthropicError Anthropic 错误形状（Claude 系客户端只认 {"type":"error","error":{...}}）；
+// 与 openaiError 同口径：消息消毒，不携带 URL/主机
 func anthropicError(c *gin.Context, status int, errType, msg string) {
 	c.JSON(status, gin.H{
 		"type":  "error",
-		"error": gin.H{"type": errType, "message": msg},
+		"error": gin.H{"type": errType, "message": scrub.Str(msg)},
 	})
 }
 

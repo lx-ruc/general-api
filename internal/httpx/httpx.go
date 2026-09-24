@@ -8,6 +8,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
+
+	"token-gateway/internal/scrub"
 )
 
 // OK 成功响应
@@ -15,9 +17,10 @@ func OK(c *gin.Context, data any) {
 	c.JSON(http.StatusOK, data)
 }
 
-// Fail 统一错误响应
+// Fail 统一错误响应：消息消毒——org/member 平台的 handler 存在 err.Error() 直拼回显，
+// 网络/数据库错误的标准形态会带主机地址，客户侧不得见到
 func Fail(c *gin.Context, status int, msg string) {
-	c.JSON(status, gin.H{"error": gin.H{"message": msg, "type": "api_error"}})
+	c.JSON(status, gin.H{"error": gin.H{"message": scrub.Str(msg), "type": "api_error"}})
 }
 
 // BindJSON 绑定请求体；失败时已自动响应 400。

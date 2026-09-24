@@ -869,3 +869,113 @@ func TestQuotaRejectionStatus402(t *testing.T) {
 		t.Fatalf("欠费停服应 402 arrears，得 %d: %s", w.Code, w.Body.String())
 	}
 }
+
+// ---------------- 错误信息不暴露地址 ----------------
+
+// lastUsageError 读最近一条 usage_logs 的 error 列
+func (e *testEnv) lastUsageError(t *testing.T) string {
+	t.Helper()
+	var msg string
+	if err := e.f.db.Raw("SELECT error FROM usage_logs ORDER BY id DESC LIMIT 1").Scan(&msg).Error; err != nil {
+		t.Fatalf("读 usage_logs.error 失败: %v", err)
+	}
+	return msg
+}
+
+// 上游连接失败（网络层 err.Error() 标准形态带完整 URL）：502 响应体与 usage_logs
+// 落库文本都不得出现上游地址（渠道拓扑对客户不可见；原始错误只进服务端 slog）
+func TestUpstreamConnFailureNoAddressLeak(t *testing.T) {
+	e := newTestEnv(t)
+	e.seedUpstreamChannel(t, 1, "ch", "http://127.0.0.1:1", nil, 1) // 无人监听的端口 → connection refused
+
+	w := e.post(chatBody("hi", ""))
+	if w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "all upstream channels failed") {
+		t.Fatalf("死上游应 502 upstream_error，得 %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "127.0.0.1") || strings.Contains(w.Body.String(), "http://") {
+		t.Fatalf("响应体泄漏上游地址: %s", w.Body.String())
+	}
+	if msg := e.lastUsageError(t); strings.Contains(msg, "127.0.0.1") || strings.Contains(msg, "http://") {
+		t.Fatalf("usage_logs 泄漏上游地址: %s", msg)
+	}
+}
+
+// 上游 4xx 错误体原文透传：体里的文档 URL 必须剥掉，语义保留
+func TestUpstreamErrorBodyScrubbed(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"insufficient balance, see https://vendor.example.com/recharge","type":"insufficient_quota"}}`))
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, nil, 1)
+
+	w := e.post(chatBody("hi", ""))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("上游 4xx 应原状态码透传，得 %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if strings.Contains(body, "example.com") || strings.Contains(body, "https://") {
+		t.Fatalf("透传错误体泄漏 URL: %s", body)
+	}
+	if !strings.Contains(body, "insufficient balance") {
+		t.Fatalf("错误语义应保留: %s", body)
+	}
+	if msg := e.lastUsageError(t); strings.Contains(msg, "example.com") {
+		t.Fatalf("usage_logs 泄漏 URL: %s", msg)
+	}
+}
+
+// /v1/messages（Anthropic 形状）上游错误体包装：同样消毒
+func TestAnthropicErrorBodyScrubbed(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"max_tokens too large, see http://vendor.example.com/limits","type":"invalid_request_error"}}`))
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, nil, 1)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(`{"model":"m1","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer "+e.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	e.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("上游 400 应透传 400，得 %d: %s", w.Code, w.Body.String())
+	}
+	if body := w.Body.String(); strings.Contains(body, "example.com") || strings.Contains(body, "http://") {
+		t.Fatalf("Anthropic 错误体泄漏 URL: %s", body)
+	}
+}
+
+// 流式上游错误事件（data: {"error":...}）：消毒后透传；正文内容里的链接不碰
+func TestSSEErrorEventScrubbed(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"see https://keep-me.example.com/page\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"error\":{\"message\":\"rate limited, see https://vendor.example.com/limits\"}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, nil, 1)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(chatBody("hi", `,"stream":true`)))
+	req.Header.Set("Authorization", "Bearer "+e.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	e.engine.ServeHTTP(w, req)
+	body := w.Body.String()
+	if w.Code != http.StatusOK {
+		t.Fatalf("流式应 200，得 %d: %s", w.Code, body)
+	}
+	if strings.Contains(body, "vendor.example.com") {
+		t.Fatalf("SSE 错误事件泄漏 URL: %s", body)
+	}
+	if !strings.Contains(body, "keep-me.example.com") {
+		t.Fatalf("正文内容里的合法链接不应被误伤: %s", body)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"token-gateway/internal/model"
+	"token-gateway/internal/scrub"
 )
 
 // 额度读写的唯一入口：
@@ -83,6 +84,13 @@ func Precheck(db *gorm.DB, userID int64) error {
 func Settle(db *gorm.DB, rec *model.UsageLog) error {
 	now := time.Now().Unix()
 	period := currentPeriod()
+	// 落库前消毒 error 列：客户管理员在调用日志里可见，不得携带上游 URL/主机
+	// （网络类错误的原始文本只保留在服务端 slog）；拷贝不改调用方的 rec
+	if rec.Error != "" {
+		cp := *rec
+		cp.Error = scrub.Str(rec.Error)
+		rec = &cp
+	}
 	return db.Transaction(func(tx *gorm.DB) error {
 		if rec.Cost > 0 {
 			if err := tx.Exec(`UPDATE users SET quota_used = quota_used + ?,
