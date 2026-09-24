@@ -622,6 +622,8 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 					"channel_id", cand.ChannelID, "channel", cand.ChannelName,
 					"key_id", cand.KeyID, "code", qc, "cooldown", d.String())
 				h.Coord.MarkQuotaCooling(cand.KeyScope(), d) // 供选路无候选时区分"配额冷却"→ 402
+				// 站内通知系统管理员（异步；服务内按渠道+Key 节流 30 分钟，防死 Key 每分钟刷屏）
+				go service.NotifyKeyQuotaCooling(h.DB, cand.ChannelID, cand.KeyID, cand.ChannelName, cand.UpstreamKey, qc)
 				lastErr = fmt.Sprintf("upstream %s returned %d %s (key %d quota cooldown %s)",
 					cand.ChannelName, resp.StatusCode, qc, cand.KeyID, d)
 				authOnly = false

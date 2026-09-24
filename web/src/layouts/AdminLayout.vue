@@ -12,6 +12,10 @@ import {
   type AccessToken,
 } from '../api/auth'
 import { apiOrgRequests } from '../api/org'
+import {
+  apiListNotifications, apiReadNotification, apiReadAllNotifications, apiClearChannelKeyCooldown,
+  type NotificationItem, type KeyQuotaPayload,
+} from '../api/platform'
 import PlaygroundDialog from '../components/PlaygroundDialog.vue'
 
 // 在线体验（顶栏入口）
@@ -95,8 +99,78 @@ async function refreshPending() {
 onMounted(() => {
   refreshPending()
   window.addEventListener('quota-requests-changed', refreshPending)
+  if (auth.user?.role === 'platform_admin') {
+    refreshNotifs()
+    notifTimer = window.setInterval(refreshNotifs, 30_000)
+  }
 })
-onUnmounted(() => window.removeEventListener('quota-requests-changed', refreshPending))
+onUnmounted(() => {
+  window.removeEventListener('quota-requests-changed', refreshPending)
+  if (notifTimer) window.clearInterval(notifTimer)
+})
+
+// ---- 站内通知（仅系统管理员）：Key 配额冷却等需要处理的运营事件 ----
+const notifVisible = ref(false)
+const notifs = ref<NotificationItem[]>([])
+const notifUnread = ref(0)
+const notifClearing = ref(0)
+let notifTimer: number | undefined
+
+async function refreshNotifs() {
+  if (auth.user?.role !== 'platform_admin') return
+  try {
+    const r = await apiListNotifications()
+    notifs.value = r.list || []
+    notifUnread.value = r.unread || 0
+  } catch { /* 拉取失败不打扰 */ }
+}
+
+function openNotifs() {
+  notifVisible.value = true
+  refreshNotifs()
+}
+
+// key_quota_cooling 的 JSON 附件：定位渠道与 Key（打码），就地「清除冷却」用
+function notifPayload(n: NotificationItem): KeyQuotaPayload | null {
+  if (n.type !== 'key_quota_cooling') return null
+  try {
+    return JSON.parse(n.payload) as KeyQuotaPayload
+  } catch {
+    return null
+  }
+}
+
+const nowSec = () => Math.floor(Date.now() / 1000)
+
+// 点开条目即标已读（不可逆，动作就地展开在条目内）
+async function readNotif(n: NotificationItem) {
+  if (n.read_at) return
+  try {
+    await apiReadNotification(n.id)
+    notifs.value = notifs.value.map((x) => (x.id === n.id ? { ...x, read_at: nowSec() } : x))
+    notifUnread.value = Math.max(0, notifUnread.value - 1)
+  } catch { /* 已读失败不打断浏览 */ }
+}
+
+// 厂商侧限额恢复后就地解除该 Key 的冷却，立即回轮询池
+async function clearNotifCooldown(n: NotificationItem) {
+  const p = notifPayload(n)
+  if (!p || !p.key_id) return
+  notifClearing.value = n.id
+  try {
+    await apiClearChannelKeyCooldown(p.channel_id, p.key_id)
+    ElMessage.success(`已清除冷却：${p.channel_name} 的 Key ${p.key_masked} 已回到轮询池`)
+    await readNotif(n)
+  } finally {
+    notifClearing.value = 0
+  }
+}
+
+async function readAllNotifs() {
+  await apiReadAllNotifications()
+  notifs.value = notifs.value.map((n) => ({ ...n, read_at: n.read_at || nowSec() }))
+  notifUnread.value = 0
+}
 
 // 修改密码
 const pwdVisible = ref(false)
@@ -204,6 +278,14 @@ async function revokeToken(row: AccessToken) {
           <h1 class="page-title">{{ pageTitle }}</h1>
         </div>
         <div class="top-right">
+          <button v-if="auth.user?.role === 'platform_admin'" class="pg-btn notif-btn" type="button"
+            @click="openNotifs">
+            <el-icon :size="14"><Bell /></el-icon>
+            通知
+            <span v-if="notifUnread > 0" class="notif-badge num">
+              {{ notifUnread > 99 ? '99+' : notifUnread }}
+            </span>
+          </button>
           <button class="pg-btn" type="button" :class="{ on: route.path.startsWith('/docs') }" @click="router.push('/docs')">
             <el-icon :size="14"><Reading /></el-icon>
             文档
@@ -297,6 +379,32 @@ async function revokeToken(row: AccessToken) {
         </template>
       </el-table-column>
     </el-table>
+  </el-dialog>
+
+  <!-- 站内通知（系统管理员）：Key 配额冷却等事件，点开可就地清除冷却 -->
+  <el-dialog v-model="notifVisible" title="站内通知" width="600px">
+    <div class="notif-head">
+      <span class="hint">需要处理的运营事件（Key 配额冷却每把 Key 至少间隔 30 分钟提醒一次）</span>
+      <el-button v-if="notifUnread > 0" size="small" @click="readAllNotifs">全部已读</el-button>
+    </div>
+    <div v-if="notifs.length === 0" class="notif-empty">暂无通知</div>
+    <div v-else class="notif-list">
+      <div v-for="n in notifs" :key="n.id" class="notif-item" :class="{ unread: !n.read_at }" @click="readNotif(n)">
+        <div class="notif-row">
+          <span class="notif-dot" :class="{ on: !n.read_at }" aria-hidden="true"></span>
+          <span class="notif-title">{{ n.title }}</span>
+          <span class="notif-time">{{ fmtTime(n.created_at) }}</span>
+        </div>
+        <div class="notif-body">{{ n.body }}</div>
+        <div v-if="notifPayload(n) && notifPayload(n)!.key_id" class="notif-actions">
+          <el-button size="small" type="warning" plain :loading="notifClearing === n.id"
+            @click.stop="clearNotifCooldown(n)">
+            清除冷却（厂商侧限额已恢复时用）
+          </el-button>
+          <span class="hint">清除此 Key 的冷却使其立即回到轮询池；冷却到期也会由真实流量自动再探测</span>
+        </div>
+      </div>
+    </div>
   </el-dialog>
 
   <!-- 在线体验：选模型流式试聊 -->
@@ -445,4 +553,37 @@ async function revokeToken(row: AccessToken) {
   margin-bottom: 14px; flex-wrap: wrap;
 }
 .token-create .hint { font-size: 12px; color: var(--tg-muted); }
+
+/* ---------- 站内通知 ---------- */
+.notif-btn { position: relative; }
+.notif-badge {
+  min-width: 16px; height: 16px; padding: 0 4px;
+  border-radius: 8px;
+  background: #c05621; color: #fff;
+  font-size: 10.5px; line-height: 16px; text-align: center;
+}
+.notif-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-bottom: 12px;
+}
+.notif-head .hint { font-size: 12px; color: var(--tg-muted); }
+.notif-empty { color: var(--tg-muted); font-size: 13px; padding: 24px 0; text-align: center; }
+.notif-list {
+  max-height: 420px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.notif-item {
+  border: 1px solid var(--tg-line); border-radius: 8px;
+  padding: 10px 12px; background: var(--tg-surface);
+  cursor: pointer;
+}
+.notif-item.unread { border-color: rgba(192, 86, 33, 0.45); background: #fdf8f4; }
+.notif-row { display: flex; align-items: center; gap: 8px; }
+.notif-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--tg-line-strong); flex: none; }
+.notif-dot.on { background: #c05621; box-shadow: 0 0 0 3px rgba(192, 86, 33, 0.15); }
+.notif-title { font-size: 13.5px; font-weight: 600; color: var(--tg-ink); }
+.notif-time { margin-left: auto; font-size: 11.5px; color: var(--tg-muted); white-space: nowrap; }
+.notif-body { margin-top: 6px; font-size: 12.5px; color: var(--tg-sidebar-ink); line-height: 1.6; }
+.notif-actions { margin-top: 8px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.notif-actions .hint { font-size: 11.5px; color: var(--tg-muted); }
 </style>

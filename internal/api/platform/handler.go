@@ -897,15 +897,9 @@ func (h *Handler) DeleteChannel(c *gin.Context) {
 
 // ---------------- 渠道 Key 池管理 ----------------
 
-// maskKey 打码展示：前 6 + … + 后 4
+// maskKey 打码展示：前 6 + … + 后 4（规则与站内通知的 key_masked 同源，收口在 service.MaskKey）
 func maskKey(k string) string {
-	if k == "" {
-		return ""
-	}
-	if len(k) <= 12 {
-		return k[:3] + "…"
-	}
-	return k[:6] + "…" + k[len(k)-4:]
+	return service.MaskKey(k)
 }
 
 // ListChannelKeys GET /api/platform/channels/:id/keys：Key 池列表（打码，不回明文/密文）
@@ -1555,6 +1549,49 @@ func (h *Handler) HandleRecharge(c *gin.Context) {
 		return
 	}
 	httpx.OK(c, gin.H{"message": "已驳回"})
+}
+
+// ---------------- 站内通知 ----------------
+
+// notificationsKeepDays 已读/过期通知的保留期：列表查询时顺手清理，防表无限增长
+const notificationsKeepDays = 30
+
+// ListNotifications GET /api/platform/notifications：当前管理员的站内通知（最近 50 条）
+// + 未读数。顶栏铃铛轮询用；同时清理保留期外的旧通知（含未读——超过 30 天没看的告警已失效）
+func (h *Handler) ListNotifications(c *gin.Context) {
+	uid := middleware.GetUID(c)
+	cutoff := time.Now().Unix() - notificationsKeepDays*86400
+	_ = h.DB.Exec("DELETE FROM notifications WHERE user_id = ? AND created_at < ?", uid, cutoff).Error
+	var rows []model.Notification
+	_ = h.DB.Where("user_id = ?", uid).Order("id DESC").Limit(50).Find(&rows).Error
+	if rows == nil {
+		rows = []model.Notification{}
+	}
+	var unread int64
+	_ = h.DB.Raw("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND read_at = 0", uid).Scan(&unread).Error
+	httpx.OK(c, gin.H{"list": rows, "unread": unread})
+}
+
+// ReadNotification PUT /api/platform/notifications/:id/read
+func (h *Handler) ReadNotification(c *gin.Context) {
+	id, ok := httpx.PathID(c)
+	if !ok {
+		return
+	}
+	res := h.DB.Exec("UPDATE notifications SET read_at = ? WHERE id = ? AND user_id = ? AND read_at = 0",
+		time.Now().Unix(), id, middleware.GetUID(c))
+	if res.Error != nil || res.RowsAffected == 0 {
+		httpx.Fail(c, http.StatusNotFound, "通知不存在或已读")
+		return
+	}
+	httpx.OK(c, gin.H{"message": "已读"})
+}
+
+// ReadAllNotifications PUT /api/platform/notifications/read-all
+func (h *Handler) ReadAllNotifications(c *gin.Context) {
+	_ = h.DB.Exec("UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at = 0",
+		time.Now().Unix(), middleware.GetUID(c)).Error
+	httpx.OK(c, gin.H{"message": "已全部标记已读"})
 }
 
 // ListAudit GET /api/platform/audit：操作审计日志

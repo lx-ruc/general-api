@@ -280,3 +280,16 @@ CREATE TABLE IF NOT EXISTS access_tokens (
   updated_at  INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_access_tokens_user ON access_tokens(user_id);
+
+-- 站内通知（目前用于：Key 配额冷却告警等需要系统管理员处理的运营事件）
+CREATE TABLE IF NOT EXISTS notifications (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    INTEGER NOT NULL,             -- 接收人（系统管理员），每人一行独立已读状态
+  type       TEXT    NOT NULL DEFAULT '',  -- 事件类型（key_quota_cooling）
+  title      TEXT    NOT NULL DEFAULT '',
+  body       TEXT    NOT NULL DEFAULT '',
+  payload    TEXT    NOT NULL DEFAULT '',  -- JSON 附件（channel_id / key_id 等，绝不放密钥明文）
+  read_at    INTEGER NOT NULL DEFAULT 0,   -- 0=未读
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read_at, id);

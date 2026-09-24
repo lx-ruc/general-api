@@ -208,6 +208,7 @@ func ProbeChannel(db *gorm.DB, cipher *crypto.Cipher, client *http.Client, cd co
 
 	// Key 选择：池内优先非冷却 → 全冷却取第一把 → 回退 legacy 单 Key
 	key, scope, keyDesc := "", "", ""
+	var keyID int64 // 池内 Key id（legacy 单 Key 为 0），站内通知定位用
 	var poolKeys []model.ChannelKey
 	if err := db.Where("channel_id = ? AND status = 1", channelID).Order("id").Find(&poolKeys).Error; err == nil && len(poolKeys) > 0 {
 		pick := poolKeys[0]
@@ -219,6 +220,7 @@ func ProbeChannel(db *gorm.DB, cipher *crypto.Cipher, client *http.Client, cd co
 		}
 		scope = fmt.Sprintf("ck:%d:%d", channelID, pick.ID)
 		keyDesc = fmt.Sprintf("池内 Key #%d", pick.ID)
+		keyID = pick.ID
 		key, _ = cipher.Decrypt(pick.KeyEnc)
 	} else if ch.UpstreamKeyEnc != "" {
 		key, _ = cipher.Decrypt(ch.UpstreamKeyEnc)
@@ -269,6 +271,9 @@ func ProbeChannel(db *gorm.DB, cipher *crypto.Cipher, client *http.Client, cd co
 				d := cd.Backoff(scope, keyCooldown, quota429CooldownMax)
 				cd.MarkQuotaCooling(scope, d)
 			}
+			// 与数据面同源站内通知（服务内按渠道+Key 节流）：体检/自动恢复发现配额死 Key
+			// 时管理员也能收到，不依赖业务流量触发
+			go service.NotifyKeyQuotaCooling(db, channelID, keyID, ch.Name, key, qc)
 			return ProbeResult{Status: resp.StatusCode, LatencyMs: latency, KeyDesc: keyDesc, Quota: true,
 				Err: fmt.Sprintf("上游配额耗尽（%s）：厂商侧限额暂停，渠道与其它 Key 不受影响；限额恢复后冷却到期（约 %s）自动回池，也可在 Key 池点「清除冷却」立即复用。原始响应：HTTP 429 %s",
 					qc, keyCooldown, truncateStr(string(data), 200))}

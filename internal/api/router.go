@@ -189,6 +189,10 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		plat.GET("/audit", ph.ListAudit)
 		plat.GET("/bank-info", ph.GetBankInfo)
 		plat.PUT("/bank-info", ph.UpdateBankInfo)
+		plat.GET("/notifications", ph.ListNotifications)
+		plat.PUT("/notifications/:id/read", ph.ReadNotification)
+		plat.PUT("/notifications/read-all", ph.ReadAllNotifications)
+
 		plat.GET("/demo-key", ph.GetDemoKey)
 		plat.PUT("/demo-key", ph.ConfigureDemoKey)
 		plat.POST("/demo-key/rotate", ph.RotateDemoKey)

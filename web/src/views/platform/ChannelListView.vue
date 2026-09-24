@@ -343,6 +343,16 @@ async function toggleKey(row: ChannelKeyRow) {
   }
 }
 
+// 配额冷却汇总：进弹窗第一眼就能看到有几把 Key 因厂商侧限额被冷却（不用逐行找）
+const quotaCoolingCount = computed(() => keyList.value.filter((k) => k.quota_cooling).length)
+
+// 冷却行整行高亮（配额=琥珀、普通限流=浅灰），冷却状态不被淹没在表格里
+function keyRowClass({ row }: { row: ChannelKeyRow }): string {
+  if (row.quota_cooling) return 'quota-cooling-row'
+  if (row.cooling) return 'cooling-row'
+  return ''
+}
+
 // 清除冷却：厂商侧限额恢复/排障后立即把 Key 放回轮询池，不必等指数退避到期
 async function clearCooldown(row: ChannelKeyRow) {
   if (!keysChannel.value) return
@@ -656,6 +666,9 @@ async function savePricing() {
         ? '该渠道还在用旧版单密钥（未入池）。新增 Key 后自动并入 Key 池统一管理。'
         : '该渠道还没有 Key。点击下方「新增 Key」添加第一把。'" />
 
+    <el-alert v-if="quotaCoolingCount > 0" type="warning" :closable="false" class="keys-alert"
+      :title="`有 ${quotaCoolingCount} 把 Key 因厂商侧配额耗尽处于冷却（该行已标黄）：限额恢复后点行内「清除冷却」立即复用，无需等自动到期`" />
+
     <div class="keys-toolbar">
       <el-button type="primary" size="small" @click="toggleAdd">新增 Key</el-button>
     </div>
@@ -681,40 +694,40 @@ async function savePricing() {
       </div>
     </div>
 
-    <el-table v-if="keyList.length > 0" :data="keyList" v-loading="keysLoading" size="small">
-      <el-table-column prop="id" label="#" width="60" />
-      <el-table-column prop="key_masked" label="Key（打码）" min-width="170">
+    <el-table v-if="keyList.length > 0" :data="keyList" v-loading="keysLoading" size="small"
+      :row-class-name="keyRowClass">
+      <el-table-column prop="id" label="#" width="44" />
+      <el-table-column prop="key_masked" label="Key（打码）" min-width="140">
         <template #default="{ row }"><code>{{ row.key_masked }}</code></template>
       </el-table-column>
-      <el-table-column prop="weight" label="权重" width="70" align="center" />
-      <el-table-column label="状态" width="80" align="center">
+      <el-table-column prop="weight" label="权重" width="56" align="center" />
+      <el-table-column label="状态" width="66" align="center">
         <template #default="{ row }">
           <el-tag :type="row.status === 1 ? 'success' : 'danger'" effect="plain" size="small">
             {{ row.status === 1 ? '启用' : '禁用' }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="冷却" width="110" align="center">
+      <!-- 冷却状态与解除动作放同一列：不用横向滚动到操作列就能看到并点「清除冷却」 -->
+      <el-table-column label="冷却 / 解除" min-width="170">
         <template #default="{ row }">
-          <el-tooltip v-if="row.quota_cooling" content="上游厂商侧配额耗尽（如火山限额），冷却期内该渠道全部 Key 耗尽时回 402；冷却按 key_cooldown 起步（默认 1 分钟）到期自动再探测，限额恢复后也可点「清除冷却」立即复用"
-            placement="top">
-            <el-tag type="warning" effect="plain" size="small">配额冷却</el-tag>
-          </el-tooltip>
-          <el-tooltip v-else-if="row.cooling" content="上游 429 限流冷却中，到期自动恢复" placement="top">
-            <el-tag type="info" effect="plain" size="small">冷却中</el-tag>
-          </el-tooltip>
+          <div v-if="row.cooling" class="cool-cell">
+            <el-tooltip v-if="row.quota_cooling" content="上游厂商侧配额耗尽（如火山限额），冷却期内该渠道全部 Key 耗尽时回 402；冷却到期由真实流量自动再探测，限额恢复后点右侧「清除冷却」立即复用"
+              placement="top">
+              <el-tag type="warning" effect="light" size="small">配额冷却</el-tag>
+            </el-tooltip>
+            <el-tag v-else type="info" effect="plain" size="small">冷却中</el-tag>
+            <el-button link type="primary" size="small" class="cool-clear"
+              :loading="cooldownClearing === row.id" @click="clearCooldown(row)">清除冷却</el-button>
+          </div>
           <span v-else class="dim">—</span>
         </template>
       </el-table-column>
-      <el-table-column prop="remark" label="备注" min-width="140" show-overflow-tooltip />
-      <el-table-column label="操作" width="220">
+      <el-table-column prop="remark" label="备注" show-overflow-tooltip />
+      <el-table-column label="操作" width="126">
         <template #default="{ row }">
           <el-button size="small" :loading="keyToggling === row.id" @click="toggleKey(row)">
             {{ row.status === 1 ? '禁用' : '启用' }}
-          </el-button>
-          <el-button v-if="row.cooling" size="small" type="warning"
-            :loading="cooldownClearing === row.id" @click="clearCooldown(row)">
-            清除冷却
           </el-button>
           <el-button size="small" type="danger" :loading="keyDeleting === row.id" @click="removeKey(row)">
             删除
@@ -727,7 +740,7 @@ async function savePricing() {
       权重 = 同渠道内各把 Key 分摊请求的比例（3:1 即平均每 4 次请求各担 3 次与 1 次），与渠道间的优先级/权重无关；
       上游 401/403 自动禁用对应 Key（可在此恢复）；429 冷却（含厂商侧配额耗尽）按 key_cooldown 起步
       （默认 1 分钟），到期由真实流量自动再探测、无需人工干预——配额恢复后下一笔请求即成功，
-      等不及的话点「清除冷却」立即复用。
+      等不及的话点「冷却 / 解除」列的「清除冷却」立即复用。Key 进入配额冷却时会站内通知系统管理员（顶栏铃铛）。
     </div>
   </el-dialog>
 
@@ -782,6 +795,13 @@ async function savePricing() {
 .add-label { font-size: 13px; }
 .add-actions { display: flex; justify-content: flex-end; }
 .keys-tip { margin-top: 10px; line-height: 1.7; }
+.keys-alert { margin-bottom: 10px; }
+/* 冷却列：角标 + 就地「清除冷却」同一行 */
+.cool-cell { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.cool-clear { padding: 0; }
+/* 冷却行整行底色（配额=琥珀 / 普通限流=浅灰），一眼锁定需要关注的 Key */
+:deep(.el-table .quota-cooling-row) { --el-table-tr-bg-color: #fdf3e3; }
+:deep(.el-table .cooling-row) { --el-table-tr-bg-color: #f5f6f7; }
 .model-row { display: flex; align-items: center; }
 /* 模型能力卡片：上行=名称/映射，下行=就地定价 */
 .model-card {

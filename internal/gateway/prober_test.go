@@ -283,6 +283,35 @@ func TestProbeQuotaClassifiedAndCoolsOnlyProbedKey(t *testing.T) {
 	}
 }
 
+// 探测路径发现配额死 Key 也发站内通知（异步落库）：低流量渠道不依赖业务流量也能告警到管理员。
+// 用渠道 2 避开其它用例已触发的节流窗口（notifyLast 按 ck:渠道:Key 全局节流）
+func TestProbeQuotaNotifiesPlatformAdmins(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"code":"SetLimitExceeded"}}`))
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 2, "ch2", up.URL, []string{"k1"}, 10)
+	mustExec(t, e.f, `INSERT INTO users (id, org_id, username, password_hash, role, status, created_at, updated_at)
+		VALUES (9, NULL, 'root', 'x', 'platform_admin', 1, 0, 0)`)
+
+	_ = ProbeChannel(e.h.DB, e.h.Cipher, e.h.Client, e.h.Coord, e.h.KeyCooldown, 2)
+
+	var cnt int64
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		_ = e.f.db.Raw(`SELECT COUNT(*) FROM notifications WHERE user_id = 9 AND type = 'key_quota_cooling'`).Scan(&cnt).Error
+		if cnt > 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if cnt == 0 {
+		t.Fatal("探测发现配额耗尽应站内通知系统管理员")
+	}
+}
+
 // 探测成功 → 清除该 Key 冷却：厂商侧限额恢复后点一次「测试」，Key 立即回池
 func TestProbeSuccessClearsCooldown(t *testing.T) {
 	e := newTestEnv(t)

@@ -143,6 +143,33 @@ export const apiListUsage = (params?: any) => http.get<any, any>('/api/platform/
 // ---- 审计 ----
 export const apiListAudit = (params?: any) => http.get<any, any>('/api/platform/audit', { params })
 
+// ---- 站内通知（顶栏铃铛） ----
+// key_quota_cooling 的 payload：定位渠道与 Key（打码），就地「清除冷却」用
+export interface KeyQuotaPayload {
+  channel_id: number
+  key_id: number      // 0 = legacy 单 Key 模式（无池行，无清除入口）
+  channel_name: string
+  key_masked: string
+  err_code: string
+}
+
+export interface NotificationItem {
+  id: number
+  type: string        // 'key_quota_cooling'
+  title: string
+  body: string
+  payload: string     // JSON 文本，按 type 解析
+  read_at: number     // 0=未读
+  created_at: number
+}
+
+export const apiListNotifications = () =>
+  http.get<any, { list: NotificationItem[]; unread: number }>('/api/platform/notifications')
+export const apiReadNotification = (id: number) =>
+  http.put<any, { message: string }>(`/api/platform/notifications/${id}/read`)
+export const apiReadAllNotifications = () =>
+  http.put<any, { message: string }>('/api/platform/notifications/read-all')
+
 // 额度预警：为某客户设置阈值（0 = 关闭）
 export const apiUpdateOrgAlertLevels = (id: number, threshold: number) =>
   http.put<any, any>(`/api/platform/orgs/${id}/alert-levels`, { threshold })
