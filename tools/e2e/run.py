@@ -260,7 +260,17 @@ def main():
         return r['id']
 
     ch_ok = mk_channel(f'e2e-ok-{TS}', ['k-ok-1', 'k-ok-2'], [m_free, m_priced, m_nogrant])
-    ch_nokey = mk_channel(f'e2e-nokey-{TS}', [], [m_nokey])
+    # 无密钥渠道已不可创建（模型一律经配 key 的渠道从上游登记）——创建即拒
+    st_nk, _, _ = call('POST', '/api/platform/channels', admin, {
+        'name': f'e2e-nokey-rej-{TS}', 'vendor': 'e2e', 'base_url': mock,
+        'models': [{'model_name': m_nokey}]})
+    check('A0 无密钥渠道创建被拒 → 400', st_nk == 400, f'got {st_nk}')
+    # channel_key_missing 路径：带 key 建渠道后把池内 key 全部停用
+    ch_nokey = mk_channel(f'e2e-nokey-{TS}', ['k-ok-4'], [m_nokey])
+    st, _, keys = call('GET', f'/api/platform/channels/{ch_nokey}/keys', admin)
+    kid = keys[0]['id'] if isinstance(keys, list) else keys['list'][0]['id']
+    st, _, r = call('PUT', f'/api/platform/channels/{ch_nokey}/keys/{kid}/status', admin, {'status': 0})
+    assert st == 200, (kid, st, r)
     ch_500 = mk_channel(f'e2e-500-{TS}', ['k-ok-9'], [m_fail], priority=10)
     ch_ok2 = mk_channel(f'e2e-ok2-{TS}', ['k-ok-5'], [m_fail], priority=5)
     ch_rot = mk_channel(f'e2e-rot-{TS}', ['k429-a', 'k-ok-3'], [m_rot])
