@@ -176,30 +176,33 @@ function remove(m: Member) {
       <el-table-column label="创建时间" width="160">
         <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="210" fixed="right">
+      <el-table-column label="操作" width="230" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" type="primary" plain @click="openGrant(row)">模型授权</el-button>
-          <el-button size="small" @click="openQuota(row)">额度</el-button>
-          <el-dropdown trigger="click" @command="(cmd: string) => {
-            if (cmd === 'pwd') pwdForm.member = row, pwdVisible = true
-            else if (cmd === 'toggle') toggleStatus(row)
-            else if (cmd === 'unlimited') setUnlimited(row, true)
-            else if (cmd === 'limit') setUnlimited(row, false)
-            else if (cmd === 'delete') remove(row)
-          }">
-            <el-button size="small" class="more-btn">
-              更多<el-icon style="margin-left: 2px"><ArrowDown /></el-icon>
-            </el-button>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item command="pwd">重置密码</el-dropdown-item>
-                <el-dropdown-item command="toggle">{{ row.status === 1 ? '停用账号' : '启用账号' }}</el-dropdown-item>
-                <el-dropdown-item v-if="row.quota_limit != null" command="unlimited" divided>设为不限额</el-dropdown-item>
-                <el-dropdown-item v-else command="limit">设为限额</el-dropdown-item>
-                <el-dropdown-item command="delete" class="danger-item">删除子账号</el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
+          <!-- 三个操作保持在同一行：nowrap 防换行，列宽按三按钮实际宽度留足 -->
+          <div class="op-row">
+            <el-button size="small" type="primary" plain @click="openGrant(row)">模型授权</el-button>
+            <el-button size="small" @click="openQuota(row)">额度</el-button>
+              <el-dropdown trigger="click" @command="(cmd: string) => {
+              if (cmd === 'pwd') pwdForm.member = row, pwdVisible = true
+              else if (cmd === 'toggle') toggleStatus(row)
+              else if (cmd === 'unlimited') setUnlimited(row, true)
+              else if (cmd === 'limit') setUnlimited(row, false)
+              else if (cmd === 'delete') remove(row)
+            }">
+              <el-button size="small" class="more-btn">
+                更多<el-icon style="margin-left: 2px"><ArrowDown /></el-icon>
+              </el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item command="pwd">重置密码</el-dropdown-item>
+                  <el-dropdown-item command="toggle">{{ row.status === 1 ? '停用账号' : '启用账号' }}</el-dropdown-item>
+                  <el-dropdown-item v-if="row.quota_limit != null" command="unlimited" divided>设为不限额</el-dropdown-item>
+                  <el-dropdown-item v-else command="limit">设为限额</el-dropdown-item>
+                  <el-dropdown-item command="delete" class="danger-item">删除子账号</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </div>
         </template>
       </el-table-column>
     </el-table>
@@ -286,6 +289,7 @@ function remove(m: Member) {
 .red { color: var(--tg-red); }
 .unlimited { color: var(--tg-muted); font-size: 12px; }
 .more-btn { margin-left: 8px; }
+.op-row { display: flex; align-items: center; flex-wrap: nowrap; }
 :deep(.danger-item) { color: var(--tg-red); }
 .grant-hint { margin: 0 0 14px; font-size: 13px; color: var(--tg-graphite); }
 .grant-item { width: 100%; margin-bottom: 6px; height: auto; }
