@@ -149,3 +149,6 @@ export async function downloadOrgStatementCSV(month: string, orgName: string) {
   a.click()
   URL.revokeObjectURL(a.href)
 }
+
+// 子账号额度下发流水（配额下发页审计段；org 隔离，只含本客户子账号）
+export const apiOrgQuotaGrants = (params?: any) => http.get<any, any>('/api/org/quota-grants', { params })

@@ -329,3 +329,83 @@ func TestStatementDetailExcludesRejectedAttempts(t *testing.T) {
 		t.Fatalf("消耗Σ应 15000（被拒尝试零成本不影响），得 %d", st.Consumption)
 	}
 }
+
+// 跨客户总览：与单客户三段式同口径（期初快照/期内流水/消耗Σ/链式勾稽），
+// 无消耗客户也列出，消耗降序 + 合计
+func TestBuildBillOverview(t *testing.T) {
+	f := newBillingDB(t)
+	sh := BillingLocation("Asia/Shanghai")
+	sepS, _, _ := PeriodBounds(sh, "2026-09")
+
+	// org1：有快照、有流水、有消耗
+	f.insertOrg(1, 2_000_000, 0)
+	augS, _, _ := PeriodBounds(sh, "2026-08")
+	if err := SnapshotBalances(f.db, "2026-07"); err != nil {
+		t.Fatal(err)
+	}
+	f.insertGrant(1, 500_000, augS+3600, "充值")
+	f.insertGrant(1, -100_000, augS+7200, "退款冲减")
+	f.insertGrant(1, 1_000, sepS+10, "9月的流水不入 8 月账") // 跨期排除
+	f.insertUsage(1, augS+100, 200_000, 120_000, 0, nil)
+	f.insertUsage(1, augS+200, 100_000, 0, 1, nil)
+	if err := f.db.Exec("UPDATE orgs SET quota_limit = 2400000, quota_used = 300000 WHERE id = 1").Error; err != nil {
+		f.t.Fatal(err)
+	}
+	if err := SnapshotBalances(f.db, "2026-08"); err != nil {
+		t.Fatal(err)
+	}
+
+	// org2：无消耗无快照（当月实时期末 + 期初缺失）
+	f.insertOrg(2, 800_000, 0)
+
+	ov, err := BuildBillOverview(f.db, sh, "2026-08")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ov.Rows) != 2 {
+		t.Fatalf("应 2 行（无消耗也列出），得 %d", len(ov.Rows))
+	}
+	// 消耗降序：org1 在前
+	if ov.Rows[0].OrgID != 1 || ov.Rows[1].OrgID != 2 {
+		t.Fatalf("排序应按消耗降序，得 %d %d", ov.Rows[0].OrgID, ov.Rows[1].OrgID)
+	}
+	r1 := ov.Rows[0]
+	if r1.OpeningLimit == nil || *r1.OpeningLimit != 2_000_000 || *r1.OpeningUsed != 0 {
+		t.Fatalf("org1 期初应 (2M, 0)，得 %v %v", r1.OpeningLimit, r1.OpeningUsed)
+	}
+	if r1.TotalGranted != 500_000 || r1.TotalRevoked != -100_000 {
+		t.Fatalf("org1 流水 Σ 错（跨期应排除）: %d %d", r1.TotalGranted, r1.TotalRevoked)
+	}
+	if r1.Consumption != 300_000 || r1.Requests != 2 || r1.NoUsageCount != 1 {
+		t.Fatalf("org1 消耗/请求数/no_usage 错: %d %d %d", r1.Consumption, r1.Requests, r1.NoUsageCount)
+	}
+	if r1.ClosingLimit != 2_400_000 || r1.ClosingUsed != 300_000 || r1.ClosingIsLive {
+		t.Fatalf("org1 期末应取 8 月快照，得 %d %d live=%v", r1.ClosingLimit, r1.ClosingUsed, r1.ClosingIsLive)
+	}
+	if r1.ChainOK == nil || !*r1.ChainOK {
+		t.Fatal("org1 勾稽链应成立：300k − 0 == 消耗 300k")
+	}
+	r2 := ov.Rows[1]
+	if !r2.OpeningMissing || r2.OpeningLimit != nil || r2.ChainOK != nil {
+		t.Fatalf("org2 无期初快照应 OpeningMissing 且 ChainOK=nil，得 %+v", r2)
+	}
+	if !r2.ClosingIsLive || r2.ClosingLimit != 800_000 {
+		t.Fatalf("org2 期末应为实时值，得 live=%v limit=%d", r2.ClosingIsLive, r2.ClosingLimit)
+	}
+	if ov.TotalConsumption != 300_000 || ov.TotalGranted != 500_000 ||
+		ov.TotalRevoked != -100_000 || ov.TotalRequests != 2 || ov.TotalNoUsage != 1 {
+		t.Fatalf("合计错: %+v", ov)
+	}
+
+	// 断链显式标 ✗（篡改期末快照）
+	if err := f.db.Exec("UPDATE period_balances SET quota_used = 299999 WHERE org_id = 1 AND period = '2026-08'").Error; err != nil {
+		f.t.Fatal(err)
+	}
+	ov2, _ := BuildBillOverview(f.db, sh, "2026-08")
+	if ov2.Rows[0].ChainOK == nil || *ov2.Rows[0].ChainOK {
+		t.Fatal("断链应显式标 ✗")
+	}
+	if ov2.Month != "2026-08" || ov2.Timezone != sh.String() {
+		t.Fatalf("月/时区应回显，得 %s %s", ov2.Month, ov2.Timezone)
+	}
+}

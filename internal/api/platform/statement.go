@@ -62,6 +62,52 @@ func (h *Handler) OrgStatementCSV(c *gin.Context) {
 	c.Data(http.StatusOK, "text/csv; charset=utf-8", b)
 }
 
+// BillingOverview GET /api/platform/billing/overview?month=YYYY-MM —— 跨客户账单查询总览
+// （每客户一行的勾稽轻量版 + 合计；单客户明细走 /orgs/:id/statement）
+func (h *Handler) BillingOverview(c *gin.Context) {
+	month := c.DefaultQuery("month", time.Now().In(service.BillingLoc()).Format("2006-01"))
+	if _, _, err := service.PeriodBounds(service.BillingLoc(), month); err != nil {
+		httpx.Fail(c, http.StatusBadRequest, "month 格式应为 YYYY-MM")
+		return
+	}
+	ov, err := service.BuildBillOverview(h.DB, service.BillingLoc(), month)
+	if err != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "账单汇总失败: "+err.Error())
+		return
+	}
+	httpx.OK(c, ov)
+}
+
+// ListQuotaGrants GET /api/platform/quota-grants?org_id=&page= —— 客户额度变更流水
+// （配额管理页审计段；创建初始额度/追加/冲减/设值差额全在这张表）
+func (h *Handler) ListQuotaGrants(c *gin.Context) {
+	page, size, offset := httpx.PageParams(c)
+	cond, args := "g.subject_type = 'org'", []any{}
+	if oid := httpx.QueryInt64(c, "org_id", 0); oid > 0 {
+		cond += " AND g.subject_id = ?"
+		args = append(args, oid)
+	}
+	var total int64
+	_ = h.DB.Raw(fmt.Sprintf(`SELECT COUNT(*) FROM quota_grants g WHERE %s`, cond), args...).Scan(&total).Error
+	type row struct {
+		model.QuotaGrant
+		OrgName  string `json:"org_name"`
+		Operator string `json:"operator"` // 操作人用户名（operator_id 为空 = 系统/初始化）
+	}
+	var rows []row
+	_ = h.DB.Raw(fmt.Sprintf(`
+		SELECT g.*, o.name AS org_name, COALESCE(op.username, '') AS operator
+		FROM quota_grants g
+		JOIN orgs o ON o.id = g.subject_id
+		LEFT JOIN users op ON op.id = g.operator_id
+		WHERE %s ORDER BY g.id DESC LIMIT ? OFFSET ?`, cond),
+		append(args, size, offset)...).Scan(&rows).Error
+	if rows == nil {
+		rows = []row{}
+	}
+	httpx.PageResult(c, rows, total, page, size)
+}
+
 // RunSnapshot POST /api/platform/billing/snapshots {period} —— 月末快照手动补跑（断链修复）
 func (h *Handler) RunSnapshot(c *gin.Context) {
 	var req struct {

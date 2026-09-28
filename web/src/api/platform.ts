@@ -217,3 +217,10 @@ export async function downloadOrgStatementCSVPlatform(id: number, month: string,
   a.click()
   URL.revokeObjectURL(a.href)
 }
+
+// 账单查询总览：每客户一行的勾稽轻量版 + 合计（单客户三段式明细走客户详情对账单）
+export const apiBillingOverview = (month: string) =>
+  http.get<any, any>('/api/platform/billing/overview', { params: { month } })
+
+// 客户额度变更流水（配额管理页审计段；创建初始额度/追加/冲减/设值差额全在这张表）
+export const apiListQuotaGrants = (params?: any) => http.get<any, any>('/api/platform/quota-grants', { params })

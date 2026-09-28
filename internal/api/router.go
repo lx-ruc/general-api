@@ -157,6 +157,8 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		plat.GET("/orgs/:id/statement", ph.OrgStatement)
 		plat.GET("/orgs/:id/statement/csv", ph.OrgStatementCSV)
 		plat.POST("/billing/snapshots", ph.RunSnapshot)
+		plat.GET("/billing/overview", ph.BillingOverview)
+		plat.GET("/quota-grants", ph.ListQuotaGrants)
 		plat.GET("/vendor-bills", ph.ListVendorBills)
 		plat.PUT("/vendor-bills", ph.UpsertVendorBill)
 		plat.DELETE("/vendor-bills/:id", ph.DeleteVendorBill)
@@ -232,6 +234,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		og.GET("/billing", oh.Billing)
 		og.GET("/billing/statement", oh.BillingStatement)
 		og.GET("/billing/statement/csv", oh.BillingStatementCSV)
+		og.GET("/quota-grants", oh.ListQuotaGrants)
 		og.GET("/alert-levels", oh.GetAlertLevels)
 		og.PUT("/alert-levels", oh.UpdateAlertLevels)
 	}

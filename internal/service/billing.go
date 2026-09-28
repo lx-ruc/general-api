@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"gorm.io/gorm"
@@ -323,6 +324,128 @@ func BuildBillStatement(db *gorm.DB, loc *time.Location, orgID int64, period str
 		st.TotalCostSum += r.Cost
 	}
 	return st, nil
+}
+
+// BillOverviewRow 账单查询总览行：单客户单月的勾稽轻量版（无明细段，明细走 BuildBillStatement）
+type BillOverviewRow struct {
+	OrgID    int64  `json:"org_id"`
+	OrgName  string `json:"org_name"`
+	Status   int    `json:"status"`
+	Requests int64  `json:"requests"`
+
+	OpeningLimit   *int64 `json:"opening_limit"`   // 期初限额（snapshot[M-1]；nil=无快照显示"—"）
+	OpeningUsed    *int64 `json:"opening_used"`
+	TotalGranted   int64  `json:"total_granted"` // 期内正 grant Σ
+	TotalRevoked   int64  `json:"total_revoked"` // 期内负 grant Σ（冲减，负数）
+	Consumption    int64  `json:"consumption"`   // 期内 Σcost
+	ClosingLimit   int64  `json:"closing_limit"` // 期末限额（snapshot[M]，当月无快照用实时值）
+	ClosingUsed    int64  `json:"closing_used"`
+	ClosingIsLive  bool   `json:"closing_is_live"`
+	ChainOK        *bool  `json:"chain_ok"` // 期末used−期初used==消耗？nil=期初缺失无法校验
+	NoUsageCount   int64  `json:"no_usage_count"`
+	OpeningMissing bool   `json:"opening_missing"`
+}
+
+// BillOverview 跨客户账单查询总览：全部客户 × 单月 + 合计
+type BillOverview struct {
+	Month     string            `json:"month"`
+	Timezone  string            `json:"timezone"`
+	Rows      []BillOverviewRow `json:"rows"`
+	TotalRequests    int64 `json:"total_requests"`
+	TotalConsumption int64 `json:"total_consumption"`
+	TotalGranted     int64 `json:"total_granted"`
+	TotalRevoked     int64 `json:"total_revoked"`
+	TotalNoUsage     int64 `json:"total_no_usage"`
+}
+
+// BuildBillOverview 跨客户聚合某月账单（平台「账单查询」页）。每个客户一行（无消耗也列出，
+// 额度与状态本来就要看），勾稽口径与 BuildBillStatement 完全一致；固定五次分组查询、
+// 不进明细段——单客户三段式明细与 CSV 走 /orgs/:id/statement。
+func BuildBillOverview(db *gorm.DB, loc *time.Location, period string) (*BillOverview, error) {
+	s, e, err := PeriodBounds(loc, period)
+	if err != nil {
+		return nil, err
+	}
+	var orgs []model.Org
+	if err := db.Select("id, name, status, quota_limit, quota_used").Order("id").Find(&orgs).Error; err != nil {
+		return nil, err
+	}
+	prev, _ := PrevPeriod(period)
+	snap := func(p string) map[int64]model.PeriodBalance {
+		var rows []model.PeriodBalance
+		_ = db.Where("period = ?", p).Find(&rows).Error
+		m := make(map[int64]model.PeriodBalance, len(rows))
+		for _, r := range rows {
+			m[r.OrgID] = r
+		}
+		return m
+	}
+	openM, closeM := snap(prev), snap(period)
+
+	type grantAgg struct {
+		SubjectID        int64
+		Granted, Revoked int64
+	}
+	var gs []grantAgg
+	_ = db.Raw(`SELECT subject_id,
+			COALESCE(SUM(CASE WHEN amount >= 0 THEN amount ELSE 0 END),0) AS granted,
+			COALESCE(SUM(CASE WHEN amount < 0 THEN amount ELSE 0 END),0) AS revoked
+		FROM quota_grants WHERE subject_type = 'org' AND created_at >= ? AND created_at < ?
+		GROUP BY subject_id`, s, e).Scan(&gs).Error
+	gm := make(map[int64]grantAgg, len(gs))
+	for _, g := range gs {
+		gm[g.SubjectID] = g
+	}
+
+	type useAgg struct {
+		OrgID                      int64
+		Consumption, NoUsage, Reqs int64
+	}
+	var us []useAgg
+	_ = db.Raw(`SELECT org_id, COALESCE(SUM(cost),0) AS consumption,
+			COALESCE(SUM(no_usage),0) AS no_usage, COUNT(*) AS reqs
+		FROM usage_logs WHERE created_at >= ? AND created_at < ?
+		GROUP BY org_id`, s, e).Scan(&us).Error
+	um := make(map[int64]useAgg, len(us))
+	for _, u := range us {
+		um[u.OrgID] = u
+	}
+
+	ov := &BillOverview{Month: period, Timezone: loc.String(), Rows: []BillOverviewRow{}}
+	for _, o := range orgs {
+		r := BillOverviewRow{OrgID: o.ID, OrgName: o.Name, Status: o.Status,
+			ClosingLimit: o.QuotaLimit, ClosingUsed: o.QuotaUsed, ClosingIsLive: true}
+		if pb, ok := openM[o.ID]; ok {
+			r.OpeningLimit, r.OpeningUsed = &pb.QuotaLimit, &pb.QuotaUsed
+		} else {
+			r.OpeningMissing = true
+		}
+		if pb, ok := closeM[o.ID]; ok {
+			r.ClosingLimit, r.ClosingUsed, r.ClosingIsLive = pb.QuotaLimit, pb.QuotaUsed, false
+		}
+		g := gm[o.ID]
+		r.TotalGranted, r.TotalRevoked = g.Granted, g.Revoked
+		u := um[o.ID]
+		r.Consumption, r.NoUsageCount, r.Requests = u.Consumption, u.NoUsage, u.Reqs
+		if r.OpeningLimit != nil {
+			ok := r.ClosingUsed-*r.OpeningUsed == r.Consumption
+			r.ChainOK = &ok
+		}
+		ov.Rows = append(ov.Rows, r)
+		ov.TotalRequests += r.Requests
+		ov.TotalConsumption += r.Consumption
+		ov.TotalGranted += r.TotalGranted
+		ov.TotalRevoked += r.TotalRevoked
+		ov.TotalNoUsage += r.NoUsageCount
+	}
+	// 消耗降序（大客户在前），无消耗置底；同额按 id 稳定排序
+	sort.SliceStable(ov.Rows, func(i, j int) bool {
+		if ov.Rows[i].Consumption != ov.Rows[j].Consumption {
+			return ov.Rows[i].Consumption > ov.Rows[j].Consumption
+		}
+		return ov.Rows[i].OrgID < ov.Rows[j].OrgID
+	})
+	return ov, nil
 }
 
 // WriteStatementCSV 把账单序列化为 CSV（UTF-8 BOM；org 视角无厂商列）。

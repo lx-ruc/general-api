@@ -54,6 +54,8 @@ func newPlatformEnv(t *testing.T) (*gin.Engine, *gorm.DB, string) {
 	h := NewHandler(db, cipher, &http.Client{}, nil, nil)
 	pg.POST("/orgs", h.CreateOrg)
 	pg.PUT("/orgs/:id/quota", h.SetOrgQuota)
+	pg.GET("/quota-grants", h.ListQuotaGrants)
+	pg.GET("/billing/overview", h.BillingOverview)
 	return engine, db, token
 }
 

@@ -16,6 +16,8 @@ const routes: RouteRecordRaw[] = [
       { path: 'platform/orgs/:id', component: () => import('../views/platform/OrgDetailView.vue'), meta: { roles: ['platform_admin'] } },
       { path: 'platform/channels', component: () => import('../views/platform/ChannelListView.vue'), meta: { roles: ['platform_admin'] } },
       { path: 'platform/models', component: () => import('../views/platform/ModelListView.vue'), meta: { roles: ['platform_admin'] } },
+      { path: 'platform/quotas', component: () => import('../views/platform/QuotaManageView.vue'), meta: { roles: ['platform_admin'] } },
+      { path: 'platform/bills', component: () => import('../views/platform/BillQueryView.vue'), meta: { roles: ['platform_admin'] } },
       { path: 'platform/usage', component: () => import('../views/platform/UsageView.vue'), meta: { roles: ['platform_admin'] } },
       { path: 'platform/audit', component: () => import('../views/platform/AuditView.vue'), meta: { roles: ['platform_admin'] } },
       { path: 'platform/recharges', component: () => import('../views/platform/RechargeAdminView.vue'), meta: { roles: ['platform_admin'] } },
@@ -23,6 +25,7 @@ const routes: RouteRecordRaw[] = [
       // 客户管理员
       { path: 'org/dashboard', component: () => import('../views/org/DashboardView.vue'), meta: { roles: ['org_admin'] } },
       { path: 'org/members', component: () => import('../views/org/MemberListView.vue'), meta: { roles: ['org_admin'] } },
+      { path: 'org/quotas', component: () => import('../views/org/QuotaGrantView.vue'), meta: { roles: ['org_admin'] } },
       { path: 'org/requests', component: () => import('../views/org/RequestListView.vue'), meta: { roles: ['org_admin'] } },
       { path: 'org/usage', component: () => import('../views/org/UsageView.vue'), meta: { roles: ['org_admin'] } },
       { path: 'org/recharges', component: () => import('../views/org/RechargeView.vue'), meta: { roles: ['org_admin'] } },
