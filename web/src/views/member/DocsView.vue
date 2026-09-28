@@ -250,7 +250,7 @@ async function copy(text: string) {
       <li><b>429 monthly_limit_exceeded</b>：当月消费已达单月上限，次月自动恢复。</li>
       <li><b>429 rate_limit_error</b>：请求过于频繁（每密钥默认 60 次/分钟）。</li>
       <li><b>流式响应</b>：本站会自动向上游请求 usage 统计用于计费，无需客户端做任何改动。</li>
-      <li><b>计费口径</b>：按模型的输入/输出单价（元/百万 tokens）计费；上游提示缓存命中的输入部分按更低的「缓存命中单价」计（如有配置）。</li>
+      <li><b>计费口径</b>：按模型的输入/输出单价（元/千 tokens）计费；上游提示缓存命中的输入部分按更低的「缓存命中单价」计（如有配置）。</li>
       <li><b>Agent 工具调用</b>：对话端点完整透传 messages / tools / tool_choice 等字段，支持 Function Calling 的模型即可正常使用；<code>/v1/messages</code>（Anthropic 协议）同样完整支持 tools / tool_result 工具往返。</li>
     </ul>
   </el-card>

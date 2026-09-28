@@ -8,7 +8,7 @@ import {
   apiUpdateChannelKeyStatus, apiAddChannelKeys, apiDeleteChannelKey, apiClearChannelKeyCooldown,
   type Channel, type ChannelKeyRow, type MModel,
 } from '../../api/platform'
-import { fmtTime, fmtPrice, yuanToPoints, pointsToYuan } from '../../utils/format'
+import { fmtTime, fmtPrice1K, yuan1KToPoints, pointsToYuan1K } from '../../utils/format'
 import { parseCurl } from '../../utils/curl'
 
 const list = ref<Channel[]>([])
@@ -34,7 +34,7 @@ onMounted(async () => {
   await loadModels()
 })
 
-// 一站式定价（元/M，入库换算点；1 元 = 1,000,000 点）
+// 一站式定价（元/1K，入库换算点；¥1/1K = ¥1000/M，1 元 = 1,000,000 点）
 const PPY = 1_000_000
 
 // 模型能力行：价格留空（null）= 不登记/不改动；填了则保存渠道时自动登记或更新定价
@@ -51,11 +51,11 @@ function priced(name: string): boolean {
   return !!m && (m.input_price > 0 || m.output_price > 0)
 }
 
-// 渠道列表模型 chip 上的单价：¥输入/¥输出（元/M，去尾零）；未定价的标黄提醒
+// 渠道列表模型 chip 上的单价：¥输入/¥输出（元/1K，四位小数去尾零）；未定价的标黄提醒
 function chipPrice(name: string): string {
   const m = modelMap.value[name]
   if (!m) return ''
-  const f = (p: number) => `¥${(p / PPY).toFixed(2).replace(/\.?0+$/, '')}`
+  const f = (p: number) => `¥${(p / PPY / 1000).toFixed(4).replace(/\.?0+$/, '')}`
   return `${f(m.input_price)}/${f(m.output_price)}`
 }
 
@@ -63,8 +63,8 @@ function chipTitle(name: string): string {
   const m = modelMap.value[name]
   if (!m) return `${name}：未登记定价（无法授权调用）`
   if (m.input_price === 0 && m.output_price === 0) return `${name}：未定价（0 元计费，可在操作列「定价」里补）`
-  const hit = m.input_cache_hit_price > 0 ? ` / 命中 ${fmtPrice(m.input_cache_hit_price, PPY)}` : ''
-  return `${name}：输入 ${fmtPrice(m.input_price, PPY)}${hit} / 输出 ${fmtPrice(m.output_price, PPY)} 元/M`
+  const hit = m.input_cache_hit_price > 0 ? ` / 命中 ${fmtPrice1K(m.input_cache_hit_price, PPY)}` : ''
+  return `${name}：输入 ${fmtPrice1K(m.input_price, PPY)}${hit} / 输出 ${fmtPrice1K(m.output_price, PPY)} 元/1K`
 }
 
 // 新建 / 编辑
@@ -232,9 +232,9 @@ async function submit() {
       .map((m) => ({
         model_name: m.model_name,
         upstream_model_name: m.upstream_model_name || null,
-        // 元/M → 点/M；null=不登记/不改动（0 是合法的免费价，照发）
-        input_price: m.input_price == null ? null : yuanToPoints(m.input_price, PPY),
-        output_price: m.output_price == null ? null : yuanToPoints(m.output_price, PPY),
+        // 元/1K → 点/M；null=不登记/不改动（0 是合法的免费价，照发）
+        input_price: m.input_price == null ? null : yuan1KToPoints(m.input_price, PPY),
+        output_price: m.output_price == null ? null : yuan1KToPoints(m.output_price, PPY),
       })),
   }
   if (isEdit.value) {
@@ -419,7 +419,7 @@ async function removeKey(row: ChannelKeyRow) {
   }
 }
 
-// 渠道级定价：从列表「定价」进来，看该渠道的全部模型并就地填价（元/M，入库换算点）。
+// 渠道级定价：从列表「定价」进来，看该渠道的全部模型并就地填价（元/1K，入库换算点）。
 // 未登记的模型填价即建 models 行；已登记的改价即更新，留空字段保持不变
 const priceVisible = ref(false)
 const priceChannel = ref<Channel | null>(null)
@@ -429,9 +429,9 @@ const priceSaving = ref(false)
 type PriceRow = {
   name: string
   registered: boolean
-  input_price: number | null   // 元/M；null=保持不变（未登记模型=不建）
+  input_price: number | null   // 元/1K；null=保持不变（未登记模型=不建）
   output_price: number | null
-  cache_price: number | null   // 缓存命中输入单价（元/M）；0=同输入价
+  cache_price: number | null   // 缓存命中输入单价（元/1K）；0=同输入价
 }
 
 function openPricing(ch: Channel) {
@@ -441,9 +441,9 @@ function openPricing(ch: Channel) {
     return {
       name: ab.model_name,
       registered: !!m,
-      input_price: m ? pointsToYuan(m.input_price, PPY) : null,
-      output_price: m ? pointsToYuan(m.output_price, PPY) : null,
-      cache_price: m ? pointsToYuan(m.input_cache_hit_price, PPY) : 0,
+      input_price: m ? pointsToYuan1K(m.input_price, PPY) : null,
+      output_price: m ? pointsToYuan1K(m.output_price, PPY) : null,
+      cache_price: m ? pointsToYuan1K(m.input_cache_hit_price, PPY) : 0,
     }
   })
   priceVisible.value = true
@@ -458,9 +458,9 @@ async function savePricing() {
       const m = modelMap.value[r.name]
       if (m) {
         // 已登记：只提交变化的字段，其余沿用现值（UpdateModel 未传字段不动）
-        const newIn = r.input_price == null ? m.input_price : yuanToPoints(r.input_price, PPY)
-        const newOut = r.output_price == null ? m.output_price : yuanToPoints(r.output_price, PPY)
-        const newHit = r.cache_price == null ? m.input_cache_hit_price : yuanToPoints(r.cache_price, PPY)
+        const newIn = r.input_price == null ? m.input_price : yuan1KToPoints(r.input_price, PPY)
+        const newOut = r.output_price == null ? m.output_price : yuan1KToPoints(r.output_price, PPY)
+        const newHit = r.cache_price == null ? m.input_cache_hit_price : yuan1KToPoints(r.cache_price, PPY)
         if (newIn === m.input_price && newOut === m.output_price && newHit === m.input_cache_hit_price) continue
         await apiUpdateModel(m.id, {
           display_name: m.display_name, vendor: m.vendor, remark: m.remark,
@@ -472,9 +472,9 @@ async function savePricing() {
       } else if (r.input_price != null || r.output_price != null) {
         await apiCreateModel({
           name: r.name, display_name: '', vendor: priceChannel.value.vendor,
-          input_price: yuanToPoints(r.input_price ?? 0, PPY),
-          output_price: yuanToPoints(r.output_price ?? 0, PPY),
-          input_cache_hit_price: yuanToPoints(r.cache_price ?? 0, PPY),
+          input_price: yuan1KToPoints(r.input_price ?? 0, PPY),
+          output_price: yuan1KToPoints(r.output_price ?? 0, PPY),
+          input_cache_hit_price: yuan1KToPoints(r.cache_price ?? 0, PPY),
           cost_input_price: 0, cost_output_price: 0, status: 1, remark: '',
         })
         touched++
@@ -506,7 +506,7 @@ async function savePricing() {
       empty-text="还没有渠道。新建渠道（base_url + 上游密钥 + 模型列表）即可开始转发，预置的 DeepSeek/智谱/通义填入密钥后启用。">
       <el-table-column prop="name" label="渠道" width="140" />
       <el-table-column prop="vendor" label="厂商" width="90" />
-      <el-table-column label="模型（含单价 元/M）" min-width="200">
+      <el-table-column label="模型（含单价 元/1K）" min-width="200">
         <template #default="{ row }">
           <code v-for="m in row.models" :key="m.model_name" class="model-chip"
             :class="{ 'chip-unpriced': !priced(m.model_name) }" :title="chipTitle(m.model_name)">
@@ -637,17 +637,17 @@ async function savePricing() {
           </el-tag>
           <el-button type="danger" :icon="'Delete'" circle size="small" style="margin-left: 8px" @click="removeModelRow(i)" />
         </div>
-        <!-- 一站式定价：已定价的模型只读显示现价；未定价的可当场填价，保存渠道时自动登记（元/M） -->
+        <!-- 一站式定价：已定价的模型只读显示现价；未定价的可当场填价，保存渠道时自动登记（元/1K） -->
         <div v-if="m.model_name && priced(m.model_name)" class="price-row priced">
-          已定价 {{ fmtPrice(modelMap[m.model_name.trim()].input_price, PPY) }} /
-          {{ fmtPrice(modelMap[m.model_name.trim()].output_price, PPY) }} 元/M（如需调整请到「模型定价」）
+          已定价 {{ fmtPrice1K(modelMap[m.model_name.trim()].input_price, PPY) }} /
+          {{ fmtPrice1K(modelMap[m.model_name.trim()].output_price, PPY) }} 元/1K（如需调整请到「模型定价」）
         </div>
         <div v-else-if="m.model_name" class="price-row">
-          <span class="price-label">单价（元/M）</span>
-          <el-input-number v-model="m.input_price" :min="0" :step="1" :precision="2" size="small"
+          <span class="price-label">单价（元/1K）</span>
+          <el-input-number v-model="m.input_price" :min="0" :step="0.001" :precision="6" size="small"
             style="width: 116px" placeholder="输入" controls-position="right" />
           <span class="dim">输入 ·</span>
-          <el-input-number v-model="m.output_price" :min="0" :step="1" :precision="2" size="small"
+          <el-input-number v-model="m.output_price" :min="0" :step="0.001" :precision="6" size="small"
             style="width: 116px" placeholder="输出" controls-position="right" />
           <span class="dim">输出 · 留空=暂不登记（无法授权调用）</span>
         </div>
@@ -752,26 +752,26 @@ async function savePricing() {
       <div class="price-head">
         <code class="model-chip">{{ r.name }}</code>
         <span v-if="r.registered && modelMap[r.name] && (modelMap[r.name].input_price > 0 || modelMap[r.name].output_price > 0)"
-          class="dim">现价 {{ fmtPrice(modelMap[r.name].input_price, PPY) }}
-          <template v-if="modelMap[r.name].input_cache_hit_price > 0">（命中 {{ fmtPrice(modelMap[r.name].input_cache_hit_price, PPY) }}）</template>
-          / {{ fmtPrice(modelMap[r.name].output_price, PPY) }} 元/M</span>
+          class="dim">现价 {{ fmtPrice1K(modelMap[r.name].input_price, PPY) }}
+          <template v-if="modelMap[r.name].input_cache_hit_price > 0">（命中 {{ fmtPrice1K(modelMap[r.name].input_cache_hit_price, PPY) }}）</template>
+          / {{ fmtPrice1K(modelMap[r.name].output_price, PPY) }} 元/1K</span>
         <el-tag v-else type="warning" effect="plain" size="small">未定价</el-tag>
       </div>
       <div class="price-edit-row">
-        <span class="price-label">单价（元/M）</span>
-        <el-input-number v-model="r.input_price" :min="0" :step="1" :precision="2" size="small"
+        <span class="price-label">单价（元/1K）</span>
+        <el-input-number v-model="r.input_price" :min="0" :step="0.001" :precision="6" size="small"
           style="width: 118px" placeholder="输入" controls-position="right" />
         <span class="dim">输入</span>
-        <el-input-number v-model="r.cache_price" :min="0" :step="0.5" :precision="2" size="small"
+        <el-input-number v-model="r.cache_price" :min="0" :step="0.001" :precision="6" size="small"
           style="width: 118px" placeholder="缓存命中" controls-position="right" />
         <span class="dim">命中</span>
-        <el-input-number v-model="r.output_price" :min="0" :step="1" :precision="2" size="small"
+        <el-input-number v-model="r.output_price" :min="0" :step="0.001" :precision="6" size="small"
           style="width: 118px" placeholder="输出" controls-position="right" />
         <span class="dim">输出</span>
       </div>
     </div>
     <div class="tip" style="margin-top: 8px">
-      按元/M token 填写，保存时自动换算成 token 点数入库；缓存命中 = 上游提示缓存命中的输入 tokens 单价（0 = 同输入价）；
+      按元/1K token 填写，保存时自动换算成 token 点数入库；缓存命中 = 上游提示缓存命中的输入 tokens 单价（0 = 同输入价）；
       已定价模型留空 = 保持不变，未定价模型留空 = 不登记（无法授权调用，0 元=免费）。
     </div>
     <template #footer>

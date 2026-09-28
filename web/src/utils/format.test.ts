@@ -3,10 +3,9 @@ import dayjs from 'dayjs'
 import {
   fmtQuota,
   fmtTokenCompact,
-  fmtPrice,
   fmtPrice1K,
-  yuanToPoints,
-  pointsToYuan,
+  yuan1KToPoints,
+  pointsToYuan1K,
   fmtTime,
   fmtDate,
   fmtNum,
@@ -79,21 +78,16 @@ describe('fmtTokenCompact：token 紧凑单位 k→M→G→T', () => {
   })
 })
 
-describe('fmtPrice / fmtPrice1K：单价折算', () => {
-  it('默认 1 元 = 1,000,000 点，保留两位小数', () => {
-    expect(fmtPrice(2_000_000)).toBe('¥2.00')
-    expect(fmtPrice(500_000)).toBe('¥0.50')
-    expect(fmtPrice(250_000)).toBe('¥0.25')
-    expect(fmtPrice(0)).toBe('¥0.00')
+describe('fmtPrice1K：单价折算（元/1K token）', () => {
+  it('默认 1 元 = 1,000,000 点，千 token 口径保留四位小数', () => {
+    expect(fmtPrice1K(2_000_000)).toBe('¥0.0020')
+    expect(fmtPrice1K(20_000_000)).toBe('¥0.0200')
+    expect(fmtPrice1K(500_000)).toBe('¥0.0005')
+    expect(fmtPrice1K(0)).toBe('¥0.0000')
   })
 
   it('ppy 可调（points_per_yuan 配置）', () => {
-    expect(fmtPrice(1_000_000, 500_000)).toBe('¥2.00')
-  })
-
-  it('千 token 口径保留四位小数', () => {
-    expect(fmtPrice1K(2_000_000)).toBe('¥0.0020')
-    expect(fmtPrice1K(20_000_000)).toBe('¥0.0200')
+    expect(fmtPrice1K(1_000_000, 500_000)).toBe('¥0.0020')
   })
 })
 
@@ -127,23 +121,25 @@ describe('fmtTime / fmtDate / fmtNum', () => {
   })
 })
 
-describe('yuanToPoints / pointsToYuan：定价表单元↔点换算', () => {
-  it('常见元价换算为整点', () => {
-    expect(yuanToPoints(3)).toBe(3_000_000)
-    expect(yuanToPoints(0.5)).toBe(500_000)
-    expect(yuanToPoints(0)).toBe(0)
+describe('yuan1KToPoints / pointsToYuan1K：定价表单（元/1K token）↔点换算', () => {
+  it('常见 1K 元价换算为整点（¥2/M = ¥0.002/1K）', () => {
+    expect(yuan1KToPoints(0.002)).toBe(2_000_000)
+    expect(yuan1KToPoints(0.02)).toBe(20_000_000)
+    expect(yuan1KToPoints(0.0005)).toBe(500_000)
+    expect(yuan1KToPoints(0)).toBe(0)
   })
 
-  it('小数元价四舍五入取整点', () => {
-    expect(yuanToPoints(0.07)).toBe(70_000)
-    expect(yuanToPoints(0.0000004)).toBe(0) // 不足 1 点归零
+  it('小数 1K 元价四舍五入取整点', () => {
+    expect(yuan1KToPoints(0.00007)).toBe(70_000) // ¥0.07/M
+    expect(yuan1KToPoints(0.0000000004)).toBe(0) // 不足 1 点归零
   })
 
-  it('点→元回显与元→点往返一致', () => {
-    expect(pointsToYuan(2_000_000)).toBe(2)
-    expect(pointsToYuan(500_000)).toBe(0.5)
-    for (const yuan of [3, 0.5, 0.07, 15]) {
-      expect(pointsToYuan(yuanToPoints(yuan))).toBeCloseTo(yuan, 10)
+  it('点→元/1K 回显与元/1K→点往返一致', () => {
+    expect(pointsToYuan1K(2_000_000)).toBe(0.002)
+    expect(pointsToYuan1K(20_000_000)).toBe(0.02)
+    expect(pointsToYuan1K(500_000)).toBe(0.0005)
+    for (const yuan of [0.002, 0.02, 0.00007, 0.015]) {
+      expect(pointsToYuan1K(yuan1KToPoints(yuan))).toBeCloseTo(yuan, 10)
     }
   })
 })

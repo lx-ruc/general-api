@@ -41,24 +41,19 @@ export function fmtTokenCompact(n: number | null | undefined): string {
   return `${stripTail(s)}${units[exp - 1]}`
 }
 
-// 单价 → 元/M token
-export function fmtPrice(price: number, ppy = 1_000_000): string {
-  return `¥${(price / ppy).toFixed(2)}`
-}
-
-// 单价 → 元/千token（需求规格 4.5 口径）
+// 单价 → 元/1K token（需求规格 4.5 口径；存储仍为点/百万token，展示时折算）
 export function fmtPrice1K(price: number, ppy = 1_000_000): string {
   return `¥${(price / ppy / 1000).toFixed(4)}`
 }
 
-// 元/M → 存储点数（1 元 = ppy 点）；定价表单按元输入，入库前换算，四舍五入取整点
-export function yuanToPoints(yuan: number, ppy = 1_000_000): number {
-  return Math.round(yuan * ppy)
+// 元/1K → 存储点数（¥1/1K = ¥1000/M = 1000×ppy 点）；定价表单按元/1K 输入，入库前换算，四舍五入取整点
+export function yuan1KToPoints(yuan1k: number, ppy = 1_000_000): number {
+  return Math.round(yuan1k * 1000 * ppy)
 }
 
-// 存储点数 → 元/M（表单回显用）
-export function pointsToYuan(points: number, ppy = 1_000_000): number {
-  return points / ppy
+// 存储点数 → 元/1K（表单回显用）
+export function pointsToYuan1K(points: number, ppy = 1_000_000): number {
+  return points / ppy / 1000
 }
 
 export function fmtTime(unix: number | null | undefined): string {

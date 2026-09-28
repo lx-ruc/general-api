@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiListModels, apiUpdateModel, apiDeleteModel, type MModel } from '../../api/platform'
-import { fmtPrice, yuanToPoints, pointsToYuan } from '../../utils/format'
+import { fmtPrice1K, yuan1KToPoints, pointsToYuan1K } from '../../utils/format'
 
 const PPY = 1_000_000
 const list = ref<MModel[]>([])
@@ -41,9 +41,9 @@ const form = reactive({
 function openEdit(m: MModel) {
   Object.assign(form, {
     id: m.id, name: m.name, display_name: m.display_name, vendor: m.vendor,
-    // 表单按元/M 编辑，入库前换算回点（1 元 = 1,000,000 点）
-    input_price: pointsToYuan(m.input_price), output_price: pointsToYuan(m.output_price),
-    input_cache_hit_price: pointsToYuan(m.input_cache_hit_price),
+    // 表单按元/1K 编辑，入库前换算回点（¥1/1K = ¥1000/M；1 元 = 1,000,000 点）
+    input_price: pointsToYuan1K(m.input_price), output_price: pointsToYuan1K(m.output_price),
+    input_cache_hit_price: pointsToYuan1K(m.input_cache_hit_price),
     cost_input_price: m.cost_input_price, cost_output_price: m.cost_output_price,
     status: m.status, remark: m.remark,
   })
@@ -53,8 +53,8 @@ function openEdit(m: MModel) {
 async function submit() {
   await apiUpdateModel(form.id, {
     display_name: form.display_name, vendor: form.vendor,
-    input_price: yuanToPoints(form.input_price), output_price: yuanToPoints(form.output_price),
-    input_cache_hit_price: yuanToPoints(form.input_cache_hit_price),
+    input_price: yuan1KToPoints(form.input_price), output_price: yuan1KToPoints(form.output_price),
+    input_cache_hit_price: yuan1KToPoints(form.input_cache_hit_price),
     cost_input_price: form.cost_input_price, cost_output_price: form.cost_output_price,
     status: form.status, remark: form.remark,
   })
@@ -80,19 +80,19 @@ const vFocus = { mounted: (el: HTMLElement) => { const inp = el.querySelector('i
 
 function startEdit(row: MModel, field: 'input' | 'output') {
   editing.value = { id: row.id, field }
-  editVal.value = pointsToYuan(field === 'input' ? row.input_price : row.output_price)
+  editVal.value = pointsToYuan1K(field === 'input' ? row.input_price : row.output_price)
 }
 
 async function savePrice(row: MModel) {
   const cur = editing.value
   if (!cur) return // change 与 blur 双触发，只处理第一次
   editing.value = null
-  const orig = pointsToYuan(cur.field === 'input' ? row.input_price : row.output_price)
+  const orig = pointsToYuan1K(cur.field === 'input' ? row.input_price : row.output_price)
   if (editVal.value === orig) return
   await apiUpdateModel(row.id, {
     display_name: row.display_name, vendor: row.vendor, remark: row.remark,
-    input_price: cur.field === 'input' ? yuanToPoints(editVal.value) : row.input_price,
-    output_price: cur.field === 'output' ? yuanToPoints(editVal.value) : row.output_price,
+    input_price: cur.field === 'input' ? yuan1KToPoints(editVal.value) : row.input_price,
+    output_price: cur.field === 'output' ? yuan1KToPoints(editVal.value) : row.output_price,
     cost_input_price: row.cost_input_price, cost_output_price: row.cost_output_price,
     status: row.status,
   })
@@ -105,7 +105,7 @@ async function savePrice(row: MModel) {
   <el-card shadow="never">
     <template #header>
       <div class="card-header">
-        <span>模型定价（单价按「元 / M token」填写与展示，入库自动换算成 token 点数，1 元 = 1,000,000 点；点击表中单价数字可直接修改）</span>
+        <span>模型定价（单价按「元 / 1K token」填写与展示，入库自动换算成 token 点数，1 元 = 1,000,000 点；点击表中单价数字可直接修改）</span>
         <div class="header-actions">
           <el-checkbox v-model="onlyLive">只看已接通（{{ liveCount }}/{{ list.length }}）</el-checkbox>
         </div>
@@ -129,14 +129,14 @@ async function savePrice(row: MModel) {
       <el-table-column label="输入单价" width="170" align="right">
         <template #default="{ row }">
           <el-input-number v-if="editing && editing.id === row.id && editing.field === 'input'"
-            v-model="editVal" :min="0" :step="1" :precision="2" size="small" style="width: 106px"
+            v-model="editVal" :min="0" :step="0.001" :precision="6" size="small" style="width: 116px"
             v-focus @change="savePrice(row)" @blur="savePrice(row)" />
-          <span v-if="editing && editing.id === row.id && editing.field === 'input'" class="dim">元/M</span>
+          <span v-if="editing && editing.id === row.id && editing.field === 'input'" class="dim">元/1K</span>
           <template v-else-if="row.input_price > 0">
-            <span class="price-edit num green" title="点击修改" @click="startEdit(row, 'input')">{{ fmtPrice(row.input_price, PPY) }}</span>
-            <span class="dim">/M tokens</span>
+            <span class="price-edit num green" title="点击修改" @click="startEdit(row, 'input')">{{ fmtPrice1K(row.input_price, PPY) }}</span>
+            <span class="dim">/1K tokens</span>
             <span v-if="row.input_cache_hit_price > 0" class="cache-sub" title="提示缓存命中的输入单价">
-              命中 {{ fmtPrice(row.input_cache_hit_price, PPY) }}
+              命中 {{ fmtPrice1K(row.input_cache_hit_price, PPY) }}
             </span>
           </template>
           <span v-else class="price-edit zero" title="点击定价" @click="startEdit(row, 'input')">未定价</span>
@@ -145,12 +145,12 @@ async function savePrice(row: MModel) {
       <el-table-column label="输出单价" width="170" align="right">
         <template #default="{ row }">
           <el-input-number v-if="editing && editing.id === row.id && editing.field === 'output'"
-            v-model="editVal" :min="0" :step="1" :precision="2" size="small" style="width: 106px"
+            v-model="editVal" :min="0" :step="0.001" :precision="6" size="small" style="width: 116px"
             v-focus @change="savePrice(row)" @blur="savePrice(row)" />
-          <span v-if="editing && editing.id === row.id && editing.field === 'output'" class="dim">元/M</span>
+          <span v-if="editing && editing.id === row.id && editing.field === 'output'" class="dim">元/1K</span>
           <template v-else-if="row.output_price > 0">
-            <span class="price-edit num green" title="点击修改" @click="startEdit(row, 'output')">{{ fmtPrice(row.output_price, PPY) }}</span>
-            <span class="dim">/M tokens</span>
+            <span class="price-edit num green" title="点击修改" @click="startEdit(row, 'output')">{{ fmtPrice1K(row.output_price, PPY) }}</span>
+            <span class="dim">/1K tokens</span>
           </template>
           <span v-else class="price-edit zero" title="点击定价" @click="startEdit(row, 'output')">未定价</span>
         </template>
@@ -179,17 +179,17 @@ async function savePrice(row: MModel) {
       <el-form-item label="模型名"><el-input v-model="form.name" disabled /></el-form-item>
       <el-form-item label="显示名"><el-input v-model="form.display_name" /></el-form-item>
       <el-form-item label="厂商"><el-input v-model="form.vendor" /></el-form-item>
-      <el-form-item label="输入单价（元/M）">
-        <el-input-number v-model="form.input_price" :min="0" :step="1" :precision="4" />
-        <span class="tip">= {{ yuanToPoints(form.input_price, PPY).toLocaleString('zh-CN') }} 点/M</span>
+      <el-form-item label="输入单价（元/1K）">
+        <el-input-number v-model="form.input_price" :min="0" :step="0.001" :precision="6" />
+        <span class="tip">= {{ yuan1KToPoints(form.input_price, PPY).toLocaleString('zh-CN') }} 点/M token</span>
       </el-form-item>
-      <el-form-item label="缓存命中单价（元/M）">
-        <el-input-number v-model="form.input_cache_hit_price" :min="0" :step="0.5" :precision="4" />
+      <el-form-item label="缓存命中单价（元/1K）">
+        <el-input-number v-model="form.input_cache_hit_price" :min="0" :step="0.001" :precision="6" />
         <span class="tip">提示缓存命中的输入 tokens 按此价计；0 = 同输入单价</span>
       </el-form-item>
-      <el-form-item label="输出单价（元/M）">
-        <el-input-number v-model="form.output_price" :min="0" :step="1" :precision="4" />
-        <span class="tip">= {{ yuanToPoints(form.output_price, PPY).toLocaleString('zh-CN') }} 点/M</span>
+      <el-form-item label="输出单价（元/1K）">
+        <el-input-number v-model="form.output_price" :min="0" :step="0.001" :precision="6" />
+        <span class="tip">= {{ yuan1KToPoints(form.output_price, PPY).toLocaleString('zh-CN') }} 点/M token</span>
       </el-form-item>
       <el-form-item label="状态">
         <el-switch v-model="form.status" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="停用" />
