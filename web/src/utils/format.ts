@@ -56,6 +56,14 @@ export function pointsToYuan1K(points: number, ppy = 1_000_000): number {
   return points / ppy / 1000
 }
 
+// 消耗点数 → 账单费用（元）：1 元 = ppy 点（默认 100 万点）。
+// ≥1 元保留两位小数；不足 1 元保留至多 4 位（避免小额被抹成 ¥0.00）
+export function fmtYuan(points: number, ppy = 1_000_000): string {
+  const yuan = points / ppy
+  if (Math.abs(yuan) >= 1) return `¥${yuan.toFixed(2)}`
+  return `¥${yuan.toFixed(4).replace(/\.?0+$/, '')}`
+}
+
 export function fmtTime(unix: number | null | undefined): string {
   if (!unix) return '-'
   return dayjs.unix(unix).format('YYYY-MM-DD HH:mm:ss')

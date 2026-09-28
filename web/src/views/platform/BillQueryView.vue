@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { apiBillingOverview } from '../../api/platform'
-import { fmtQuota } from '../../utils/format'
+import { fmtQuota, fmtYuan } from '../../utils/format'
 
 const router = useRouter()
 
@@ -29,55 +29,60 @@ onMounted(load)
 
 const rows = computed(() => ov.value?.rows || [])
 
-function fmtSigned(v: number): string {
-  return v > 0 ? `+${fmtQuota(v)}` : fmtQuota(v)
+// 口径都用大白话：
+// 授权token = 本月给客户新增的额度（发放 − 回收）
+// 消耗token = 本月实际用量
+// token余额 = 还剩多少可用
+// 账单费用 = 本月消耗折算成钱（元）
+function granted(r: any): number {
+  return (r.total_granted || 0) + (r.total_revoked || 0)
 }
-// 期初缺失（首个快照月之前）显示 —
-function fmtOpt(v: number | null | undefined): string {
-  return v == null ? '—' : fmtQuota(v)
+function balance(r: any): number {
+  return (r.closing_limit || 0) - (r.closing_used || 0)
 }
+
+const totals = computed(() => {
+  let g = 0, c = 0, b = 0
+  for (const r of rows.value) {
+    g += granted(r)
+    c += r.consumption || 0
+    b += balance(r)
+  }
+  return { granted: g, consumption: c, balance: b }
+})
 </script>
 
 <template>
   <el-card shadow="never" v-loading="loading">
     <template #header>
       <div class="card-header">
-        <span>账单查询（月度总览）</span>
-        <div>
-          <el-select v-model="month" style="width: 130px; margin-right: 8px" @change="load">
-            <el-option v-for="m in monthOptions" :key="m" :label="m" :value="m" />
-          </el-select>
-        </div>
+        <span>账单查询</span>
+        <el-select v-model="month" style="width: 130px" @change="load">
+          <el-option v-for="m in monthOptions" :key="m" :label="m" :value="m" />
+        </el-select>
       </div>
     </template>
 
-    <el-alert v-if="ov" type="info" :closable="false" style="margin-bottom: 14px"
-      :title="`账期 ${ov.month}（时区 ${ov.timezone}）· 全部客户 ${rows.length} 家。勾稽口径：期末已用 − 期初已用 == 期内消耗；月边界按账期时区。点击客户名进入其三段式对账单。`" />
-
     <div v-if="ov" class="totals">
       <div class="total-item">
-        <div class="total-label">合计消耗（token）</div>
-        <div class="total-value num">{{ fmtQuota(ov.total_consumption) }}</div>
+        <div class="total-label">授权token（本月发放）</div>
+        <div class="total-value num green">+{{ fmtQuota(totals.granted) }}</div>
       </div>
       <div class="total-item">
-        <div class="total-label">合计请求数</div>
-        <div class="total-value num">{{ ov.total_requests }}</div>
+        <div class="total-label">消耗token（本月用量）</div>
+        <div class="total-value num">{{ fmtQuota(totals.consumption) }}</div>
       </div>
       <div class="total-item">
-        <div class="total-label">期内授权</div>
-        <div class="total-value num green">{{ fmtSigned(ov.total_granted) }}</div>
+        <div class="total-label">token余额（全部客户剩余）</div>
+        <div class="total-value num green">{{ fmtQuota(totals.balance) }}</div>
       </div>
       <div class="total-item">
-        <div class="total-label">期内冲减</div>
-        <div class="total-value num red">{{ fmtSigned(ov.total_revoked) }}</div>
-      </div>
-      <div class="total-item">
-        <div class="total-label">不计量笔数</div>
-        <div class="total-value num">{{ ov.total_no_usage }}</div>
+        <div class="total-label">账单费用（{{ month }} 合计）</div>
+        <div class="total-value num">{{ fmtYuan(totals.consumption) }}</div>
       </div>
     </div>
 
-    <el-table :data="rows" empty-text="该账期还没有任何客户。">
+    <el-table :data="rows" empty-text="该月还没有任何客户。">
       <el-table-column label="客户" min-width="150" fixed="left">
         <template #default="{ row }">
           <el-link type="primary" @click="router.push(`/platform/orgs/${row.org_id}`)">{{ row.org_name }}</el-link>
@@ -90,40 +95,27 @@ function fmtOpt(v: number | null | undefined): string {
           <el-tag v-else type="danger" size="small">停用</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="期初已用" min-width="110">
+      <el-table-column label="授权token" min-width="110">
         <template #default="{ row }">
-          <span class="num">{{ fmtOpt(row.opening_used) }}</span>
+          <span class="num green">{{ granted(row) > 0 ? `+${fmtQuota(granted(row))}` : fmtQuota(granted(row)) }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="期内授权" min-width="110">
-        <template #default="{ row }">
-          <span class="num green">{{ fmtSigned(row.total_granted) }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="期内冲减" min-width="110">
-        <template #default="{ row }">
-          <span class="num red">{{ fmtSigned(row.total_revoked) }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="消耗（token）" min-width="130" sortable :sort-by="'consumption'">
+      <el-table-column label="消耗token" min-width="110">
         <template #default="{ row }">
           <span class="num">{{ fmtQuota(row.consumption) }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="期末已用" min-width="110">
+      <el-table-column label="token余额" min-width="110">
         <template #default="{ row }">
-          <span class="num">{{ fmtQuota(row.closing_used) }}</span>
-          <span v-if="row.closing_is_live" class="dim">（实时）</span>
+          <span class="num" :class="balance(row) > 0 ? 'green' : 'red'">{{ fmtQuota(balance(row)) }}</span>
+          <span v-if="row.closing_is_live" class="dim">（当前）</span>
         </template>
       </el-table-column>
-      <el-table-column label="勾稽" width="70" align="center">
+      <el-table-column label="账单费用（元）" min-width="120">
         <template #default="{ row }">
-          <span v-if="row.chain_ok == null" class="dim">—</span>
-          <span v-else-if="row.chain_ok" class="green">✓</span>
-          <span v-else class="red">✗</span>
+          <span class="num">{{ fmtYuan(row.consumption) }}</span>
         </template>
       </el-table-column>
-      <el-table-column prop="requests" label="请求数" width="90" align="center" />
       <el-table-column label="操作" width="110" fixed="right">
         <template #default="{ row }">
           <el-button size="small" @click="router.push(`/platform/orgs/${row.org_id}`)">查明细</el-button>

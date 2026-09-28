@@ -9,7 +9,7 @@ import {
 } from '../../api/platform'
 import LineChart from '../../components/LineChart.vue'
 import { trendOptions, barOption } from '../../utils/chart'
-import { fmtTime, fmtQuota, fmtNum, roleNames } from '../../utils/format'
+import { fmtTime, fmtQuota, fmtNum, fmtYuan, roleNames } from '../../utils/format'
 
 const route = useRoute()
 const router = useRouter()
@@ -99,7 +99,7 @@ async function saveMonthly() {
 }
 const monthlySaving = ref(false)
 
-// 三段式对账单（平台视角）
+// 月度账单（平台视角）
 const stMonth = ref(dayjs().format('YYYY-MM'))
 const st = ref<any>(null)
 const stLoading = ref(false)
@@ -314,11 +314,11 @@ async function exportStatementCSV() {
       </el-col>
     </el-row>
 
-    <!-- 三段式对账单（平台视角） -->
+    <!-- 月度账单（平台视角） -->
     <el-card v-if="st" shadow="never">
       <template #header>
         <div class="card-head">
-          <span>月度对账单<span class="unit">（勾稽 / 冲减 / 明细，平台视角）</span></span>
+          <span>月度账单<span class="unit">（{{ stMonth }} · 平台视角）</span></span>
           <div>
             <el-select v-model="stMonth" size="small" style="width: 120px; margin-right: 8px" @change="loadStatement">
               <el-option v-for="m in stMonthOptions" :key="m" :label="m" :value="m" />
@@ -329,47 +329,43 @@ async function exportStatementCSV() {
       </template>
 
       <el-descriptions :column="3" border size="small">
-        <el-descriptions-item label="期初限额">
-          <span class="num">{{ st.opening_limit == null ? '—' : fmtQuota(st.opening_limit) }}</span>
+        <el-descriptions-item label="月初token余额">
+          <span class="num">{{ st.opening_limit == null ? '—' : fmtQuota(st.opening_limit - (st.opening_used || 0)) }}</span>
         </el-descriptions-item>
-        <el-descriptions-item label="期初已用">
-          <span class="num">{{ st.opening_used == null ? '—' : fmtQuota(st.opening_used) }}</span>
-        </el-descriptions-item>
-        <el-descriptions-item label="链式校验">
-          <el-tag v-if="st.chain_ok === true" type="success" size="small">✓ 期末−期初 == 消耗</el-tag>
-          <el-tag v-else-if="st.chain_ok === false" type="danger" size="small">✗ 数据不一致</el-tag>
-          <el-tag v-else type="info" size="small">— 无期初快照</el-tag>
-        </el-descriptions-item>
-        <el-descriptions-item label="期内授权">
+        <el-descriptions-item label="授权token">
           <span class="num green">+{{ fmtQuota(st.total_granted) }}</span>
         </el-descriptions-item>
-        <el-descriptions-item label="期内冲减">
+        <el-descriptions-item label="回收token">
           <span class="num red">{{ fmtQuota(st.total_revoked) }}</span>
         </el-descriptions-item>
-        <el-descriptions-item label="期内消耗">
+        <el-descriptions-item label="消耗token">
           <span class="num">{{ fmtQuota(st.consumption) }}</span>
         </el-descriptions-item>
-        <el-descriptions-item label="期末限额">
-          <span class="num">{{ fmtQuota(st.closing_limit) }}</span>
-        </el-descriptions-item>
-        <el-descriptions-item label="期末已用">
-          <span class="num">
-            {{ fmtQuota(st.closing_used) }}
-            <el-tag v-if="st.closing_is_live" type="warning" size="small" effect="plain">实时</el-tag>
+        <el-descriptions-item label="月末token余额">
+          <span class="num">{{ fmtQuota(st.closing_limit - st.closing_used) }}
+            <el-tag v-if="st.closing_is_live" type="warning" size="small" effect="plain">当前</el-tag>
           </span>
         </el-descriptions-item>
-        <el-descriptions-item label="不计量笔数">
+        <el-descriptions-item label="账单费用（元）">
+          <span class="num">{{ fmtYuan(st.consumption) }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="数据校验" :span="2">
+          <el-tag v-if="st.chain_ok === true" type="success" size="small">✓ 月初余额 + 授权 − 消耗 == 月末余额</el-tag>
+          <el-tag v-else-if="st.chain_ok === false" type="danger" size="small">✗ 数据不一致</el-tag>
+          <el-tag v-else type="info" size="small">— 无月初数据，暂无法校验</el-tag>
+        </el-descriptions-item>
+        <el-descriptions-item label="未计费请求">
           <span :class="{ 'st-warn': st.no_usage_count > 0 }">{{ st.no_usage_count }}</span>
         </el-descriptions-item>
       </el-descriptions>
 
       <el-table v-if="st.revokes && st.revokes.length" :data="st.revokes" size="small" class="st-revokes">
-        <el-table-column label="冲减时间" width="160">
+        <el-table-column label="回收时间" width="160">
           <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="冲减金额" width="180" align="right">
+        <el-table-column label="回收token" width="180" align="right">
           <template #default="{ row }">
-            <span class="num red">{{ row.amount.toLocaleString('zh-CN') }} 点</span>
+            <span class="num red">{{ fmtQuota(row.amount) }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="remark" label="事由" min-width="160" show-overflow-tooltip />

@@ -77,8 +77,8 @@ print(resp.choices[0].message.content)`)
         </li>
         <li>
           <span class="st">日常运营</span>
-          <span class="sd">【客户看板】看用量趋势与额度水位；月末在【对账单】下载三段式月账单
-            （勾稽 / 冲减 / 明细）。</span>
+          <span class="sd">【客户看板】看用量趋势与额度水位；月末在【账单查询】下载月账单
+            （授权token / 消耗token / token余额 / 账单费用）。</span>
         </li>
       </ol>
 

@@ -6,6 +6,7 @@ import {
   fmtPrice1K,
   yuan1KToPoints,
   pointsToYuan1K,
+  fmtYuan,
   fmtTime,
   fmtDate,
   fmtNum,
@@ -141,5 +142,23 @@ describe('yuan1KToPoints / pointsToYuan1K：定价表单（元/1K token）↔点
     for (const yuan of [0.002, 0.02, 0.00007, 0.015]) {
       expect(pointsToYuan1K(yuan1KToPoints(yuan))).toBeCloseTo(yuan, 10)
     }
+  })
+})
+
+describe('fmtYuan：消耗点数 → 账单费用（元）', () => {
+  it('整元/常规金额保留两位小数', () => {
+    expect(fmtYuan(0)).toBe('¥0')
+    expect(fmtYuan(1_000_000)).toBe('¥1.00')
+    expect(fmtYuan(123_456_789)).toBe('¥123.46')
+  })
+
+  it('不足 1 元保留至多 4 位小数（尾零剥除）', () => {
+    expect(fmtYuan(2_000)).toBe('¥0.002')
+    expect(fmtYuan(500_000)).toBe('¥0.5')
+    expect(fmtYuan(123_400)).toBe('¥0.1234')
+  })
+
+  it('负数（理论不出现，防御性）对称', () => {
+    expect(fmtYuan(-2_000_000)).toBe('¥-2.00')
   })
 })
