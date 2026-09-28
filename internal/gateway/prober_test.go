@@ -257,16 +257,44 @@ func TestChannelTestLoopDisabledAndRecoveryHandoff(t *testing.T) {
 
 // ---- 配额类 429 的探测语义（管理台「测试」/体检共用内核）----
 
-// 探测命中配额类 429 → 显式分类（Quota=true、错误文案说配额耗尽而非裸 429），
-// 且只给探测用的那把 Key 标记配额冷却（其它 Key 不连坐）
-func TestProbeQuotaClassifiedAndCoolsOnlyProbedKey(t *testing.T) {
+// 配额死 Key + 健康 Key：探测应冷却死 Key、自动换下一把并报渠道成功（健康 Key 不连坐）
+func TestProbeQuotaKeySwitchesToHealthyKey(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.Header.Get("Authorization"), "k1") {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"code":"SetLimitExceeded","message":"has reached the set usage limit"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(okBody))
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, []string{"k1", "k2"}, 10)
+
+	res := ProbeChannel(e.h.DB, e.h.Cipher, e.h.Client, e.h.Coord, e.h.KeyCooldown, 1)
+	if !res.OK {
+		t.Fatalf("配额死 Key 应自动切换健康 Key 并报成功，got ok=%v err=%s", res.OK, res.Err)
+	}
+	if !strings.Contains(res.KeyDesc, "Key #2") || !strings.Contains(res.KeyDesc, "已跳过") {
+		t.Fatalf("结果应注明实际使用 Key #2 并附被跳过的 Key，got %q", res.KeyDesc)
+	}
+	if !e.cd.IsCooling("ck:1:1") || !e.cd.IsQuotaCooling("ck:1:1") {
+		t.Fatal("配额死 Key 应进入配额冷却")
+	}
+	if e.cd.IsCooling("ck:1:2") {
+		t.Fatal("健康 Key 不应连坐冷却")
+	}
+}
+
+// 唯一的 Key 配额耗尽：维持 Quota 分类语义（体检不计渠道故障、文案明确说配额而非裸 429）
+func TestProbeQuotaSingleKeyClassified(t *testing.T) {
 	e := newTestEnv(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = w.Write([]byte(`{"error":{"code":"SetLimitExceeded","message":"has reached the set usage limit"}}`))
 	}))
 	defer up.Close()
-	e.seedUpstreamChannel(t, 1, "ch", up.URL, []string{"k1", "k2"}, 10)
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, []string{"k1"}, 10)
 
 	res := ProbeChannel(e.h.DB, e.h.Cipher, e.h.Client, e.h.Coord, e.h.KeyCooldown, 1)
 	if res.OK || !res.Quota {
@@ -278,8 +306,103 @@ func TestProbeQuotaClassifiedAndCoolsOnlyProbedKey(t *testing.T) {
 	if !e.cd.IsCooling("ck:1:1") || !e.cd.IsQuotaCooling("ck:1:1") {
 		t.Fatal("被探测的 Key 应进入配额冷却")
 	}
+}
+
+// 401 失效 Key + 健康 Key：探测应冷却失效 Key、换下一把报成功——
+// 「主 Key 报错自动切备用」在探测侧（管理台测试/体检/自动恢复）同样成立
+func TestProbeDeadKeySwitchesToHealthyKey(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.Header.Get("Authorization"), "k1") {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":{"code":"invalid_api_key","message":"Invalid API key"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(okBody))
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, []string{"k1", "k2"}, 10)
+
+	res := ProbeChannel(e.h.DB, e.h.Cipher, e.h.Client, e.h.Coord, e.h.KeyCooldown, 1)
+	if !res.OK {
+		t.Fatalf("失效 Key 应自动切换健康 Key 并报成功，got ok=%v err=%s", res.OK, res.Err)
+	}
+	if !strings.Contains(res.KeyDesc, "Key #2") || !strings.Contains(res.KeyDesc, "HTTP 401") {
+		t.Fatalf("结果应注明跳过了失效 Key（401），got %q", res.KeyDesc)
+	}
+	if !e.cd.IsCooling("ck:1:1") || e.cd.IsQuotaCooling("ck:1:1") {
+		t.Fatal("失效 Key 应进入普通冷却（非配额冷却）")
+	}
 	if e.cd.IsCooling("ck:1:2") {
-		t.Fatal("未探测的 Key 不应连坐冷却")
+		t.Fatal("健康 Key 不应连坐冷却")
+	}
+}
+
+// 全部 Key 失效：聚合各 Key 失败明细回失败（不误标 Quota）
+func TestProbeAllKeysDeadAggregates(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"code":"invalid_api_key"}}`))
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, []string{"k1", "k2"}, 10)
+
+	res := ProbeChannel(e.h.DB, e.h.Cipher, e.h.Client, e.h.Coord, e.h.KeyCooldown, 1)
+	if res.OK || res.Quota {
+		t.Fatalf("全部 Key 失效应报失败且不误标配额，got ok=%v quota=%v", res.OK, res.Quota)
+	}
+	if !strings.Contains(res.Err, "全部失败") || !strings.Contains(res.Err, "Key #1") || !strings.Contains(res.Err, "Key #2") {
+		t.Fatalf("错误应聚合各 Key 失败明细，got %q", res.Err)
+	}
+}
+
+// 混合失败（一把配额耗尽 + 一把失效）：聚合报失败且 Quota 归零——体检要如实计故障
+func TestProbeMixedQuotaAndDeadKeysFails(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.Header.Get("Authorization"), "k1") {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"code":"SetLimitExceeded"}}`))
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, []string{"k1", "k2"}, 10)
+
+	res := ProbeChannel(e.h.DB, e.h.Cipher, e.h.Client, e.h.Coord, e.h.KeyCooldown, 1)
+	if res.OK || res.Quota {
+		t.Fatalf("混合失败应聚合报失败且 Quota 归零，got ok=%v quota=%v", res.OK, res.Quota)
+	}
+	if !strings.Contains(res.Err, "全部失败") {
+		t.Fatalf("错误应聚合各 Key 失败明细，got %q", res.Err)
+	}
+}
+
+// 体检联动：池里第一把 Key 失效但其它 Key 健康时，渠道不被误禁用（测试结果记 OK）
+func TestChannelTestDeadKeyHealthyPoolStaysEnabled(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.Header.Get("Authorization"), "k1") {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(okBody))
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, []string{"k1", "k2"}, 10)
+
+	failures := map[int64]int{}
+	for i := 0; i < 3; i++ {
+		if n, err := ChannelTestOnce(e.h, 3, failures); err != nil || n != 0 {
+			t.Fatalf("第 %d 轮不应禁用渠道，got n=%d err=%v", i+1, n, err)
+		}
+	}
+	var row struct{ Status, LastTestOk int64 }
+	_ = e.f.db.Raw("SELECT status, last_test_ok FROM channels WHERE id = 1").Scan(&row)
+	if row.Status != 1 || row.LastTestOk != 1 {
+		t.Fatalf("失效 Key 不应拖垮渠道健康判定，got status=%d last_test_ok=%d", row.Status, row.LastTestOk)
 	}
 }
 

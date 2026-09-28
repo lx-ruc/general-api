@@ -182,13 +182,27 @@ type ProbeResult struct {
 	Quota     bool   // 失败是否因厂商侧配额耗尽（SetLimitExceeded 等）——换 Key/等恢复可解，禁用渠道无意义
 }
 
+// probeKey 单次探测的 Key 材料（池内一把，或 legacy 单 Key）
+type probeKey struct {
+	key   string
+	scope string
+	desc  string
+	id    int64 // 池内 Key id（legacy 单 Key 为 0），站内通知定位用
+	pool  bool  // 池内 Key：Key 级失败（401/403、配额 429）可换下一把；legacy 无从切换
+}
+
 // ProbeChannel 实发一次 max_tokens=1 请求测连通。Key 选择与数据面选路同口径：
 // 池内优先挑非冷却的启用 Key（全部冷却时仍取第一把——管理员点测试通常就是想看它为什么不行），
-// 回退 legacy 单 Key。keyCooldown <= 0 时按 60s（探测侧标记配额冷却用）。
+// 回退 legacy 单 Key。keyCooldown <= 0 时按 60s（探测侧标记冷却用）。
+//
+// Key 级失败与数据面 relay 同语义地「就地换 Key」：401/403（Key 失效）冷却该 Key 后
+// 换下一把继续探测，配额类 429 按数据面同款退避冷却（其它 Key 不连坐）——主 Key 失效/用尽
+// 时探测同样自动切备用 Key，渠道尚有健康 Key 即报成功（被跳过的 Key 附在结果里）。
+// 永久禁用仍由真实流量的 disableKey 落库：探测是诊断/自愈入口，不做破坏性写。
+// 渠道级失败（网络异常/5xx/其它 4xx）同渠道换 Key 无意义，直接返回。
 //
 // 探测同时充当 Key 自愈入口：成功即 ClearCooldown（配额恢复后点一次「测试」，
-// 被冷却的 Key 立即回池，不必等冷却到期）；配额类 429 则按数据面同款策略标记
-// 该 Key 的配额冷却（其它 Key 不连坐）。
+// 被冷却的 Key 立即回池，不必等冷却到期）。
 func ProbeChannel(db *gorm.DB, cipher *crypto.Cipher, client *http.Client, cd coord.Coordinator,
 	keyCooldown time.Duration, channelID int64) ProbeResult {
 	var ch model.Channel
@@ -206,31 +220,77 @@ func ProbeChannel(db *gorm.DB, cipher *crypto.Cipher, client *http.Client, cd co
 		keyCooldown = time.Minute
 	}
 
-	// Key 选择：池内优先非冷却 → 全冷却取第一把 → 回退 legacy 单 Key
-	key, scope, keyDesc := "", "", ""
-	var keyID int64 // 池内 Key id（legacy 单 Key 为 0），站内通知定位用
+	// 尝试序列：池内非冷却 Key 按 id 序；全冷却退第一把；无池回退 legacy 单 Key
+	var usable []probeKey
 	var poolKeys []model.ChannelKey
 	if err := db.Where("channel_id = ? AND status = 1", channelID).Order("id").Find(&poolKeys).Error; err == nil && len(poolKeys) > 0 {
-		pick := poolKeys[0]
+		mk := func(k model.ChannelKey) probeKey {
+			key, _ := cipher.Decrypt(k.KeyEnc)
+			return probeKey{key: key, scope: fmt.Sprintf("ck:%d:%d", channelID, k.ID),
+				desc: fmt.Sprintf("池内 Key #%d", k.ID), id: k.ID, pool: true}
+		}
 		for _, k := range poolKeys {
-			if s := fmt.Sprintf("ck:%d:%d", channelID, k.ID); !cd.IsCooling(s) {
-				pick = k
-				break
+			if !cd.IsCooling(fmt.Sprintf("ck:%d:%d", channelID, k.ID)) {
+				usable = append(usable, mk(k))
 			}
 		}
-		scope = fmt.Sprintf("ck:%d:%d", channelID, pick.ID)
-		keyDesc = fmt.Sprintf("池内 Key #%d", pick.ID)
-		keyID = pick.ID
-		key, _ = cipher.Decrypt(pick.KeyEnc)
+		if len(usable) == 0 {
+			usable = append(usable, mk(poolKeys[0]))
+		}
 	} else if ch.UpstreamKeyEnc != "" {
-		key, _ = cipher.Decrypt(ch.UpstreamKeyEnc)
-		scope = fmt.Sprintf("ck:%d:legacy", channelID)
-		keyDesc = "legacy 单 Key"
+		key, _ := cipher.Decrypt(ch.UpstreamKeyEnc)
+		usable = append(usable, probeKey{key: key, scope: fmt.Sprintf("ck:%d:legacy", channelID), desc: "legacy 单 Key"})
 	}
-	if key == "" {
+	// 解密失败（aes_key 变更/密文损坏）的 Key 剔除；全剔后视为无可用 Key
+	alive := usable[:0]
+	for _, ak := range usable {
+		if ak.key != "" {
+			alive = append(alive, ak)
+		}
+	}
+	if len(alive) == 0 {
 		return ProbeResult{Err: "渠道无可用 Key（池内全部禁用或未配置）"}
 	}
 
+	var skips, fails []string // 被跳过的坏 Key 摘要 / 各 Key 失败明细
+	quotaCnt := 0
+	var last ProbeResult
+	for _, ak := range alive {
+		last = probeOnce(db, ch, ab, isEmbed, client, cd, keyCooldown, ak)
+		if last.OK {
+			if len(skips) > 0 { // 成功也要让管理员看见被跳过的坏 Key
+				last.KeyDesc += "（已跳过失效 Key：" + strings.Join(skips, "；") + "）"
+			}
+			return last
+		}
+		fails = append(fails, fmt.Sprintf("%s：%s", ak.desc, truncateStr(last.Err, 120)))
+		switch {
+		case last.Quota: // probeOnce 内已按数据面同款冷却该 Key 并发站内通知
+			quotaCnt++
+			skips = append(skips, ak.desc+"（配额耗尽）")
+		case ak.pool && (last.Status == http.StatusUnauthorized || last.Status == http.StatusForbidden):
+			// Key 失效：冷却该 Key（本请求与近期选路/探测跳过），换下一把继续
+			cd.SetCooldown(ak.scope, keyCooldown)
+			skips = append(skips, fmt.Sprintf("%s（HTTP %d 失效）", ak.desc, last.Status))
+			slog.Warn("探测发现失效 Key，已冷却并换下一把", "channel_id", ch.ID, "channel", ch.Name,
+				"key_id", ak.id, "status", last.Status)
+		default: // 网络异常/5xx/其它 4xx：渠道级故障，同渠道换 Key 无意义
+			return last
+		}
+	}
+	if quotaCnt == len(alive) {
+		return last // 全部为配额耗尽：维持 Quota 语义（体检据此不计渠道故障）
+	}
+	// 聚合各 Key 失败明细；混合场景 Quota 必须归零，否则体检会漏计真实故障
+	last.Quota = false
+	last.Err = fmt.Sprintf("%d 把 Key 全部失败：%s", len(alive), strings.Join(fails, "；"))
+	return last
+}
+
+// probeOnce 用指定 Key 实发一次探测请求：2xx 清冷却回池；配额类 429 就地退避冷却
+// （同渠道其它 Key 不连坐）并发站内通知；其余失败原样返回，由调用方分类换 Key 或终止
+func probeOnce(db *gorm.DB, ch model.Channel, ab model.ChannelAbility, isEmbed bool, client *http.Client,
+	cd coord.Coordinator, keyCooldown time.Duration, ak probeKey) ProbeResult {
 	upModel := ab.ModelName
 	if ab.UpstreamModelName != nil && *ab.UpstreamModelName != "" {
 		upModel = *ab.UpstreamModelName
@@ -243,10 +303,10 @@ func ProbeChannel(db *gorm.DB, cipher *crypto.Cipher, client *http.Client, cd co
 	}
 	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(ch.BaseURL, "/")+probePath(ch.Path, isEmbed), strings.NewReader(body))
 	if err != nil {
-		return ProbeResult{Err: err.Error()}
+		return ProbeResult{Err: err.Error(), KeyDesc: ak.desc}
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("Authorization", "Bearer "+ak.key)
 	req.Header.Set("User-Agent", "token-gateway")
 
 	start := time.Now()
@@ -255,33 +315,33 @@ func ProbeChannel(db *gorm.DB, cipher *crypto.Cipher, client *http.Client, cd co
 	if derr != nil {
 		// 网络层失败（超时/拒绝连接/DNS/证书）分类成中文可读描述，附原始错误供排障——
 		// 管理台「测试」按钮直接展示，不再是一段英文 Go 错误
-		return ProbeResult{LatencyMs: latency, Err: DescribeNetErr(derr), KeyDesc: keyDesc}
+		return ProbeResult{LatencyMs: latency, Err: DescribeNetErr(derr), KeyDesc: ak.desc}
 	}
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	_ = resp.Body.Close()
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		if scope != "" {
-			cd.ClearCooldown(scope) // 探测成功即证明可用：立即回池（配额恢复后的手动自愈入口）
+		if ak.scope != "" {
+			cd.ClearCooldown(ak.scope) // 探测成功即证明可用：立即回池（配额恢复后的手动自愈入口）
 		}
-		return ProbeResult{OK: true, Status: resp.StatusCode, LatencyMs: latency, KeyDesc: keyDesc}
+		return ProbeResult{OK: true, Status: resp.StatusCode, LatencyMs: latency, KeyDesc: ak.desc}
 	}
 	// 配额类 429：Key/账户级问题，按数据面同款策略只冷却该 Key（不连坐），
 	// 并显式分类——体检据此不计渠道故障，管理台据此展示「配额耗尽」而非裸 429
 	if resp.StatusCode == http.StatusTooManyRequests {
 		if qc := Quota429Code(data); qc != "" {
-			if scope != "" {
-				d := cd.Backoff(scope, keyCooldown, quota429CooldownMax)
-				cd.MarkQuotaCooling(scope, d)
+			if ak.scope != "" {
+				d := cd.Backoff(ak.scope, keyCooldown, quota429CooldownMax)
+				cd.MarkQuotaCooling(ak.scope, d)
 			}
 			// 与数据面同源站内通知（服务内按渠道+Key 节流）：体检/自动恢复发现配额死 Key
 			// 时管理员也能收到，不依赖业务流量触发
-			go service.NotifyKeyQuotaCooling(db, channelID, keyID, ch.Name, key, qc)
-			return ProbeResult{Status: resp.StatusCode, LatencyMs: latency, KeyDesc: keyDesc, Quota: true,
+			go service.NotifyKeyQuotaCooling(db, ch.ID, ak.id, ch.Name, ak.key, qc)
+			return ProbeResult{Status: resp.StatusCode, LatencyMs: latency, KeyDesc: ak.desc, Quota: true,
 				Err: fmt.Sprintf("上游配额耗尽（%s）：厂商侧限额暂停，渠道与其它 Key 不受影响；限额恢复后冷却到期（约 %s）自动回池，也可在 Key 池点「清除冷却」立即复用。原始响应：HTTP 429 %s",
 					qc, keyCooldown, truncateStr(string(data), 200))}
 		}
 	}
-	return ProbeResult{Status: resp.StatusCode, LatencyMs: latency, KeyDesc: keyDesc,
+	return ProbeResult{Status: resp.StatusCode, LatencyMs: latency, KeyDesc: ak.desc,
 		Err: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncateStr(string(data), 300))}
 }
 
