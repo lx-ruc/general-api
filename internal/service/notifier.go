@@ -104,9 +104,9 @@ func QuotaGrantEmailBody(orgName, adminName string, amount, newLimit, used int64
 操作时间：%s
 
 请登录管理台查看详情。如非预期，请尽快联系系统管理员。
-—— 慧沐引擎`,
+—— %s`,
 		adminName, orgName, sign, formatToken(amount), yuan, remarkLine, limitStr, formatToken(used),
-		time.Now().Format("2006-01-02 15:04:05"))
+		time.Now().Format("2006-01-02 15:04:05"), BrandName)
 }
 
 func formatToken(n int64) string {

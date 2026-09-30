@@ -65,7 +65,7 @@ func TestProxyHeadersRespected(t *testing.T) {
 
 func TestEmbeddedScriptsComplete(t *testing.T) {
 	// 两份静态资源关键字自检（防止误提交空文件/半截文件）
-	for _, kw := range []string{"claude-code", "codex", "opencode", "crush", "factory-droid", "selftest"} {
+	for _, kw := range []string{"claude-code", "codex", "opencode", "trae-agent", "selftest"} {
 		if !strings.Contains(helperJS, kw) {
 			t.Fatalf("helper.mjs 缺少关键内容：%s", kw)
 		}

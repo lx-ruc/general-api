@@ -12,7 +12,7 @@ const helperUninstallCmd = computed(
   () => `sh -c "$(curl -fsSL ${location.origin}/agent-helper)" uninstall all`,
 )
 
-// ---- 六款工具手动配置（与一键助手写入的内容一致，占位符按实际值替换） ----
+// ---- 四款工具手动配置（与一键助手写入的内容一致，占位符按实际值替换） ----
 const baseURL = `${location.origin}/v1`
 
 const claudeExample = computed(() => `# ~/.claude/settings.json
@@ -52,40 +52,32 @@ const opencodeExample = computed(() => `# ~/.config/opencode/opencode.json
   "small_model": "huimu/{你的模型}"
 }`)
 
-const crushExample = computed(() => `# ~/.config/crush/crush.json
-{
-  "providers": {
-    "huimu": {
-      "id": "huimu",
-      "name": "Huimu",
-      "base_url": "${baseURL}",
-      "api_key": "{你的密钥}"
-    }
-  }
-}`)
+// Trae Agent（字节开源 CLI）：YAML 三段式 + TRAE_CONFIG_FILE 环境变量（一键助手自动写 shell rc）
+const traeAgentExample = computed(() => `# ~/.trae-agent/trae_config.yaml
+model_providers:
+  huimu:
+    api_key: "{你的密钥}"
+    provider: openai
+    base_url: "${baseURL}"
+models:
+  huimu_model:
+    model: "{你的模型}"
+    model_provider: huimu
+    temperature: 0.5
+    top_p: 1.0
+    top_k: 0
+    parallel_tool_calls: true
+    max_retries: 3
+agents:
+  trae_agent:
+    model: huimu_model
+    max_steps: 200
+    enable_lakeview: false
 
-const factoryDroidExample = computed(() => `# ~/.factory/settings.json
-{
-  "customModels": [
-    {
-      "displayName": "Huimu Engine [{你的模型}] - Openai",
-      "model": "{你的模型}",
-      "baseUrl": "${baseURL}",
-      "apiKey": "{你的密钥}",
-      "provider": "generic-chat-completion-api",
-      "maxOutputTokens": 131072
-    }
-  ]
-}`)
+# shell 配置（一键助手会自动追加）：
+# export TRAE_CONFIG_FILE="$HOME/.trae-agent/trae_config.yaml"`)
 
-// Trae 不开放可写的模型配置文件：在 IDE 内登记（一键助手会写入标记并打印同样的指引）
-const traeExample = computed(() => `入口：设置 → 模型 → 添加模型 → 自定义配置
-
-API 地址：${baseURL}（开启「完整 URL」开关时填 ${baseURL}/chat/completions）
-API Key：{你的密钥}
-模型 ID：{你的模型}`)
-
-// 手动配置 tab：与一键助手覆盖的六款工具一一对应
+// 手动配置 tab：与一键助手覆盖的四款工具一一对应
 interface ManualTab {
   key: string
   label: string
@@ -117,25 +109,11 @@ const manualTabs = computed<ManualTab[]>(() => [
     note: 'provider 用 @ai-sdk/openai-compatible 适配器；顶层 model / small_model 设为 huimu/{你的模型} 即默认使用本站。',
   },
   {
-    key: 'crush',
-    label: 'Crush',
-    code: crushExample.value,
-    lang: 'json',
-    note: '在 providers 里加一个 huimu 条目，随后在 Crush 的模型选择里切到 Huimu。',
-  },
-  {
-    key: 'factory-droid',
-    label: 'Factory Droid',
-    code: factoryDroidExample.value,
-    lang: 'json',
-    note: 'customModels 增加一条 generic-chat-completion-api 连接；displayName 含 "Huimu" 便于一键助手识别与更新。',
-  },
-  {
-    key: 'trae',
-    label: 'Trae',
-    code: traeExample.value,
-    lang: 'text',
-    note: 'Trae 的自定义模型只开放 IDE 内登记（无可写配置文件），按左侧信息在 设置 → 模型 → 添加模型 → 自定义配置 中填写即可；一键助手会写入 ~/.trae/huimu.json 标记并打印同样指引。',
+    key: 'trae-agent',
+    label: 'Trae Agent',
+    code: traeAgentExample.value,
+    lang: 'yaml',
+    note: '字节开源的命令行 Agent（与 Trae IDE 相互独立）。OpenAI 兼容接入：provider 填 openai + base_url 指向本站；trae-cli 默认只认当前目录的 trae_config.yaml，须在 shell 里 export TRAE_CONFIG_FILE 指向固定路径（一键助手自动写入 rc）。CLI 本体未发布 PyPI，全局安装：uv tool install --with docker --with pexpect --with unidiff "trae-agent @ git+https://github.com/bytedance/trae-agent"（--with 补的包是上游打包缺陷所需）。',
   },
 ])
 const tab = ref('claude-code')
@@ -160,7 +138,7 @@ const currentTab = computed(() => manualTabs.value.find((t) => t.key === tab.val
           卸载按同样的边界精确还原。密钥只写入本机配置文件，不经过第三方。</p>
       </div>
 
-      <h2>支持的六款工具</h2>
+      <h2>支持的四款工具</h2>
       <div class="doc-table-wrap">
         <table class="doc-table">
           <thead>
@@ -183,24 +161,14 @@ const currentTab = computed(() => manualTabs.value.find((t) => t.key === tab.val
               <td><code>@ai-sdk/openai-compatible</code> provider</td>
             </tr>
             <tr>
-              <td><strong>Crush</strong></td>
-              <td><code>~/.config/crush/crush.json</code></td>
-              <td><code>providers</code> 增加 huimu 条目</td>
-            </tr>
-            <tr>
-              <td><strong>Factory Droid</strong></td>
-              <td><code>~/.factory/settings.json</code></td>
-              <td><code>customModels</code> 增加 generic-chat-completion-api 连接</td>
-            </tr>
-            <tr>
-              <td><strong>Trae</strong></td>
-              <td><code>~/.trae/huimu.json</code>（标记）</td>
-              <td>IDE 内登记（设置 → 模型 → 自定义配置），助手打印指引</td>
+              <td><strong>Trae Agent</strong></td>
+              <td><code>~/.trae-agent/trae_config.yaml</code></td>
+              <td>YAML 三段式 + <code>TRAE_CONFIG_FILE</code> 环境变量（助手写入 shell rc）</td>
             </tr>
           </tbody>
         </table>
       </div>
-      <p>前五款工具的接入清单与智谱 coding-helper 保持一致，另加 Trae（IDE 内登记）；重复执行安装命令是幂等的（覆盖更新本站配置，保留你的其它设置）。</p>
+      <p>前三款工具的接入清单与智谱 coding-helper 保持一致，另加 Trae Agent（字节开源 CLI）；重复执行安装命令是幂等的（覆盖更新本站配置，保留你的其它设置）。</p>
 
       <h2>免交互安装与日常管理</h2>
       <p>CI / 脚本场景跳过向导，一步到位：</p>

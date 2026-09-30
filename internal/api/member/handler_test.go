@@ -60,11 +60,12 @@ func newMemberEnv(t *testing.T) *memberEnv {
 	api := engine.Group("/api/member", middleware.JWTAuth(secret, db))
 	h := NewHandler(db)
 	api.POST("/keys", h.CreateKey)
-	api.PUT("/keys/:id/cost-center", h.AssignKeyCenter)
-	api.GET("/cost-centers", h.ListCostCenters)
 	api.GET("/stats/usage", h.UsageBreakdown)
 	api.GET("/usage", h.ListUsage)
 	api.GET("/models", h.ListModels)
+	api.GET("/models/available", h.ListAvailableModels)
+	api.GET("/requests", h.ListRequests)
+	api.POST("/requests", h.CreateRequest)
 	return &memberEnv{engine: engine, db: db, token: token}
 }
 
@@ -120,61 +121,17 @@ func TestCreateKeyExpiresAt(t *testing.T) {
 	}
 }
 
-// 归集：require 开关拒绝未选中心；无效中心拒绝；合法中心写入 + 自助改派
-func TestCreateKeyCostCenter(t *testing.T) {
+// 归集已从子账号面移除：建 key 不再有成本中心概念（挂靠由客户管理员在密钥一览操作）。
+// 旧客户端多传的 cost_center_id 应被静默忽略，key 落库为未归集
+func TestCreateKeyIgnoresCostCenter(t *testing.T) {
 	e := newMemberEnv(t)
-	now := time.Now().Unix()
-	// 本 org 启用中心 1、归档中心 2；他 org 中心 99
-	if err := e.db.Exec(`INSERT INTO cost_centers (id, org_id, name, status, created_at, updated_at)
-		VALUES (1, 1, 'AI客服', 1, ?, ?), (2, 1, '旧项目', 0, ?, ?)`, now, now, now, now).Error; err != nil {
-		t.Fatal(err)
-	}
-
-	// 默认（未开 require）：不选中心可建
-	if w := e.postCreate(`{"name":"free"}`); w.Code != http.StatusOK {
-		t.Fatalf("未开开关不选中心应 200，得 %d: %s", w.Code, w.Body.String())
-	}
-
-	// 开启 require：不选 → 400
-	if err := e.db.Exec(`UPDATE orgs SET require_cost_center = 1`).Error; err != nil {
-		t.Fatal(err)
-	}
-	if w := e.postCreate(`{"name":"must"}`); w.Code != http.StatusBadRequest {
-		t.Fatalf("开启开关不选中心应 400，得 %d", w.Code)
-	}
-	// 选归档中心 → 400
-	if w := e.postCreate(`{"name":"must2","cost_center_id":2}`); w.Code != http.StatusBadRequest {
-		t.Fatalf("归档中心应 400，得 %d", w.Code)
-	}
-	// 选他 org 中心 → 400
-	if w := e.postCreate(`{"name":"must3","cost_center_id":99}`); w.Code != http.StatusBadRequest {
-		t.Fatalf("他 org 中心应 400，得 %d", w.Code)
-	}
-	// 选合法中心 → 200 且落库
-	if w := e.postCreate(`{"name":"ok","cost_center_id":1}`); w.Code != http.StatusOK {
-		t.Fatalf("合法中心应 200，得 %d: %s", w.Code, w.Body.String())
+	if w := e.postCreate(`{"name":"legacy","cost_center_id":1}`); w.Code != http.StatusOK {
+		t.Fatalf("携带旧字段应仍 200（忽略），得 %d: %s", w.Code, w.Body.String())
 	}
 	var cnt int64
-	_ = e.db.Raw(`SELECT COUNT(*) FROM api_keys WHERE name='ok' AND cost_center_id=1`).Scan(&cnt).Error
+	_ = e.db.Raw(`SELECT COUNT(*) FROM api_keys WHERE name='legacy' AND cost_center_id IS NULL`).Scan(&cnt).Error
 	if cnt != 1 {
-		t.Fatalf("中心应落库，cnt=%d", cnt)
-	}
-
-	// 自助改派：自己的 key 从中心1 改到未归集（null）
-	var kid int64
-	_ = e.db.Raw(`SELECT id FROM api_keys WHERE name='ok'`).Scan(&kid).Error
-	req := httptest.NewRequest(http.MethodPut, "/api/member/keys/"+strconv.FormatInt(kid, 10)+"/cost-center",
-		strings.NewReader(`{"cost_center_id":null}`))
-	req.Header.Set("Authorization", "Bearer "+e.token)
-	req.Header.Set("Content-Type", "application/json")
-	w2 := httptest.NewRecorder()
-	e.engine.ServeHTTP(w2, req)
-	if w2.Code != http.StatusOK {
-		t.Fatalf("自助改派应 200，得 %d: %s", w2.Code, w2.Body.String())
-	}
-	_ = e.db.Raw(`SELECT COUNT(*) FROM api_keys WHERE id=? AND cost_center_id IS NULL`, kid).Scan(&cnt).Error
-	if cnt != 1 {
-		t.Fatalf("改派后应为未归集，cnt=%d", cnt)
+		t.Fatalf("key 应为未归集，cnt=%d", cnt)
 	}
 }
 
@@ -224,8 +181,8 @@ type usageBreakdownResp struct {
 		Tokens   int64  `json:"tokens"`
 	} `json:"by_key"`
 	ByModel []struct {
-		Name    string `json:"name"`
-		Requests int64 `json:"requests"`
+		Name     string `json:"name"`
+		Requests int64  `json:"requests"`
 	} `json:"by_model"`
 }
 
@@ -424,5 +381,154 @@ func TestUsageBreakdownByModelExcludesRejected(t *testing.T) {
 	}
 	if rep.Range.Requests != 3 {
 		t.Fatalf("区间总请求数仍应计全量 3，得 %d", rep.Range.Requests)
+	}
+}
+
+// ---------------- 额度/模型申请 ----------------
+
+// postRequest POST /api/member/requests
+func (e *memberEnv) postRequest(body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/api/member/requests", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+e.token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	e.engine.ServeHTTP(w, req)
+	return w
+}
+
+// 申请单泛化：模型申请 kind=model 落库（已授权的剔除）、非法/下架模型 400、
+// 全部已授权 400、空申请 400；额度申请（存量形态）仍走 kind=quota
+func TestCreateRequestModelKind(t *testing.T) {
+	e := newMemberEnv(t)
+	now := time.Now().Unix()
+	// m1 已授权 / m2 未授权 / m3 已下架
+	_ = e.db.Exec(`INSERT INTO models (name, input_price, output_price, status, created_at, updated_at)
+		VALUES ('m1', 1000000, 1000000, 1, ?, ?), ('m2', 1000000, 1000000, 1, ?, ?), ('m3', 1000000, 1000000, 0, ?, ?)`,
+		now, now, now, now, now, now).Error
+	_ = e.db.Exec(`INSERT INTO user_model_grants (user_id, model_name, created_at) VALUES (1, 'm1', ?)`, now).Error
+
+	// 模型申请：含已授权的 m1 → 静默剔除后只落 m2
+	w := e.postRequest(`{"models":["m1","m2"],"reason":"项目需要"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("模型申请应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	var lastReq struct {
+		Kind       string
+		ModelNames string
+	}
+	_ = e.db.Raw(`SELECT kind, model_names FROM quota_requests ORDER BY id DESC LIMIT 1`).Scan(&lastReq).Error
+	if lastReq.Kind != "model" || lastReq.ModelNames != "m2" {
+		t.Fatalf("应落 kind=model 且剔除已授权，得 kind=%q names=%q", lastReq.Kind, lastReq.ModelNames)
+	}
+
+	// 非法模型名 → 400 且不落库
+	if w := e.postRequest(`{"models":["ghost"],"reason":"x"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("未知模型应 400，得 %d", w.Code)
+	}
+	// 下架模型 → 400
+	if w := e.postRequest(`{"models":["m3"],"reason":"x"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("下架模型应 400，得 %d", w.Code)
+	}
+	// 全部已授权 → 400
+	if w := e.postRequest(`{"models":["m1"],"reason":"x"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("全部已授权应 400，得 %d", w.Code)
+	}
+	// 空申请 → 400
+	if w := e.postRequest(`{"reason":"x"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("空申请应 400，得 %d", w.Code)
+	}
+	var cnt int64
+	_ = e.db.Raw(`SELECT COUNT(*) FROM quota_requests`).Scan(&cnt).Error
+	if cnt != 1 {
+		t.Fatalf("仅第一笔合法申请应落库，cnt=%d", cnt)
+	}
+
+	// 额度申请（存量形态）仍走 quota 分支
+	if w := e.postRequest(`{"amount":50000,"reason":"加量"}`); w.Code != http.StatusOK {
+		t.Fatalf("额度申请应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	_ = e.db.Raw(`SELECT kind FROM quota_requests ORDER BY id DESC LIMIT 1`).Scan(&lastReq.Kind).Error
+	if lastReq.Kind != "quota" {
+		t.Fatalf("额度申请应 kind=quota，得 %q", lastReq.Kind)
+	}
+}
+
+// available 列表：全部启用模型 + 本人 granted 标记（下架模型不出现）
+func TestListAvailableModels(t *testing.T) {
+	e := newMemberEnv(t)
+	now := time.Now().Unix()
+	_ = e.db.Exec(`INSERT INTO models (name, input_price, output_price, status, created_at, updated_at)
+		VALUES ('m1', 1000000, 1000000, 1, ?, ?), ('m2', 1000000, 1000000, 1, ?, ?), ('m3', 1000000, 1000000, 0, ?, ?)`,
+		now, now, now, now, now, now).Error
+	_ = e.db.Exec(`INSERT INTO user_model_grants (user_id, model_name, created_at) VALUES (1, 'm1', ?)`, now).Error
+
+	req := httptest.NewRequest(http.MethodGet, "/api/member/models/available", nil)
+	req.Header.Set("Authorization", "Bearer "+e.token)
+	w := httptest.NewRecorder()
+	e.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	var resp []struct {
+		Name    string `json:"name"`
+		Granted bool   `json:"granted"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp) != 2 {
+		t.Fatalf("应只含启用模型 m1/m2，得 %+v", resp)
+	}
+	granted := map[string]bool{}
+	for _, m := range resp {
+		granted[m.Name] = m.Granted
+	}
+	if !granted["m1"] || granted["m2"] {
+		t.Fatalf("granted 标记错误: %+v", granted)
+	}
+}
+
+// waitForNotification 轮询等异步站内通知落库（提交申请的通知在 go func 里写）
+func waitForNotification(t *testing.T, db *gorm.DB, userID int64, typ string) bool {
+	t.Helper()
+	for i := 0; i < 40; i++ {
+		var cnt int64
+		_ = db.Raw("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND type = ?", userID, typ).Scan(&cnt).Error
+		if cnt > 0 {
+			return true
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return false
+}
+
+// 子账号提交申请 → 客户管理员收到 request_pending 站内通知（顶栏铃铛），
+// 标题含申请人、正文含额度与事由；提交人自己不收到
+func TestCreateRequestNotifiesOrgAdmin(t *testing.T) {
+	e := newMemberEnv(t)
+	// 管理员（id=2）：通知扇出的目标角色
+	if err := e.db.Exec(`INSERT INTO users (id, org_id, username, password_hash, role, status, created_at, updated_at)
+		VALUES (2, 1, 'admin', 'x', 'org_admin', 1, ?, ?)`, time.Now().Unix(), time.Now().Unix()).Error; err != nil {
+		t.Fatal(err)
+	}
+	w := e.postRequest(`{"amount":3000,"reason":"项目攻坚"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("提交申请应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	if !waitForNotification(t, e.db, 2, "request_pending") {
+		t.Fatal("客户管理员应收到待审批站内通知")
+	}
+	var row struct {
+		Title string
+		Body  string
+	}
+	_ = e.db.Raw("SELECT title, body FROM notifications WHERE user_id = 2 AND type = 'request_pending'").Scan(&row).Error
+	if !strings.Contains(row.Title, "待审批") || !strings.Contains(row.Body, "3000") || !strings.Contains(row.Body, "项目攻坚") {
+		t.Fatalf("通知内容应含申请人与事由：title=%q body=%q", row.Title, row.Body)
+	}
+	var selfCnt int64
+	_ = e.db.Raw("SELECT COUNT(*) FROM notifications WHERE user_id = 1").Scan(&selfCnt).Error
+	if selfCnt != 0 {
+		t.Fatalf("提交人不应收到 request_pending，实际 %d 条", selfCnt)
 	}
 }

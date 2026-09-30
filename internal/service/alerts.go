@@ -133,6 +133,7 @@ func mulGE128(a, sa, b, sb int64) bool {
 //	new > level  → CAS 抢占（UPDATE ... WHERE alert_level < new），胜者发信（跳档只发最高档）
 //	new < level  → 静默降级（拨备回落的惰性复位，不发信）
 //	new == level → 无动作
+//
 // sendAlertMailFn 发信动作（包级可替换：测试注入观察器，避免依赖邮件副作用）
 var sendAlertMailFn = sendAlertMail
 
@@ -231,8 +232,10 @@ func sendAlertMail(db *gorm.DB, kind string, id, used, limit, threshold int64) {
 			map[bool]string{true: "\n客户额度已耗尽：新请求将被拒绝（429），直至追加额度。\n", false: ""}[exhausted],
 			consoleLink("/org/billing"))
 		NotifyOrgAdmins(db, id, subject, body)
+		// 站内同步扇出（顶栏铃铛）：耗尽时平台管理员也收（续费线索）
+		NotifyOrgAdminsInsite(db, id, NotifyTypeQuotaAlert, subject, body)
 		if exhausted {
-			NotifyPlatformAdmins(db, subject+"（续费线索）", body)
+			NotifyPlatformAdminsInsite(db, NotifyTypeQuotaAlert, subject, body)
 		}
 		return
 	}
@@ -264,6 +267,9 @@ func sendAlertMail(db *gorm.DB, kind string, id, used, limit, threshold int64) {
 		map[bool]string{true: "\n个人额度已耗尽：新请求将被拒绝（429），直至追加额度。\n", false: ""}[exhausted],
 		consoleLink("/member/quota"))
 	NotifyUserAndAdmins(db, u.OrgID, u.Email, subject, body)
+	// 站内同步扇出：本人 + 客户管理员（顶栏铃铛）
+	NotifyUserInsite(db, id, NotifyTypeQuotaAlert, subject, body)
+	NotifyOrgAdminsInsite(db, u.OrgID, NotifyTypeQuotaAlert, subject, body)
 }
 
 func fmtInt(n int64) string { return fmt.Sprintf("%d", n) }

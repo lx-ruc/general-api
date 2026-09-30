@@ -36,7 +36,7 @@ type Usage struct {
 	PromptTokens     int64 `json:"prompt_tokens"`
 	CompletionTokens int64 `json:"completion_tokens"`
 	// DeepSeek 方言：命中/未命中的输入 tokens（两者之和 = prompt_tokens）
-	PromptCacheHitTokens int64 `json:"prompt_cache_hit_tokens"`
+	PromptCacheHitTokens  int64 `json:"prompt_cache_hit_tokens"`
 	PromptCacheMissTokens int64 `json:"prompt_cache_miss_tokens"`
 	// OpenAI 方言：prompt_tokens_details.cached_tokens
 	PromptTokensDetails *struct {
@@ -71,8 +71,8 @@ type Handler struct {
 	CacheIsolateOrg  bool          // 缓存按组织隔离
 
 	// ---- 上游调度强化 ----
-	KeyCooldownScope  string // channel=429 时同渠道全部 Key 一起冷却（厂商按账户限速）；key=仅当前 Key
-	MaxCandidates     int    // 单请求最多尝试候选数（渠道×Key）；0=不限
+	KeyCooldownScope  string       // channel=429 时同渠道全部 Key 一起冷却（厂商按账户限速）；key=仅当前 Key
+	MaxCandidates     int          // 单请求最多尝试候选数（渠道×Key）；0=不限
 	RetryKeyCodes     map[int]bool // 命中 → 冷却 Key + 同渠道换下一把（默认 429）
 	DisableKeyCodes   map[int]bool // 命中 → 禁用 Key + 换渠道（默认 401/403）
 	RetryChannelCodes map[int]bool // 命中 → 熔断计数 + 跳过渠道（默认 5xx）
@@ -84,23 +84,23 @@ func NewHandler(db *gorm.DB, cipher *crypto.Cipher, cfg *config.Config,
 		cd = coord.Nop{}
 	}
 	return &Handler{
-		DB:               db,
-		Cipher:           cipher,
-		Client:           NewHTTPClient(cfg.Gateway.UpstreamFirstByteTimeout.Duration),
-		MaxBody:          int64(cfg.Gateway.MaxBodyMB) << 20,
-		Limiter:          limiter,
-		Breaker:          NewBreaker(cfg.Gateway.ChannelBreakerThreshold),
-		Metrics:          m,
-		Coord:            cd,
-		MaxConcurrency:   cfg.Gateway.ChannelMaxConcurrency,
-		QueueWaitTimeout: cfg.Gateway.QueueWaitTimeout.Duration,
-		KeyCooldown:      cfg.Gateway.KeyCooldown.Duration,
-		CacheTTL:         cfg.Gateway.CacheTTL.Duration,
-		CacheIsolateOrg:  cfg.Gateway.CacheIsolateOrg,
-		KeyCooldownScope: cfg.Gateway.KeyCooldownScope,
-		MaxCandidates:    cfg.Gateway.MaxCandidates,
-		RetryKeyCodes:    parseCodeSet(cfg.Gateway.RetryKeyCodes),
-		DisableKeyCodes:  parseCodeSet(cfg.Gateway.DisableKeyCodes),
+		DB:                db,
+		Cipher:            cipher,
+		Client:            NewHTTPClient(cfg.Gateway.UpstreamFirstByteTimeout.Duration),
+		MaxBody:           int64(cfg.Gateway.MaxBodyMB) << 20,
+		Limiter:           limiter,
+		Breaker:           NewBreaker(cfg.Gateway.ChannelBreakerThreshold),
+		Metrics:           m,
+		Coord:             cd,
+		MaxConcurrency:    cfg.Gateway.ChannelMaxConcurrency,
+		QueueWaitTimeout:  cfg.Gateway.QueueWaitTimeout.Duration,
+		KeyCooldown:       cfg.Gateway.KeyCooldown.Duration,
+		CacheTTL:          cfg.Gateway.CacheTTL.Duration,
+		CacheIsolateOrg:   cfg.Gateway.CacheIsolateOrg,
+		KeyCooldownScope:  cfg.Gateway.KeyCooldownScope,
+		MaxCandidates:     cfg.Gateway.MaxCandidates,
+		RetryKeyCodes:     parseCodeSet(cfg.Gateway.RetryKeyCodes),
+		DisableKeyCodes:   parseCodeSet(cfg.Gateway.DisableKeyCodes),
 		RetryChannelCodes: parseCodeSet(cfg.Gateway.RetryChannelCodes),
 	}
 }
@@ -218,9 +218,9 @@ func truncateStr(s string, n int) string {
 type relayProto int
 
 const (
-	protoOpenAI     relayProto = iota // OpenAI chat/completions 原生直通
-	protoAnthropic                    // /v1/messages：Anthropic Messages 协议
-	protoResponses                    // /v1/responses：OpenAI Responses 协议（Codex 系客户端）
+	protoOpenAI    relayProto = iota // OpenAI chat/completions 原生直通
+	protoAnthropic                   // /v1/messages：Anthropic Messages 协议
+	protoResponses                   // /v1/responses：OpenAI Responses 协议（Codex 系客户端）
 )
 
 // relaySpec 端点差异参数化：chat / embeddings / messages / responses 共用同一条编排链路
@@ -378,6 +378,21 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			fmt.Sprintf("model %q does not exist or is not available", modelName))
 		return
 	}
+	// 客户差异化定价：该客户对该模型设了覆盖价则改写售卖三价（UNIQUE(org_id, model_name)
+	// 点查）；无覆盖行走模型默认价。成本价（cost_*）保持模型级不变。后续 applyUsage、
+	// 缓存命中分支、usage_logs 价格快照全部用覆盖后的 m，改价不影响历史账单
+	if ki.OrgID > 0 {
+		var op model.OrgModelPrice
+		if err := h.DB.Where("org_id = ? AND model_name = ?", ki.OrgID, modelName).First(&op).Error; err != nil {
+			// 无覆盖价属正常路径；真实 DB 错误（非记录不存在）不能静默吞掉——否则计费悄悄回落默认价
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				slog.Warn("org 定价点查失败，回退模型默认价", "org_id", ki.OrgID, "model", modelName, "err", err)
+				h.Metrics.OrgPriceErrors.Inc() // 错价入账风险信号：这段时间的账单按默认价计，可在 /metrics 对账
+			}
+		} else {
+			m.InputPrice, m.OutputPrice, m.InputCacheHitPrice = op.InputPrice, op.OutputPrice, op.InputCacheHitPrice
+		}
+	}
 
 	// 模型授权（子账号白名单）；在线体验（Playground）由管理面按角色预授权，跳过此检查
 	if !ki.Playground {
@@ -399,8 +414,13 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			// 429 会让 OpenAI 系客户端（codex 等）指数退避重试到上限再报
 			// "exceeded retry limit"，把真正的月限信息丢掉
 			if errors.Is(err, service.ErrUserQuota) || errors.Is(err, service.ErrOrgQuota) {
-				rec.Status, rec.Error = http.StatusPaymentRequired, err.Error()
-				werr(c, http.StatusPaymentRequired, "insufficient_balance", err.Error())
+				// 指引按调用者角色拼接：子账号找本客户管理员，客户管理员找平台
+				hint := "，请联系平台管理员充值"
+				if ki.UserRole == model.RoleMember {
+					hint = "，请联系贵司管理员处理"
+				}
+				rec.Status, rec.Error = http.StatusPaymentRequired, err.Error()+hint
+				werr(c, http.StatusPaymentRequired, "insufficient_balance", err.Error()+hint)
 				return
 			}
 			if errors.Is(err, service.ErrUserMonthly) || errors.Is(err, service.ErrOrgMonthly) {
@@ -490,7 +510,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			if selStats.QuotaCoolingKeys > 0 && selStats.QuotaCoolingKeys == selStats.CoolingKeys {
 				rec.Status, rec.Error = http.StatusPaymentRequired, "no available key (all quota cooling)"
 				werr(c, http.StatusPaymentRequired, "upstream_quota_exceeded",
-					"upstream vendor quota is exhausted, please contact the platform admin")
+					"上游厂商配额已耗尽，请联系平台管理员处理")
 				return
 			}
 			// 其余冷却（普通限流）语义不变：所有 Key 冷却中 → 429 而非 503
@@ -521,10 +541,10 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 	// 单个候选的完整尝试：acquire 闸门 → 转发 → 按响应分类。
 	// 闭包内 defer release，从结构上避免 defer-in-loop 泄漏。
 	var lastErr string
-	onlyRateLimited := true // 全部失败均因 429/排队超时 → 最终回 429 而非 502
-	authOnly := true        // 全部失败均因 401/403（Key 失效自动禁用）→ 回 503 而非 502
-	quotaOnly := true       // 全部失败均因配额类 429（厂商侧限额）→ 回 402 而非 429
-	timeoutOnly := true     // 全部失败均因上游超时（等待响应头/建连）→ 回 504 而非 502
+	onlyRateLimited := true         // 全部失败均因 429/排队超时 → 最终回 429 而非 502
+	authOnly := true                // 全部失败均因 401/403（Key 失效自动禁用）→ 回 503 而非 502
+	quotaOnly := true               // 全部失败均因配额类 429（厂商侧限额）→ 回 402 而非 429
+	timeoutOnly := true             // 全部失败均因上游超时（等待响应头/建连）→ 回 504 而非 502
 	coolApplied := time.Duration(0) // 本请求实际应用过的最大 Key 冷却时长（429 耗尽时如实回报客户端）
 	tryCandidate := func(cand Candidate) attemptResult {
 		// 渠道并发闸门（有界等待）。超时换渠道：同渠道其他 Key 面对同一个满闸门，重试无意义。
@@ -649,8 +669,8 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			return attemptNextKey
 
 		case codeMatch(h.DisableKeyCodes, resp.StatusCode):
-			// 401/403（默认）：Key 失效 → 禁用该 Key → 同渠道下一把 Key（主 Key 报错自动切备用；
-			// 候选列表只前进不回看，被禁 Key 不会在本请求内重复选中）
+			// 401/402/403（默认）：Key 失效 / 余额不足 → 禁用该 Key → 同渠道下一把 Key
+			// （主 Key 报错自动切备用；候选列表只前进不回看，被禁 Key 不会在本请求内重复选中）
 			drain()
 			onlyRateLimited, quotaOnly, timeoutOnly = false, false, false
 			h.disableKey(cand, resp.StatusCode)
@@ -850,7 +870,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		// （codex 等）指数退避重试到上限，把真实原因丢成 "exceeded retry limit"
 		rec.Status = http.StatusPaymentRequired
 		werr(c, http.StatusPaymentRequired, "upstream_quota_exceeded",
-			"upstream vendor quota is exhausted, please contact the platform admin")
+			"上游厂商配额已耗尽，请联系平台管理员处理")
 	case timeoutOnly:
 		// 全部失败均因上游超时（等待响应头/建连超时）→ 504 网关超时（网关惯例），
 		// 与 502 其它上游故障区分：语义是"慢"而非"坏"，客户端可稍后重试
@@ -870,10 +890,10 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		werr(c, http.StatusTooManyRequests, "upstream_busy",
 			"upstream is rate limited, please retry later")
 	case authOnly:
-		// 全部 Key 因 401/403 被上游拒绝并自动禁用 → 503，明确指向平台管理员配置问题
+		// 全部 Key 因 401/402/403 被上游拒绝（失效/欠费）并自动禁用 → 503，明确指向平台管理员配置问题
 		rec.Status = http.StatusServiceUnavailable
 		werr(c, http.StatusServiceUnavailable, "channel_key_invalid",
-			"upstream rejected all keys (401/403); the invalid keys are auto-disabled, please contact the platform admin")
+			"upstream rejected all keys (401/402/403); the invalid keys are auto-disabled, please contact the platform admin")
 	default:
 		rec.Status = http.StatusBadGateway
 		werr(c, http.StatusBadGateway, "upstream_error",
@@ -1053,7 +1073,7 @@ func (h *Handler) coolKeys(cands []Candidate, cur Candidate, d time.Duration) {
 	}
 }
 
-// disableKey 401/403 后禁用 Key：池内 Key 异步置 status=0（可在 Key 池管理手动恢复）；
+// disableKey 401/402/403 后禁用 Key：池内 Key 异步置 status=0（可在 Key 池管理手动恢复）；
 // legacy 单 Key 用长效冷却代替禁用（到期自动恢复，避免把渠道一刀切死）
 func (h *Handler) disableKey(cand Candidate, status int) {
 	if cand.KeyID == 0 {
@@ -1066,16 +1086,25 @@ func (h *Handler) disableKey(cand Candidate, status int) {
 	if h.Metrics != nil {
 		h.Metrics.KeyDisabled.Inc()
 	}
-	reason := fmt.Sprintf("auto-disabled: upstream %d at %s", status, time.Now().Format("2006-01-02 15:04:05"))
-	go func() {
-		if err := h.DB.Model(&model.ChannelKey{}).
-			Where("id = ? AND status = 1", cand.KeyID).
-			Updates(map[string]any{"status": 0, "remark": reason, "updated_at": time.Now().Unix()}).Error; err != nil {
-			slog.Error("自动禁用渠道 Key 失败", "channel_id", cand.ChannelID, "key_id", cand.KeyID, "err", err)
-			return
-		}
-		slog.Warn("上游 401/403，已自动禁用渠道 Key", "channel_id", cand.ChannelID, "key_id", cand.KeyID)
-	}()
+	go DisablePoolKey(h.DB, cand.ChannelID, cand.KeyID, status)
+}
+
+// DisablePoolKey 把池内一把 Key 置 status=0 并写中文备注（数据面转发与渠道探测共用入口）：
+// 渠道列表「启 N」计数、Key 池红色标行与备注列都来自这次落库——管理员能看到是哪把 Key、为何被禁。
+// 401/403 = Key 失效（过期/被吊销）；402 = 余额不足（DeepSeek 等厂商的欠费口径）
+func DisablePoolKey(db *gorm.DB, channelID, keyID int64, status int) {
+	ts := time.Now().Format("2006-01-02 15:04:05")
+	reason := fmt.Sprintf("上游 %d：Key 已失效（过期/被吊销），%s 自动禁用", status, ts)
+	if status == http.StatusPaymentRequired {
+		reason = fmt.Sprintf("上游 402：Key 余额不足（厂商侧欠费），%s 自动禁用", ts)
+	}
+	if err := db.Model(&model.ChannelKey{}).
+		Where("id = ? AND status = 1", keyID).
+		Updates(map[string]any{"status": 0, "remark": reason, "updated_at": time.Now().Unix()}).Error; err != nil {
+		slog.Error("自动禁用渠道 Key 失败", "channel_id", channelID, "key_id", keyID, "err", err)
+		return
+	}
+	slog.Warn("已自动禁用渠道 Key", "channel_id", channelID, "key_id", keyID, "status", status)
 }
 
 // ListModels GET /v1/models：该 key 授权范围内启用的模型（OpenAI list 格式）

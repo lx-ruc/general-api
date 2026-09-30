@@ -69,9 +69,7 @@ func (h *Handler) ListCostCenters(c *gin.Context) {
 	if rows == nil {
 		rows = []row{}
 	}
-	var o model.Org
-	_ = h.DB.Select("require_cost_center").Where("id = ?", oid).First(&o).Error
-	httpx.OK(c, gin.H{"list": rows, "require_cost_center": o.RequireCostCenter})
+	httpx.OK(c, gin.H{"list": rows})
 }
 
 // CreateCostCenter POST /api/org/cost-centers（org 内重名拒绝）
@@ -125,30 +123,6 @@ func (h *Handler) UpdateCostCenter(c *gin.Context) {
 	res := h.DB.Model(&model.CostCenter{}).Where("id = ? AND org_id = ?", id, oid).Updates(updates)
 	if res.Error != nil || res.RowsAffected == 0 {
 		httpx.Fail(c, http.StatusNotFound, "成本中心不存在")
-		return
-	}
-	httpx.OK(c, gin.H{"message": "已更新"})
-}
-
-// UpdateCostCenterConfig PUT /api/org/cost-centers/config（require_cost_center 开关，默认关）
-func (h *Handler) UpdateCostCenterConfig(c *gin.Context) {
-	oid, ok := orgID(c)
-	if !ok {
-		return
-	}
-	var req struct {
-		RequireCostCenter *int `json:"require_cost_center" binding:"required"`
-	}
-	if !httpx.BindJSON(c, &req) {
-		return
-	}
-	if *req.RequireCostCenter != 0 && *req.RequireCostCenter != 1 {
-		httpx.Fail(c, http.StatusBadRequest, "require_cost_center 只能为 0 或 1")
-		return
-	}
-	if err := h.DB.Model(&model.Org{}).Where("id = ?", oid).
-		Update("require_cost_center", *req.RequireCostCenter).Error; err != nil {
-		httpx.Fail(c, http.StatusInternalServerError, "更新失败")
 		return
 	}
 	httpx.OK(c, gin.H{"message": "已更新"})

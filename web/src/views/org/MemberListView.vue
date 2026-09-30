@@ -4,7 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import dayjs from 'dayjs'
 import {
   apiListMembers, apiCreateMember, apiUpdateMember, apiDeleteMember,
-  apiResetMemberPassword, apiAddMemberQuota, apiGetMemberModels, apiSetMemberModels,
+  apiResetMemberPassword, apiGetMemberModels, apiSetMemberModels,
   type Member,
 } from '../../api/org'
 import { fmtTime, fmtQuota } from '../../utils/format'
@@ -47,30 +47,7 @@ async function submitCreate() {
   load()
 }
 
-// 额度 / 月限（同样按 M tokens 录入；负数为回收）
-const quotaVisible = ref(false)
-const quotaForm = reactive({ member: null as Member | null, amount: 1, remark: '', monthly: 0 })
-function openQuota(m: Member) {
-  quotaForm.member = m
-  quotaForm.amount = 1
-  quotaForm.remark = ''
-  quotaForm.monthly = (m.monthly_quota || 0) / M
-  quotaVisible.value = true
-}
-async function submitQuota() {
-  if (!quotaForm.member) return
-  // input-number 清空后是 null（falsy）：追加 0 无意义跳过，但月限等后续步骤必须照常提交，
-  // 否则「只改单月上限」点确定无任何反应
-  const amount = Math.round((quotaForm.amount || 0) * M)
-  if (amount !== 0) {
-    await apiAddMemberQuota(quotaForm.member.id, amount, quotaForm.remark)
-  }
-  // 单月上限走设值更新（0=不限；与追加额度独立，总是提交保持一致）
-  await apiUpdateMember(quotaForm.member.id, { monthly_quota: Math.round((quotaForm.monthly || 0) * M) || 0 })
-  ElMessage.success(amount !== 0 ? '额度与月限已更新' : '单月上限已更新')
-  quotaVisible.value = false
-  load()
-}
+// 额度操作（下发/回收、月限、限额切换）统一在「配额下发」页，这里只做账号管理
 
 // 重置密码
 const pwdVisible = ref(false)
@@ -104,12 +81,6 @@ async function submitGrant() {
 
 function toggleStatus(m: Member) {
   apiUpdateMember(m.id, { status: m.status === 1 ? 0 : 1 }).then(load)
-}
-function setUnlimited(m: Member, unlimited: boolean) {
-  apiUpdateMember(m.id, { quota_unlimited: unlimited }).then(() => {
-    ElMessage.success(unlimited ? '已设为不限额' : '已转为限额')
-    load()
-  })
 }
 function remove(m: Member) {
   ElMessageBox.confirm(`删除子账号「${m.display_name || m.username}」及其全部密钥？`, '危险操作', { type: 'warning' })
@@ -176,17 +147,14 @@ function remove(m: Member) {
       <el-table-column label="创建时间" width="160">
         <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="230" fixed="right">
+      <el-table-column label="操作" width="180" fixed="right">
         <template #default="{ row }">
-          <!-- 三个操作保持在同一行：nowrap 防换行，列宽按三按钮实际宽度留足 -->
+          <!-- 只有账号管理；额度操作（下发/回收、月限、限额切换）统一在「配额下发」页 -->
           <div class="op-row">
             <el-button size="small" type="primary" plain @click="openGrant(row)">模型授权</el-button>
-            <el-button size="small" @click="openQuota(row)">额度</el-button>
               <el-dropdown trigger="click" @command="(cmd: string) => {
               if (cmd === 'pwd') pwdForm.member = row, pwdVisible = true
               else if (cmd === 'toggle') toggleStatus(row)
-              else if (cmd === 'unlimited') setUnlimited(row, true)
-              else if (cmd === 'limit') setUnlimited(row, false)
               else if (cmd === 'delete') remove(row)
             }">
               <el-button size="small" class="more-btn">
@@ -196,9 +164,7 @@ function remove(m: Member) {
                 <el-dropdown-menu>
                   <el-dropdown-item command="pwd">重置密码</el-dropdown-item>
                   <el-dropdown-item command="toggle">{{ row.status === 1 ? '停用账号' : '启用账号' }}</el-dropdown-item>
-                  <el-dropdown-item v-if="row.quota_limit != null" command="unlimited" divided>设为不限额</el-dropdown-item>
-                  <el-dropdown-item v-else command="limit">设为限额</el-dropdown-item>
-                  <el-dropdown-item command="delete" class="danger-item">删除子账号</el-dropdown-item>
+                  <el-dropdown-item command="delete" class="danger-item" divided>删除子账号</el-dropdown-item>
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
@@ -224,32 +190,6 @@ function remove(m: Member) {
     <template #footer>
       <el-button @click="createVisible = false">取消</el-button>
       <el-button type="primary" @click="submitCreate">创建</el-button>
-    </template>
-  </el-dialog>
-
-  <el-dialog v-model="quotaVisible" :title="`额度 / 月限：${quotaForm.member?.display_name || quotaForm.member?.username || ''}`" width="440px">
-    <el-form label-width="100px">
-      <el-form-item label="当前总额度">
-        <span v-if="quotaForm.member?.quota_limit == null" class="unlimited">不限（下面的追加在此基数上累加）</span>
-        <span v-else>
-          已用 {{ fmtQuota(quotaForm.member.quota_used) }} / 上限 {{ fmtQuota(quotaForm.member.quota_limit) }}
-          <span v-if="quotaForm.member.quota_limit - quotaForm.member.quota_used < 0" class="red">（已超限，调用会被拦截）</span>
-          <span class="dim">；要解除上限请用「更多 → 设为不限额」</span>
-        </span>
-      </el-form-item>
-      <el-form-item label="追加（M tokens）">
-        <el-input-number v-model="quotaForm.amount" :step="1" />
-        <span class="tip">负数为回收；= {{ fmtQuota(Math.round(quotaForm.amount * M)) }}</span>
-      </el-form-item>
-      <el-form-item label="单月上限（M tokens）">
-        <el-input-number v-model="quotaForm.monthly" :min="0" :step="1" />
-        <span class="tip">0 = 不限；当月达限停用，次月自动清零</span>
-      </el-form-item>
-      <el-form-item label="备注"><el-input v-model="quotaForm.remark" /></el-form-item>
-    </el-form>
-    <template #footer>
-      <el-button @click="quotaVisible = false">取消</el-button>
-      <el-button type="primary" @click="submitQuota">确定</el-button>
     </template>
   </el-dialog>
 

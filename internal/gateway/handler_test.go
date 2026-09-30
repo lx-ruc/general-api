@@ -907,8 +907,8 @@ func TestQuotaRejectionStatus402(t *testing.T) {
 	mustExec(t, e.f, `UPDATE users SET quota_limit = NULL, quota_used = 0`)
 	mustExec(t, e.f, `UPDATE orgs SET status = 2`)
 	w = e.post(chatBody("hi", ""))
-	if w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "arrears") {
-		t.Fatalf("欠费停服应 402 arrears，得 %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "欠费停服") {
+		t.Fatalf("欠费停服应 402（文案含「欠费停服」），得 %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -1070,5 +1070,65 @@ func TestUpstreamTimeoutMixedWith5xxReturns502(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "upstream_error") {
 		t.Fatalf("错误码应为 upstream_error: %s", w.Body.String())
+	}
+}
+
+// 客户差异化定价：org_model_prices 覆盖行改写该客户该模型的售卖三价（usage_logs
+// 价格快照 + Cost 扣费同步变化）；删除覆盖后回落模型默认价；成本价不受覆盖影响
+func TestOrgModelPriceOverrideBilling(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(okBody))
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, nil, 1)
+
+	// 基线：默认价 2M/8M → cost = 7*2 + 3*8 = 38
+	if w := e.post(chatBody("q", "")); w.Code != http.StatusOK {
+		t.Fatalf("默认价请求应 200，得 %d: %s", w.Code, w.Body)
+	}
+	id1 := e.lastUsage(t)
+	if cost, _, _ := e.usageRow(t, id1); cost != 38 {
+		t.Fatalf("默认价 cost 应 38，得 %d", cost)
+	}
+
+	// 设客户覆盖价 3M/9M → cost = 7*3 + 3*9 = 48，快照价=覆盖价
+	now := time.Now().Unix()
+	mustExec(t, e.f, `INSERT INTO org_model_prices (org_id, model_name, input_price, output_price, created_at, updated_at)
+		VALUES (1, 'm1', 3000000, 9000000, ?, ?)`, now, now)
+	if w := e.post(chatBody("q", "")); w.Code != http.StatusOK {
+		t.Fatalf("覆盖价请求应 200，得 %d: %s", w.Code, w.Body)
+	}
+	id2 := e.lastUsage(t)
+	var row struct {
+		Cost             int64
+		InputPrice       int64
+		OutputPrice      int64
+		CostInputPrice   int64
+		CostOutputPrice  int64
+	}
+	_ = e.f.db.Raw(`SELECT cost, input_price, output_price, cost_input_price, cost_output_price
+		FROM usage_logs WHERE id = ?`, id2).Scan(&row).Error
+	if row.Cost != 48 || row.InputPrice != 3_000_000 || row.OutputPrice != 9_000_000 {
+		t.Fatalf("覆盖价应生效（cost=48, 3M/9M），得 %+v", row)
+	}
+	if row.CostInputPrice != 0 || row.CostOutputPrice != 0 {
+		t.Fatalf("成本价不得被客户覆盖改写，得 %+v", row)
+	}
+
+	// 历史快照不被改价影响：首笔仍是默认价
+	var ip1 int64
+	_ = e.f.db.Raw(`SELECT input_price FROM usage_logs WHERE id = ?`, id1).Scan(&ip1).Error
+	if ip1 != 2_000_000 {
+		t.Fatalf("历史笔快照应保持默认价，得 %d", ip1)
+	}
+
+	// 删除覆盖 → 回落默认价
+	mustExec(t, e.f, `DELETE FROM org_model_prices WHERE org_id = 1 AND model_name = 'm1'`)
+	if w := e.post(chatBody("q", "")); w.Code != http.StatusOK {
+		t.Fatalf("回落默认价请求应 200，得 %d: %s", w.Code, w.Body)
+	}
+	if cost, _, _ := e.usageRow(t, e.lastUsage(t)); cost != 38 {
+		t.Fatalf("删除覆盖后 cost 应回 38，得 %d", cost)
 	}
 }

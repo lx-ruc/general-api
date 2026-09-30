@@ -9,6 +9,7 @@ import (
 	"gorm.io/gorm"
 
 	"token-gateway/internal/auth"
+	"token-gateway/internal/model"
 )
 
 const ctxKeyInfo = "key_info"
@@ -73,13 +74,17 @@ func APIKeyAuth(db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 		if row.UserStatus != 1 || row.OrgStatus == 0 {
-			v1Abort(c, http.StatusForbidden, "permission_error", "account or organization is disabled")
+			v1Abort(c, http.StatusForbidden, "permission_error", "账号或所在客户已被停用，请联系管理员确认")
 			return
 		}
 		if row.OrgStatus == 2 { // 欠费停服：额度耗尽自动置位，充值后自动恢复
-			// 402 与数据面预检同口径：重试不可能恢复的错误，避免客户端按 429 退避重试
-			v1Abort(c, http.StatusPaymentRequired, "insufficient_balance",
-				"organization suspended for arrears (quota exhausted), please contact the platform admin to recharge")
+			// 402 与数据面预检同口径：重试不可能恢复的错误，避免客户端按 429 退避重试。
+			// 指引按调用者角色：子账号只能找本客户管理员，客户管理员才能找平台充值
+			msg := "客户额度已耗尽（欠费停服），请联系平台管理员充值恢复"
+			if row.UserRole == model.RoleMember {
+				msg = "所在客户额度已耗尽（欠费停服），请联系贵司管理员充值恢复"
+			}
+			v1Abort(c, http.StatusPaymentRequired, "insufficient_balance", msg)
 			return
 		}
 		ki := row.KeyInfo

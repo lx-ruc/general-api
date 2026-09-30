@@ -3,11 +3,14 @@ package org
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"token-gateway/internal/auth"
 	"token-gateway/internal/database"
@@ -19,6 +22,10 @@ import (
 
 // errRequestHandled 审批事务内条件更新未命中（申请已被并发处理）的哨兵错误
 var errRequestHandled = errors.New("request already handled")
+
+// errMemberUnlimited 审批额度申请时申请人为不限额子账号的哨兵错误：
+// NULL 基线上加额会把「不限」悄悄顶成「限额=追加额」，必须显式拒绝
+var errMemberUnlimited = errors.New("member quota unlimited")
 
 type Handler struct {
 	DB *gorm.DB
@@ -307,6 +314,10 @@ func (h *Handler) AddMemberQuota(c *gin.Context) {
 			httpx.Fail(c, http.StatusBadRequest, "追加后额度超出可表示范围，请调整数值")
 			return
 		}
+		if err == service.ErrQuotaUnlimited {
+			httpx.Fail(c, http.StatusBadRequest, "该子账号为不限额，无需追加额度；如需恢复上限请把额度模式切回「限额」")
+			return
+		}
 		httpx.Fail(c, http.StatusInternalServerError, "追加额度失败")
 		return
 	}
@@ -416,7 +427,18 @@ func (h *Handler) StatsOverview(c *gin.Context) {
 	}
 	var org model.Org
 	_ = h.DB.Where("id = ?", oid).First(&org).Error
-	httpx.OK(c, gin.H{"overview": ov, "org": org})
+	// 子账号上限聚合（配额下发页超发提示用）：限额账号的 quota_limit 合计；
+	// 存在不限账号时合计无意义，前端据 unlimited_count 跳过提示
+	var pool struct {
+		LimitsSum      int64 `json:"limits_sum"`
+		MemberCount    int64 `json:"member_count"`
+		UnlimitedCount int64 `json:"unlimited_count"`
+	}
+	_ = h.DB.Raw(`SELECT COALESCE(SUM(quota_limit), 0) AS limits_sum,
+		COUNT(*) AS member_count,
+		SUM(CASE WHEN quota_limit IS NULL THEN 1 ELSE 0 END) AS unlimited_count
+		FROM users WHERE org_id = ? AND role = 'member'`, oid).Scan(&pool).Error
+	httpx.OK(c, gin.H{"overview": ov, "org": org, "quota_pool": pool})
 }
 
 // ListUsage GET /api/org/usage
@@ -553,7 +575,8 @@ func (h *Handler) ListRequests(c *gin.Context) {
 	httpx.PageResult(c, rows, total, page, size)
 }
 
-// HandleRequest PUT /api/org/requests/:id：审批（通过即同事务追加额度）
+// HandleRequest PUT /api/org/requests/:id：审批。额度申请通过即同事务追加额度；
+// 模型申请通过即同事务逐模型写 user_model_grants（UNIQUE + ON CONFLICT DO NOTHING 天然幂等）
 func (h *Handler) HandleRequest(c *gin.Context) {
 	oid, ok := orgID(c)
 	if !ok {
@@ -575,6 +598,19 @@ func (h *Handler) HandleRequest(c *gin.Context) {
 		httpx.Fail(c, http.StatusNotFound, "申请不存在或已处理")
 		return
 	}
+	// 模型申请前置校验（事务外快速失败，事务内不再复查——审批窗口内的下架
+	// 由 UNIQUE/启用约束兜底，写入已禁用模型不会破坏数据，仅不可调用）
+	if qr.Kind == "model" && req.Action == "approve" {
+		names := modelNamesOf(qr.ModelNames)
+		for _, n := range names {
+			var cnt int64
+			_ = h.DB.Raw("SELECT COUNT(*) FROM models WHERE name = ? AND status = 1", n).Scan(&cnt).Error
+			if cnt != 1 {
+				httpx.Fail(c, http.StatusBadRequest, "模型 "+n+" 已下架或不存在，请拒绝本次申请")
+				return
+			}
+		}
+	}
 	now := time.Now().Unix()
 	operator := middleware.GetUID(c)
 	err := h.DB.Transaction(func(tx *gorm.DB) error {
@@ -594,16 +630,46 @@ func (h *Handler) HandleRequest(c *gin.Context) {
 			return errRequestHandled
 		}
 		if req.Action == "approve" {
-			if err := tx.Exec("UPDATE users SET quota_limit = COALESCE(quota_limit, 0) + ?, updated_at = ? WHERE id = ? AND org_id = ?",
-				qr.Amount, now, qr.UserID, oid).Error; err != nil {
-				return err
+			switch qr.Kind {
+			case "model":
+				// 逐模型写授权：已授权的静默跳过（幂等），granted_by 记审批人
+				for _, n := range modelNamesOf(qr.ModelNames) {
+					if err := tx.Exec(`INSERT INTO user_model_grants (user_id, model_name, granted_by, created_at)
+						VALUES (?, ?, ?, ?) ON CONFLICT (user_id, model_name) DO NOTHING`,
+						qr.UserID, n, operator, now).Error; err != nil {
+						return err
+					}
+				}
+				return nil
+			default: // quota（存量行 kind 为空串时同样走额度分支）
+				// 不限额子账号拒绝加额（NULL 基线上加额会顶掉「不限」），整单拒绝留待改限额后再批
+				q := tx.Where("id = ? AND org_id = ?", qr.UserID, oid)
+				if tx.Dialector.Name() == "postgres" {
+					q = q.Clauses(clause.Locking{Strength: "UPDATE"}) // PG 行锁防丢失更新；SQLite 由 _txlock=immediate 串行化护住窗口
+				}
+				var mu model.User
+				if err := q.First(&mu).Error; err != nil {
+					return err
+				}
+				if mu.QuotaLimit == nil {
+					return errMemberUnlimited
+				}
+				// 与 AddMemberQuota 同口径的溢出预检：SQL 加法溢出只会以 500 收场且文案难辨，
+				// 提前以 400 拒绝并保持 pending（申请可改小后重批）
+				if *mu.QuotaLimit > math.MaxInt64-qr.Amount {
+					return service.ErrQuotaOverflow
+				}
+				if err := tx.Exec("UPDATE users SET quota_limit = COALESCE(quota_limit, 0) + ?, updated_at = ? WHERE id = ? AND org_id = ?",
+					qr.Amount, now, qr.UserID, oid).Error; err != nil {
+					return err
+				}
+				// 流水与加额度同事务，杜绝"额度已动、流水缺失"的审计断裂
+				return tx.Create(&model.QuotaGrant{
+					SubjectType: "user", SubjectID: qr.UserID, Amount: qr.Amount,
+					Remark:     fmt.Sprintf("额度申请 #%d 审批通过", id),
+					OperatorID: opID(operator), CreatedAt: now,
+				}).Error
 			}
-			// 流水与加额度同事务，杜绝"额度已动、流水缺失"的审计断裂
-			return tx.Create(&model.QuotaGrant{
-				SubjectType: "user", SubjectID: qr.UserID, Amount: qr.Amount,
-				Remark:     fmt.Sprintf("额度申请 #%d 审批通过", id),
-				OperatorID: opID(operator), CreatedAt: now,
-			}).Error
 		}
 		return nil
 	})
@@ -612,10 +678,50 @@ func (h *Handler) HandleRequest(c *gin.Context) {
 			httpx.Fail(c, http.StatusNotFound, "申请不存在或已处理")
 			return
 		}
+		if errors.Is(err, errMemberUnlimited) {
+			httpx.Fail(c, http.StatusBadRequest, "该子账号当前为不限额，无法追加额度；请先把额度模式切回「限额」再审批")
+			return
+		}
+		if errors.Is(err, service.ErrQuotaOverflow) {
+			httpx.Fail(c, http.StatusBadRequest, "额度超出可表示范围，请调低申请额度后重批")
+			return
+		}
 		httpx.Fail(c, http.StatusInternalServerError, "审批失败")
 		return
 	}
+	// 站内通知申请人审批结果（顶栏铃铛；邮件扇出另行按需配置）
+	go func() {
+		var title, body string
+		if req.Action == "approve" {
+			switch qr.Kind {
+			case "model":
+				title = "模型申请已通过"
+				body = fmt.Sprintf("管理员已为你开通模型：%s。", qr.ModelNames)
+			default:
+				title = "额度申请已通过"
+				body = fmt.Sprintf("额度 +%d token 已到账生效。", qr.Amount)
+			}
+		} else {
+			title = "申请已被拒绝"
+			body = "管理员拒绝了你的申请。"
+			if req.Reply != "" {
+				body += "回复：" + req.Reply
+			}
+		}
+		service.NotifyUserInsite(h.DB, qr.UserID, service.NotifyTypeRequestHandled, title, body)
+	}()
 	httpx.OK(c, gin.H{"message": "已处理"})
+}
+
+// modelNamesOf 申请单里的模型名拆分（逗号分隔，去空）
+func modelNamesOf(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func opID(id int64) *int64 {
@@ -666,6 +772,15 @@ func (h *Handler) CreateRecharge(c *gin.Context) {
 		httpx.Fail(c, http.StatusInternalServerError, "提交失败")
 		return
 	}
+	// 站内通知平台管理员审批（顶栏铃铛）
+	go func() {
+		var orgName string
+		_ = h.DB.Raw("SELECT name FROM orgs WHERE id = ?", oid).Scan(&orgName).Error
+		service.NotifyPlatformAdminsInsite(h.DB, service.NotifyTypeRecharge,
+			fmt.Sprintf("充值申请待审批：%s", orgName),
+			fmt.Sprintf("客户「%s」提交了充值申请 #%d：+%d token（凭证已上传）。到【客户管理 → 充值审批】处理。",
+				orgName, r.ID, req.Amount))
+	}()
 	httpx.OK(c, gin.H{"id": r.ID, "message": "充值申请已提交，平台确认到账后额度自动增加并邮件通知你"})
 }
 

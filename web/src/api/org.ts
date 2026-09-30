@@ -53,12 +53,15 @@ export interface CostReportRow {
   cost: number
 }
 
+// 申请单双形态：kind=quota 额度申请 / kind=model 模型授权申请（model_names 逗号分隔）
 export interface QuotaRequestRow {
   id: number
   org_id: number
   user_id: number
   username?: string
+  kind: 'quota' | 'model' | ''
   amount: number
+  model_names: string
   reason: string
   status: 'pending' | 'approved' | 'rejected'
   reply: string
@@ -85,12 +88,10 @@ export const apiUpdateOrgKeyStatus = (id: number, status: number) =>
   http.put<any, any>(`/api/org/keys/${id}/status`, { status })
 
 // ---- 成本中心 ----
-export const apiOrgCostCenters = () => http.get<any, { list: CostCenter[]; require_cost_center: number }>('/api/org/cost-centers')
+export const apiOrgCostCenters = () => http.get<any, { list: CostCenter[] }>('/api/org/cost-centers')
 export const apiCreateCostCenter = (name: string) => http.post<any, any>('/api/org/cost-centers', { name })
 export const apiUpdateCostCenter = (id: number, data: { name?: string; status?: number }) =>
   http.put<any, any>(`/api/org/cost-centers/${id}`, data)
-export const apiUpdateCostCenterConfig = (require_cost_center: number) =>
-  http.put<any, any>('/api/org/cost-centers/config', { require_cost_center })
 export const apiReassignKeyCenter = (id: number, cost_center_id: number | null) =>
   http.put<any, any>(`/api/org/keys/${id}/cost-center`, { cost_center_id })
 export const apiCostCenterReport = (params?: any) =>

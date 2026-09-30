@@ -172,7 +172,10 @@ func TestChannelTestDisablesAfterThreshold(t *testing.T) {
 	if n, err := ChannelTestOnce(e.h, 3, failures); err != nil || n != 1 {
 		t.Fatalf("第三轮应禁用 1 个渠道，got n=%d err=%v", n, err)
 	}
-	var row struct{ Status, AutoDisabledAt int64; Remark string }
+	var row struct {
+		Status, AutoDisabledAt int64
+		Remark                 string
+	}
 	if err := e.f.db.Raw("SELECT status, auto_disabled_at, remark FROM channels WHERE id = 1").Scan(&row).Error; err != nil ||
 		row.Status != 0 || row.AutoDisabledAt == 0 || !strings.Contains(row.Remark, "定时体检") {
 		t.Fatalf("应禁用并写系统标记，got %+v err=%v", row, err)
@@ -308,8 +311,9 @@ func TestProbeQuotaSingleKeyClassified(t *testing.T) {
 	}
 }
 
-// 401 失效 Key + 健康 Key：探测应冷却失效 Key、换下一把报成功——
-// 「主 Key 报错自动切备用」在探测侧（管理台测试/体检/自动恢复）同样成立
+// 401 失效 Key + 健康 Key：探测应禁用失效 Key（落库 + 中文备注）、换下一把报成功——
+// 「主 Key 报错自动切备用」在探测侧（管理台测试/体检/自动恢复）同样成立，
+// 且与数据面 disableKey 同一落库入口：渠道列表「启 N」与 Key 池红行据此可见
 func TestProbeDeadKeySwitchesToHealthyKey(t *testing.T) {
 	e := newTestEnv(t)
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -330,11 +334,53 @@ func TestProbeDeadKeySwitchesToHealthyKey(t *testing.T) {
 	if !strings.Contains(res.KeyDesc, "Key #2") || !strings.Contains(res.KeyDesc, "HTTP 401") {
 		t.Fatalf("结果应注明跳过了失效 Key（401），got %q", res.KeyDesc)
 	}
+	var dead struct {
+		Status int64
+		Remark string
+	}
+	_ = e.f.db.Raw("SELECT status, remark FROM channel_keys WHERE id = 1").Scan(&dead)
+	if dead.Status != 0 || !strings.Contains(dead.Remark, "Key 已失效") {
+		t.Fatalf("失效 Key 应落库禁用并写中文备注，got status=%d remark=%q", dead.Status, dead.Remark)
+	}
+	var healthy struct{ Status int64 }
+	_ = e.f.db.Raw("SELECT status FROM channel_keys WHERE id = 2").Scan(&healthy)
+	if healthy.Status != 1 {
+		t.Fatalf("健康 Key 不应被禁用，got status=%d", healthy.Status)
+	}
 	if !e.cd.IsCooling("ck:1:1") || e.cd.IsQuotaCooling("ck:1:1") {
 		t.Fatal("失效 Key 应进入普通冷却（非配额冷却）")
 	}
 	if e.cd.IsCooling("ck:1:2") {
 		t.Fatal("健康 Key 不应连坐冷却")
+	}
+}
+
+// 402 余额不足的 Key：探测同样落库禁用（备注注明余额不足）并换下一把——
+// DeepSeek 等厂商欠费回 402，不落库则渠道列表永远显示「启 N」看不出哪把没钱
+func TestProbeBalanceExhaustedKeyDisabled(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.Header.Get("Authorization"), "k1") {
+			w.WriteHeader(http.StatusPaymentRequired)
+			_, _ = w.Write([]byte(`{"error":{"code":"insufficient_balance","message":"Insufficient Balance"}}`))
+			return
+		}
+		_, _ = w.Write([]byte(okBody))
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, []string{"k1", "k2"}, 10)
+
+	res := ProbeChannel(e.h.DB, e.h.Cipher, e.h.Client, e.h.Coord, e.h.KeyCooldown, 1)
+	if !res.OK || !strings.Contains(res.KeyDesc, "HTTP 402") {
+		t.Fatalf("余额不足 Key 应被跳过并报成功（注明 402），got ok=%v keydesc=%q", res.OK, res.KeyDesc)
+	}
+	var dead struct {
+		Status int64
+		Remark string
+	}
+	_ = e.f.db.Raw("SELECT status, remark FROM channel_keys WHERE id = 1").Scan(&dead)
+	if dead.Status != 0 || !strings.Contains(dead.Remark, "余额不足") {
+		t.Fatalf("余额不足 Key 应落库禁用并注明原因，got status=%d remark=%q", dead.Status, dead.Remark)
 	}
 }
 

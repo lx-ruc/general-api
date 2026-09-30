@@ -68,9 +68,53 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	}
 	slog.Info("客户自助注册", "org", req.OrgName, "email", req.Email, "admin", req.Username)
 	httpx.OK(c, gin.H{
-		"message": "注册成功，请登录。客户初始额度为 0，请联系系统管理员分配额度后再调用 API",
+		"message":  "注册成功，请登录。客户初始额度为 0，请联系系统管理员分配额度后再调用 API",
 		"org_name": req.OrgName, "username": req.Username,
 	})
+}
+
+// ForgotPassword POST /api/auth/forgot-password：输入绑定邮箱，发重置链接邮件。
+// 邮箱未绑定账号：直接报错，不发信（不消耗邮件服务）
+func (h *AuthHandler) ForgotPassword(c *gin.Context) {
+	var req struct {
+		Email string `json:"email" binding:"required"`
+	}
+	if !httpx.BindJSON(c, &req) {
+		return
+	}
+	devLink, retryAfter, err := service.RequestPasswordReset(h.DB, req.Email)
+	if err != nil {
+		if retryAfter > 0 {
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": gin.H{"message": err.Error(), "retry_after": retryAfter}})
+			return
+		}
+		// 未绑定/格式错误/邮件发送失败，都如实返回
+		httpx.Fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	resp := gin.H{"message": "重置链接已发送，请查收（注意垃圾邮件箱）"}
+	if devLink != "" {
+		// SMTP/site_url 未配置（开发模式）：直接返回链接，方便本地联调
+		resp["dev_link"] = devLink
+		resp["message"] = "SMTP 或 site_url 未配置：重置链接以开发模式返回"
+	}
+	httpx.OK(c, resp)
+}
+
+// ResetPassword POST /api/auth/reset-password：邮件链接里的 token + 新密码
+func (h *AuthHandler) ResetPassword(c *gin.Context) {
+	var req struct {
+		Token       string `json:"token" binding:"required"`
+		NewPassword string `json:"new_password" binding:"required,min=6"`
+	}
+	if !httpx.BindJSON(c, &req) {
+		return
+	}
+	if err := service.ResetPassword(h.DB, req.Token, req.NewPassword); err != nil {
+		httpx.Fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	httpx.OK(c, gin.H{"message": "密码已重置，请用新密码登录"})
 }
 
 // Login POST /api/auth/login

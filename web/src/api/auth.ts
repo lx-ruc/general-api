@@ -28,6 +28,17 @@ export const apiMe = () => http.get<any, UserInfo>('/api/me')
 export const apiChangePassword = (old_password: string, new_password: string) =>
   http.put<any, { message: string }>('/api/me/password', { old_password, new_password })
 
+// ---- 忘记密码（邮箱验证 + 邮件链接重置）----
+// skipErrorToast：错误文案由弹窗/页面内联展示，拦截器不重复弹全局 toast
+
+export const apiForgotPassword = (email: string) =>
+  http.post<any, { message: string; dev_link?: string }>(
+    '/api/auth/forgot-password', { email }, { skipErrorToast: true })
+
+export const apiResetPassword = (token: string, new_password: string) =>
+  http.post<any, { message: string }>(
+    '/api/auth/reset-password', { token, new_password }, { skipErrorToast: true })
+
 // ---- 管理面访问令牌（仅平台/客户管理员；程序化对接管理 API 用）----
 
 export interface AccessToken {

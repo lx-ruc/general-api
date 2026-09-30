@@ -124,8 +124,8 @@ func ChannelTestOnce(h *Handler, failThreshold int, failures map[int64]int) (int
 			"err", truncateStr(errStr, 200))
 		service.NotifyPlatformAdmins(h.DB,
 			fmt.Sprintf("渠道「%s」体检连续失败已自动禁用", ch.Name),
-			fmt.Sprintf("启用中的渠道「%s」（#%d）连续 %d 次定时体检失败：%s\n渠道已自动禁用，探测成功后将自动恢复；也可到管理台手动处理。\n时间：%s\n—— 慧沐引擎",
-				ch.Name, ch.ID, failThreshold, truncateStr(errStr, 300), time.Now().Format("2006-01-02 15:04:05")))
+			fmt.Sprintf("启用中的渠道「%s」（#%d）连续 %d 次定时体检失败：%s\n渠道已自动禁用，探测成功后将自动恢复；也可到管理台手动处理。\n时间：%s\n—— %s",
+				ch.Name, ch.ID, failThreshold, truncateStr(errStr, 300), time.Now().Format("2006-01-02 15:04:05"), service.BrandName))
 	}
 	return disabled, nil
 }
@@ -158,8 +158,8 @@ func AutoProbeOnce(h *Handler) (int, error) {
 					"latency_ms", latency)
 				service.NotifyPlatformAdmins(h.DB,
 					fmt.Sprintf("渠道「%s」已自动恢复", ch.Name),
-					fmt.Sprintf("此前因连续失败被熔断禁用的渠道「%s」（#%d）探测成功（%d ms），已自动重新启用。\n时间：%s\n—— 慧沐引擎",
-						ch.Name, ch.ID, latency, time.Now().Format("2006-01-02 15:04:05")))
+					fmt.Sprintf("此前因连续失败被熔断禁用的渠道「%s」（#%d）探测成功（%d ms），已自动重新启用。\n时间：%s\n—— %s",
+						ch.Name, ch.ID, latency, time.Now().Format("2006-01-02 15:04:05"), service.BrandName))
 			}
 			continue
 		}
@@ -175,7 +175,7 @@ func AutoProbeOnce(h *Handler) (int, error) {
 // 错误语义保持一致（配额耗尽 ≠ 渠道故障）。
 type ProbeResult struct {
 	OK        bool
-	Status    int    // 上游 HTTP 状态码（网络失败/配置问题为 0）
+	Status    int // 上游 HTTP 状态码（网络失败/配置问题为 0）
 	LatencyMs int64
 	Err       string
 	KeyDesc   string // 探测使用的 Key 描述（如 "池内 Key #3" / "legacy 单 Key"）
@@ -195,10 +195,11 @@ type probeKey struct {
 // 池内优先挑非冷却的启用 Key（全部冷却时仍取第一把——管理员点测试通常就是想看它为什么不行），
 // 回退 legacy 单 Key。keyCooldown <= 0 时按 60s（探测侧标记冷却用）。
 //
-// Key 级失败与数据面 relay 同语义地「就地换 Key」：401/403（Key 失效）冷却该 Key 后
-// 换下一把继续探测，配额类 429 按数据面同款退避冷却（其它 Key 不连坐）——主 Key 失效/用尽
-// 时探测同样自动切备用 Key，渠道尚有健康 Key 即报成功（被跳过的 Key 附在结果里）。
-// 永久禁用仍由真实流量的 disableKey 落库：探测是诊断/自愈入口，不做破坏性写。
+// Key 级失败与数据面 relay 同语义地「就地换 Key」：401/403（Key 失效）/402（余额不足）
+// 与数据面走同一入口落库禁用该 Key（渠道列表「启 N」计数、Key 池红色标行与备注列随之更新，
+// 管理员能看到是哪把、为何被禁，更换后行内「启用」恢复）后换下一把继续探测；配额类 429
+// 按数据面同款退避冷却（其它 Key 不连坐）——主 Key 失效/用尽时探测同样自动切备用 Key，
+// 渠道尚有健康 Key 即报成功（被跳过的 Key 附在结果里）。
 // 渠道级失败（网络异常/5xx/其它 4xx）同渠道换 Key 无意义，直接返回。
 //
 // 探测同时充当 Key 自愈入口：成功即 ClearCooldown（配额恢复后点一次「测试」，
@@ -268,11 +269,14 @@ func ProbeChannel(db *gorm.DB, cipher *crypto.Cipher, client *http.Client, cd co
 		case last.Quota: // probeOnce 内已按数据面同款冷却该 Key 并发站内通知
 			quotaCnt++
 			skips = append(skips, ak.desc+"（配额耗尽）")
-		case ak.pool && (last.Status == http.StatusUnauthorized || last.Status == http.StatusForbidden):
-			// Key 失效：冷却该 Key（本请求与近期选路/探测跳过），换下一把继续
+		case ak.pool && (last.Status == http.StatusUnauthorized || last.Status == http.StatusForbidden ||
+			last.Status == http.StatusPaymentRequired):
+			// Key 失效（401/403 过期/被吊销）或余额不足（402 欠费）：落库禁用该 Key
+			// （数据面 disableKey 同一入口），冷却叠加让本请求与近期选路立即跳过，换下一把继续
+			DisablePoolKey(db, ch.ID, ak.id, last.Status)
 			cd.SetCooldown(ak.scope, keyCooldown)
 			skips = append(skips, fmt.Sprintf("%s（HTTP %d 失效）", ak.desc, last.Status))
-			slog.Warn("探测发现失效 Key，已冷却并换下一把", "channel_id", ch.ID, "channel", ch.Name,
+			slog.Warn("探测发现失效 Key，已禁用并换下一把", "channel_id", ch.ID, "channel", ch.Name,
 				"key_id", ak.id, "status", last.Status)
 		default: // 网络异常/5xx/其它 4xx：渠道级故障，同渠道换 Key 无意义
 			return last

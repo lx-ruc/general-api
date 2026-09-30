@@ -88,6 +88,8 @@ func migrateAll(db *gorm.DB) error {
 		{"users", "monthly_cost", "INTEGER NOT NULL DEFAULT 0"},
 		{"users", "monthly_period", "TEXT NOT NULL DEFAULT ''"},
 		{"channels", "auto_disabled_at", "INTEGER NOT NULL DEFAULT 0"},
+		{"quota_requests", "kind", "TEXT NOT NULL DEFAULT 'quota'"},
+		{"quota_requests", "model_names", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, a := range alters {
 		if !columnExists(db, a[0], a[1]) {

@@ -3,7 +3,7 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useRouter } from 'vue-router'
 import {
-  apiListOrgs, apiCreateOrg, apiUpdateOrg, apiDeleteOrg, apiAddOrgQuota, apiSetOrgQuota,
+  apiListOrgs, apiCreateOrg, apiUpdateOrg, apiDeleteOrg,
   apiResetOrgAdminPassword, type Org,
 } from '../../api/platform'
 import { fmtTime, fmtQuota } from '../../utils/format'
@@ -39,38 +39,7 @@ async function submitCreate() {
   load()
 }
 
-// 调整额度（同样按 M tokens 录入）：追加=在上限上加减（负数为冲减回收）；
-// 设为=quota_limit 直接置为目标值（0=零额度），差值自动入对账流水
-const quotaVisible = ref(false)
-const quotaForm = reactive({
-  org: null as Org | null, mode: 'append' as 'append' | 'set', amount: 10, target: 0, remark: '',
-})
-function openQuota(org: Org) {
-  quotaForm.org = org
-  quotaForm.mode = 'append'
-  quotaForm.amount = 10
-  quotaForm.target = Math.round(org.quota_limit / M)
-  quotaForm.remark = ''
-  quotaVisible.value = true
-}
-async function submitQuota() {
-  if (!quotaForm.org) return
-  let resp: any
-  if (quotaForm.mode === 'set') {
-    // input-number 清空后是 null（falsy），按 0 处理：设为 0 是合法的零额度语义
-    resp = await apiSetOrgQuota(quotaForm.org.id, Math.round((quotaForm.target || 0) * M), quotaForm.remark)
-  } else {
-    const amount = Math.round((quotaForm.amount || 0) * M)
-    if (amount === 0) {
-      ElMessage.warning('追加量不能为 0（要直接改上限请切到「设为」）')
-      return
-    }
-    resp = await apiAddOrgQuota(quotaForm.org.id, amount, quotaForm.remark)
-  }
-  ElMessage.success(resp?.message || '额度已调整')
-  quotaVisible.value = false
-  load()
-}
+// 额度调整入口收敛到「配额管理」页，这里不再提供（列表仅展示用量与上限）
 
 // 重置客户管理员密码（忘记密码时的恢复路径；不指定 user_id 时取首任管理员）
 const pwdVisible = ref(false)
@@ -147,9 +116,8 @@ async function removeOrg(org: Org) {
       <el-table-column label="创建时间" width="170">
         <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="300" fixed="right">
+      <el-table-column label="操作" width="230" fixed="right">
         <template #default="{ row }">
-          <el-button size="small" @click="openQuota(row)">调整额度</el-button>
           <el-button size="small" @click="pwdForm.org = row; pwdVisible = true">重置密码</el-button>
           <el-button size="small" @click="toggleStatus(row)">{{ row.status === 1 ? '停用' : '启用' }}</el-button>
           <el-button size="small" type="danger" @click="removeOrg(row)">删除</el-button>
@@ -180,30 +148,6 @@ async function removeOrg(org: Org) {
     <template #footer>
       <el-button @click="createVisible = false">取消</el-button>
       <el-button type="primary" @click="submitCreate">创建</el-button>
-    </template>
-  </el-dialog>
-
-  <el-dialog v-model="quotaVisible" :title="`调整额度：${quotaForm.org?.name || ''}`" width="480px">
-    <el-form label-width="120px">
-      <el-form-item label="调整方式">
-        <el-radio-group v-model="quotaForm.mode">
-          <el-radio value="append">追加 / 冲减</el-radio>
-          <el-radio value="set">设为</el-radio>
-        </el-radio-group>
-      </el-form-item>
-      <el-form-item v-if="quotaForm.mode === 'append'" label="追加（M tokens）">
-        <el-input-number v-model="quotaForm.amount" :step="10" />
-        <span class="tip">负数为冲减回收，入对账单冲减段；= {{ fmtQuota(Math.round((quotaForm.amount || 0) * M)) }}</span>
-      </el-form-item>
-      <el-form-item v-else label="设为（M tokens）">
-        <el-input-number v-model="quotaForm.target" :min="0" :step="10" />
-        <span class="tip">当前上限 {{ fmtQuota(quotaForm.org?.quota_limit || 0) }} · 已用 {{ fmtQuota(quotaForm.org?.quota_used || 0) }}；= {{ fmtQuota(Math.round((quotaForm.target || 0) * M)) }}</span>
-      </el-form-item>
-      <el-form-item label="事由备注"><el-input v-model="quotaForm.remark" /></el-form-item>
-    </el-form>
-    <template #footer>
-      <el-button @click="quotaVisible = false">取消</el-button>
-      <el-button type="primary" @click="submitQuota">确定</el-button>
     </template>
   </el-dialog>
 

@@ -3,19 +3,17 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import dayjs from 'dayjs'
 import {
-  apiOrgCostCenters, apiCreateCostCenter, apiUpdateCostCenter, apiUpdateCostCenterConfig,
+  apiOrgCostCenters, apiCreateCostCenter, apiUpdateCostCenter,
   apiCostCenterReport, type CostCenter, type CostReportRow,
 } from '../../api/org'
 import { fmtQuota } from '../../utils/format'
 
 const list = ref<CostCenter[]>([])
-const requireCC = ref(0)
 const tab = ref('centers')
 
 async function load() {
   const data = await apiOrgCostCenters()
   list.value = data.list || []
-  requireCC.value = data.require_cost_center
 }
 // 进页即拉当月报表：没建中心时「未归集」消耗也能直接看到，页面不再一片空白
 onMounted(() => {
@@ -55,18 +53,12 @@ async function rename(cc: CostCenter) {
 async function toggleArchive(cc: CostCenter) {
   const to = cc.status === 1 ? 0 : 1
   const tip = to === 0
-    ? `归档「${cc.name}」？新建密钥下拉将不再出现，历史报表保留。`
+    ? `归档「${cc.name}」？密钥归集下拉将不再出现，历史报表保留。`
     : `恢复「${cc.name}」为启用？`
   await ElMessageBox.confirm(tip, '提示', { type: 'warning' })
   await apiUpdateCostCenter(cc.id, { status: to })
   ElMessage.success(to === 0 ? '已归档' : '已恢复')
   load()
-}
-
-async function toggleRequire(v: number | string | boolean) {
-  await apiUpdateCostCenterConfig(Number(v) ? 1 : 0)
-  requireCC.value = Number(v) ? 1 : 0
-  ElMessage.success(requireCC.value ? '已开启强制归集：新建密钥必须选择成本中心' : '已关闭强制归集')
 }
 
 // ---- 报表 ----
@@ -104,16 +96,13 @@ function centerName(r: CostReportRow): string {
       <div class="card-header">
         <span>成本中心</span>
         <div class="header-right">
-          <el-switch :model-value="requireCC === 1" active-text="强制归集" @change="toggleRequire" />
           <el-button type="primary" @click="createVisible = true">新建中心</el-button>
         </div>
       </div>
     </template>
 
-    <el-alert v-if="requireCC === 0" type="info" :closable="false" show-icon style="margin-bottom: 12px"
-      title="未开启强制归集：未归集密钥的消耗会在报表中单独披露（置底显示）" />
-    <el-alert v-else type="warning" :closable="false" show-icon style="margin-bottom: 12px"
-      title="已开启强制归集：子账号新建密钥必须选择成本中心" />
+    <el-alert type="info" :closable="false" show-icon style="margin-bottom: 12px"
+      title="按项目核算用量：在密钥一览中把 API 密钥挂靠到中心；未挂靠的消耗在报表中单独披露（置底显示）" />
 
     <el-table :data="list">
       <el-table-column prop="name" label="名称" min-width="160">

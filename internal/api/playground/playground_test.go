@@ -246,8 +246,8 @@ func TestArrearsOrgBlocked(t *testing.T) {
 	e := newPGEnv(t)
 	mustExec(t, e.db, `UPDATE orgs SET status = 2 WHERE id = 1`)
 	w := e.chat(t, e.token(t, 2, "member", i64(1)), "m1", "")
-	if w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "arrears") {
-		t.Fatalf("欠费客户应 402 arrears，得 %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusPaymentRequired || !strings.Contains(w.Body.String(), "欠费停服") {
+		t.Fatalf("欠费客户应 402（文案含「欠费停服」），得 %d: %s", w.Code, w.Body.String())
 	}
 }
 

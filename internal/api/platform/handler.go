@@ -347,9 +347,11 @@ func notifyOrgQuota(db *gorm.DB, orgID, amount int64, remark string) string {
 	if err := db.Where("id = ?", orgID).First(&org).Error; err != nil {
 		return ""
 	}
-	subject := "「慧沐引擎」你的客户额度已更新"
+	subject := fmt.Sprintf("「%s」你的客户额度已更新", service.BrandName)
 	body := service.QuotaGrantEmailBody(org.Name, org.Name+" 管理员",
 		amount, org.QuotaLimit, org.QuotaUsed, remark)
+	service.NotifyOrgAdminsInsite(db, orgID, service.NotifyTypeRecharge,
+		fmt.Sprintf("客户额度已更新：%s", org.Name), body) // 顶栏铃铛（充值到账/平台调额）
 	sent := service.NotifyOrgAdmins(db, orgID, subject, body)
 	switch {
 	case sent > 0:
@@ -436,54 +438,25 @@ func (h *Handler) ResetOrgAdminPassword(c *gin.Context) {
 type abilityReq struct {
 	ModelName         string  `json:"model_name" binding:"required"`
 	UpstreamModelName *string `json:"upstream_model_name"`
-	// 一站式定价（点/百万token，前端按元换算）：填了则保存渠道时顺带登记/更新 models 行；nil=不动
-	InputPrice  *int64 `json:"input_price"`
-	OutputPrice *int64 `json:"output_price"`
 }
 
-// syncModelPrices 渠道保存时的一站式定价：模型未登记则建 models 行（启用、带价），
-// 已登记则只更新填了价的字段（nil 不动）。与渠道/能力写库同一事务，避免「渠道通了却没法计费」。
-func syncModelPrices(tx *gorm.DB, models []abilityReq, vendor string) error {
+// ensureModelsExist 渠道保存时兜底登记模型：模型未登记则建 models 行（启用、价格 0，
+// 需管理台「模型定价」定价），已登记的不动——定价已收敛到模型定价页，渠道侧不再碰价格
+func ensureModelsExist(tx *gorm.DB, models []abilityReq, vendor string) error {
 	for _, m := range models {
 		name := strings.TrimSpace(m.ModelName)
-		if name == "" || (m.InputPrice == nil && m.OutputPrice == nil) {
+		if name == "" {
 			continue
 		}
-		if (m.InputPrice != nil && *m.InputPrice < 0) || (m.OutputPrice != nil && *m.OutputPrice < 0) {
-			return fmt.Errorf("模型 %s 单价不能为负", name)
-		}
 		var ex model.Model
-		err := tx.Where("name = ?", name).First(&ex).Error
-		if err != nil {
-			mo := model.Model{
-				Name: name, Vendor: vendor, Status: 1,
-				InputPrice:  derefI64(m.InputPrice),
-				OutputPrice: derefI64(m.OutputPrice),
-			}
+		if err := tx.Where("name = ?", name).First(&ex).Error; err != nil {
+			mo := model.Model{Name: name, Vendor: vendor, Status: 1}
 			if err := tx.Create(&mo).Error; err != nil {
 				return err
 			}
-			continue
-		}
-		ups := map[string]any{"updated_at": time.Now().Unix()}
-		if m.InputPrice != nil {
-			ups["input_price"] = *m.InputPrice
-		}
-		if m.OutputPrice != nil {
-			ups["output_price"] = *m.OutputPrice
-		}
-		if err := tx.Model(&model.Model{}).Where("id = ?", ex.ID).Updates(ups).Error; err != nil {
-			return err
 		}
 	}
 	return nil
-}
-
-func derefI64(p *int64) int64 {
-	if p == nil {
-		return 0
-	}
-	return *p
 }
 
 type channelReq struct {
@@ -579,28 +552,48 @@ func hasKey(enc string, active int64) bool {
 	return active > 0 || enc != ""
 }
 
-// modelChannelCounts 每个模型名当前「已接通」的渠道数（启用且有可用密钥才算，与数据面可选渠道同口径）。
-// 定价页据此区分「已接通」与「仅登记未接渠道」的模型。
-func (h *Handler) modelChannelCounts() map[string]int64 {
+// keyCoolingCounts 各渠道「冷却中」的启用 Key 数（配额/限流冷却都算）：渠道列表密钥列
+// 的「冷 N」琥珀提示用（冷却期自动跳过、到期自愈，管理员点 Key 池可看详情/手动解除）。
+// 池内 Key 逐个查协调器（内存实现为零成本；legacy 单 Key 无池行不计）
+func (h *Handler) keyCoolingCounts() map[int64]int64 {
+	var keys []struct {
+		ChannelID int64
+		ID        int64
+	}
+	_ = h.DB.Raw("SELECT channel_id, id FROM channel_keys WHERE status = 1").Scan(&keys).Error
+	out := make(map[int64]int64)
+	for _, k := range keys {
+		if h.Coord != nil && h.Coord.IsCooling(fmt.Sprintf("ck:%d:%d", k.ChannelID, k.ID)) {
+			out[k.ChannelID]++
+		}
+	}
+	return out
+}
+
+// modelChannelCounts 每个模型名当前「已接通」的渠道数（启用且有可用密钥才算，与数据面可选渠道同口径）
+// 及渠道名清单（定价页点开渠道数可看是哪些渠道）；定价页据此区分「已接通」与「仅登记未接渠道」的模型。
+func (h *Handler) modelChannelCounts() (counts map[string]int64, names map[string][]string) {
 	type row struct {
 		ModelName string
-		Cnt       int64
+		ChName    string
 	}
 	var rows []row
 	_ = h.DB.Raw(`
-		SELECT ca.model_name AS model_name, COUNT(DISTINCT ca.channel_id) AS cnt
+		SELECT ca.model_name AS model_name, c.name AS ch_name
 		FROM channel_abilities ca
 		JOIN channels c ON c.id = ca.channel_id
 		LEFT JOIN (
 			SELECT DISTINCT channel_id FROM channel_keys WHERE status = 1
 		) k ON k.channel_id = ca.channel_id
 		WHERE c.status = 1 AND (COALESCE(c.upstream_key_enc, '') != '' OR k.channel_id IS NOT NULL)
-		GROUP BY ca.model_name`).Scan(&rows).Error
-	out := make(map[string]int64, len(rows))
+		ORDER BY ca.model_name, c.priority DESC, c.name`).Scan(&rows).Error
+	counts = make(map[string]int64, len(rows))
+	names = make(map[string][]string, len(rows))
 	for _, r := range rows {
-		out[r.ModelName] = r.Cnt
+		counts[r.ModelName]++
+		names[r.ModelName] = append(names[r.ModelName], r.ChName)
 	}
-	return out
+	return counts, names
 }
 
 func abilityModels(models []abilityReq) []model.ChannelAbility {
@@ -631,6 +624,7 @@ func (h *Handler) ListChannels(c *gin.Context) {
 	}
 	list := make([]gin.H, 0, len(channels))
 	counts := h.keyCounts()
+	cooling := h.keyCoolingCounts()
 	for _, ch := range channels {
 		kc := counts[ch.ID]
 		// legacy 单 Key 计入展示数量（池为空且存在密文时）
@@ -643,7 +637,8 @@ func (h *Handler) ListChannels(c *gin.Context) {
 			"base_url": ch.BaseURL, "path": ch.Path,
 			"has_key":   hasKey(ch.UpstreamKeyEnc, kc.Active),
 			"key_count": keyCount, "key_active_count": keyActive,
-			"weight": ch.Weight, "priority": ch.Priority, "status": ch.Status,
+			"key_cooling_count": cooling[ch.ID],
+			"weight":            ch.Weight, "priority": ch.Priority, "status": ch.Status,
 			"last_test_at": ch.LastTestAt, "last_test_ok": ch.LastTestOk,
 			"remark": ch.Remark, "created_at": ch.CreatedAt,
 			"models": byChannel[ch.ID],
@@ -701,7 +696,7 @@ func (h *Handler) CreateChannel(c *gin.Context) {
 				return err
 			}
 		}
-		if err := syncModelPrices(tx, req.Models, req.Vendor); err != nil {
+		if err := ensureModelsExist(tx, req.Models, req.Vendor); err != nil {
 			return err
 		}
 		return nil
@@ -819,7 +814,7 @@ func (h *Handler) UpdateChannel(c *gin.Context) {
 				return err
 			}
 		}
-		if err := syncModelPrices(tx, req.Models, req.Vendor); err != nil {
+		if err := ensureModelsExist(tx, req.Models, req.Vendor); err != nil {
 			return err
 		}
 		return nil
@@ -1190,34 +1185,52 @@ func (h *Handler) UpstreamModelsByForm(c *gin.Context) {
 // ---------------- 模型与定价 ----------------
 
 type modelReq struct {
-	Name            string `json:"name" binding:"required"`
-	DisplayName     string `json:"display_name"`
-	Vendor          string `json:"vendor"`
-	InputPrice      int64  `json:"input_price"`
-	OutputPrice     int64  `json:"output_price"`
-	InputCacheHitPrice int64 `json:"input_cache_hit_price"`  // 缓存命中输入单价；0=同输入价
-	CostInputPrice  int64  `json:"cost_input_price"`
-	CostOutputPrice int64  `json:"cost_output_price"`
-	CostInputCacheHitPrice int64 `json:"cost_input_cache_hit_price"` // 0=同成本输入价
-	Status          *int   `json:"status"`
-	Remark          string `json:"remark"`
+	Name                   string `json:"name" binding:"required"`
+	DisplayName            string `json:"display_name"`
+	Vendor                 string `json:"vendor"`
+	InputPrice             int64  `json:"input_price"`
+	OutputPrice            int64  `json:"output_price"`
+	InputCacheHitPrice     int64  `json:"input_cache_hit_price"` // 缓存命中输入单价；0=同输入价
+	CostInputPrice         int64  `json:"cost_input_price"`
+	CostOutputPrice        int64  `json:"cost_output_price"`
+	CostInputCacheHitPrice int64  `json:"cost_input_cache_hit_price"` // 0=同成本输入价
+	Status                 *int   `json:"status"`
+	Remark                 string `json:"remark"`
+}
+
+// modelOrgPriceCounts 每个模型已设客户覆盖价的客户数：默认价为 0 但有客户价时，
+// 调用状态需区分「完全未定价」与「仅客户价生效（其余客户免费）」
+func (h *Handler) modelOrgPriceCounts() map[string]int64 {
+	var rows []struct {
+		ModelName string
+		Cnt       int64
+	}
+	_ = h.DB.Raw(`SELECT model_name, COUNT(*) AS cnt FROM org_model_prices GROUP BY model_name`).Scan(&rows).Error
+	out := make(map[string]int64, len(rows))
+	for _, r := range rows {
+		out[r.ModelName] = r.Cnt
+	}
+	return out
 }
 
 // ListModels GET /api/platform/models（附 channel_count：已接通——启用且有密钥——的渠道数）
 func (h *Handler) ListModels(c *gin.Context) {
 	var models []model.Model
 	_ = h.DB.Order("name").Find(&models).Error
-	counts := h.modelChannelCounts()
+	counts, chNames := h.modelChannelCounts()
+	priceCnts := h.modelOrgPriceCounts()
 	list := make([]gin.H, 0, len(models))
 	for _, m := range models {
 		list = append(list, gin.H{
 			"id": m.ID, "name": m.Name, "display_name": m.DisplayName, "vendor": m.Vendor,
 			"input_price": m.InputPrice, "output_price": m.OutputPrice,
 			"input_cache_hit_price": m.InputCacheHitPrice,
-			"cost_input_price": m.CostInputPrice, "cost_output_price": m.CostOutputPrice,
+			"cost_input_price":      m.CostInputPrice, "cost_output_price": m.CostOutputPrice,
 			"cost_input_cache_hit_price": m.CostInputCacheHitPrice,
-			"status": m.Status, "remark": m.Remark,
-			"channel_count": counts[m.Name],
+			"status":                     m.Status, "remark": m.Remark,
+			"channel_count":   counts[m.Name],
+			"channel_names":   chNames[m.Name],
+			"org_price_count": priceCnts[m.Name],
 		})
 	}
 	httpx.OK(c, list)
@@ -1248,9 +1261,9 @@ func (h *Handler) CreateModel(c *gin.Context) {
 		Name: req.Name, DisplayName: req.DisplayName, Vendor: req.Vendor,
 		InputPrice: req.InputPrice, OutputPrice: req.OutputPrice,
 		InputCacheHitPrice: req.InputCacheHitPrice,
-		CostInputPrice: req.CostInputPrice, CostOutputPrice: req.CostOutputPrice,
+		CostInputPrice:     req.CostInputPrice, CostOutputPrice: req.CostOutputPrice,
 		CostInputCacheHitPrice: req.CostInputCacheHitPrice,
-		Status: status, Remark: req.Remark,
+		Status:                 status, Remark: req.Remark,
 	}
 	if err := h.DB.Create(&m).Error; err != nil {
 		// 并发同模型名：映射回与预检查一致的 400（原为 500 泛化错误）
@@ -1271,16 +1284,16 @@ func (h *Handler) UpdateModel(c *gin.Context) {
 		return
 	}
 	var req struct {
-		DisplayName     *string `json:"display_name"`
-		Vendor          *string `json:"vendor"`
-		InputPrice      *int64  `json:"input_price" binding:"required,min=0"`
-		OutputPrice     *int64  `json:"output_price" binding:"required,min=0"`
-		InputCacheHitPrice *int64 `json:"input_cache_hit_price" binding:"omitempty,min=0"`
-		CostInputPrice  *int64  `json:"cost_input_price" binding:"omitempty,min=0"`
-		CostOutputPrice *int64  `json:"cost_output_price" binding:"omitempty,min=0"`
-		CostInputCacheHitPrice *int64 `json:"cost_input_cache_hit_price" binding:"omitempty,min=0"`
-		Status          *int    `json:"status"`
-		Remark          *string `json:"remark"`
+		DisplayName            *string `json:"display_name"`
+		Vendor                 *string `json:"vendor"`
+		InputPrice             *int64  `json:"input_price" binding:"required,min=0"`
+		OutputPrice            *int64  `json:"output_price" binding:"required,min=0"`
+		InputCacheHitPrice     *int64  `json:"input_cache_hit_price" binding:"omitempty,min=0"`
+		CostInputPrice         *int64  `json:"cost_input_price" binding:"omitempty,min=0"`
+		CostOutputPrice        *int64  `json:"cost_output_price" binding:"omitempty,min=0"`
+		CostInputCacheHitPrice *int64  `json:"cost_input_cache_hit_price" binding:"omitempty,min=0"`
+		Status                 *int    `json:"status"`
+		Remark                 *string `json:"remark"`
 	}
 	if !httpx.BindJSON(c, &req) {
 		return
@@ -1340,6 +1353,9 @@ func (h *Handler) DeleteModel(c *gin.Context) {
 		if err := tx.Where("model_name = ?", m.Name).Delete(&model.UserModelGrant{}).Error; err != nil {
 			return err
 		}
+		if err := tx.Where("model_name = ?", m.Name).Delete(&model.OrgModelPrice{}).Error; err != nil {
+			return err
+		}
 		return tx.Where("id = ?", id).Delete(&model.Model{}).Error
 	})
 	if err != nil {
@@ -1347,6 +1363,125 @@ func (h *Handler) DeleteModel(c *gin.Context) {
 		return
 	}
 	httpx.OK(c, gin.H{"message": "已删除"})
+}
+
+// ---------------- 客户级差异化定价 ----------------
+
+// orgPriceRow 模型定价展开区的客户行：override=该客户是否设了覆盖价；
+// 未覆盖时三价回填模型默认价，前端直接展示生效价
+type orgPriceRow struct {
+	OrgID              int64  `json:"org_id"`
+	OrgName            string `json:"org_name"`
+	MemberCount        int64  `json:"member_count"` // 该客户已授权使用此模型的子账号数
+	Override           bool   `json:"override"`
+	InputPrice         int64  `json:"input_price"`
+	OutputPrice        int64  `json:"output_price"`
+	InputCacheHitPrice int64  `json:"input_cache_hit_price"`
+	Remark             string `json:"remark"`
+}
+
+// ListOrgModelPrices GET /api/platform/model-prices/:name：使用该模型的客户
+// （有子账号获授权的 DISTINCT 客户）∪ 已设覆盖价的客户（支持先定价后授权），
+// 附各客户生效价（无覆盖=模型默认价）
+func (h *Handler) ListOrgModelPrices(c *gin.Context) {
+	name := c.Param("name")
+	var m model.Model
+	if err := h.DB.Where("name = ?", name).First(&m).Error; err != nil {
+		httpx.Fail(c, http.StatusNotFound, "模型不存在")
+		return
+	}
+	var rows []orgPriceRow
+	if err := h.DB.Raw(`
+		SELECT o.id AS org_id, o.name AS org_name,
+		       COALESCE(mc.cnt, 0) AS member_count,
+		       CASE WHEN p.id IS NULL THEN 0 ELSE 1 END AS override,
+		       COALESCE(p.input_price, ?) AS input_price,
+		       COALESCE(p.output_price, ?) AS output_price,
+		       COALESCE(p.input_cache_hit_price, ?) AS input_cache_hit_price,
+		       COALESCE(p.remark, '') AS remark
+		FROM orgs o
+		LEFT JOIN org_model_prices p ON p.org_id = o.id AND p.model_name = ?
+		LEFT JOIN (
+			SELECT u.org_id AS org_id, COUNT(DISTINCT g.user_id) AS cnt
+			FROM user_model_grants g JOIN users u ON u.id = g.user_id
+			WHERE g.model_name = ?
+			GROUP BY u.org_id
+		) mc ON mc.org_id = o.id
+		WHERE p.id IS NOT NULL OR mc.org_id IS NOT NULL
+		ORDER BY o.name`, m.InputPrice, m.OutputPrice, m.InputCacheHitPrice, name, name).
+		Scan(&rows).Error; err != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "查询客户定价失败")
+		return
+	}
+	if rows == nil {
+		rows = []orgPriceRow{}
+	}
+	httpx.OK(c, rows)
+}
+
+// SetOrgModelPrice PUT /api/platform/model-prices/:name：upsert 一条客户覆盖价
+func (h *Handler) SetOrgModelPrice(c *gin.Context) {
+	name := c.Param("name")
+	var req struct {
+		OrgID int64 `json:"org_id" binding:"required,gt=0"`
+		// 价格用指针绑定：gin 的 required 对零值 int64 判失败，「给某客户免费」(0 价) 会被误拒；
+		// 指针 + required 只要求字段出现，0 是合法值（与 UpdateModel 的定价口径一致）
+		InputPrice         *int64 `json:"input_price" binding:"required,min=0"`
+		OutputPrice        *int64 `json:"output_price" binding:"required,min=0"`
+		InputCacheHitPrice int64  `json:"input_cache_hit_price" binding:"omitempty,min=0"` // 0=同输入价
+		Remark             string `json:"remark"`
+	}
+	if !httpx.BindJSON(c, &req) {
+		return
+	}
+	var m model.Model
+	if err := h.DB.Where("name = ?", name).First(&m).Error; err != nil {
+		httpx.Fail(c, http.StatusNotFound, "模型不存在")
+		return
+	}
+	var o model.Org
+	if err := h.DB.Where("id = ?", req.OrgID).First(&o).Error; err != nil {
+		httpx.Fail(c, http.StatusNotFound, "客户不存在")
+		return
+	}
+	now := time.Now().Unix()
+	p := model.OrgModelPrice{
+		OrgID: req.OrgID, ModelName: name,
+		InputPrice: *req.InputPrice, OutputPrice: *req.OutputPrice,
+		InputCacheHitPrice: req.InputCacheHitPrice, Remark: req.Remark,
+	}
+	res := h.DB.Where("org_id = ? AND model_name = ?", req.OrgID, name).
+		Assign(map[string]any{
+			"input_price": p.InputPrice, "output_price": p.OutputPrice,
+			"input_cache_hit_price": p.InputCacheHitPrice, "remark": p.Remark,
+			"updated_at": now,
+		}).FirstOrCreate(&p)
+	if res.Error != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "保存客户定价失败")
+		return
+	}
+	httpx.OK(c, gin.H{"message": "已保存", "override": true})
+}
+
+// DeleteOrgModelPrice DELETE /api/platform/model-prices/:name/:orgId：删除覆盖，
+// 该客户回落模型默认价
+func (h *Handler) DeleteOrgModelPrice(c *gin.Context) {
+	name := c.Param("name")
+	orgID, err := strconv.ParseInt(c.Param("orgId"), 10, 64)
+	if err != nil || orgID <= 0 {
+		httpx.Fail(c, http.StatusBadRequest, "invalid org id")
+		return
+	}
+	res := h.DB.Where("org_id = ? AND model_name = ?", orgID, name).Delete(&model.OrgModelPrice{})
+	if res.Error != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "删除客户定价失败")
+		return
+	}
+	if res.RowsAffected == 0 {
+		httpx.Fail(c, http.StatusNotFound, "该客户未设置覆盖价")
+		return
+	}
+	httpx.OK(c, gin.H{"message": "已恢复默认价"})
 }
 
 // ---------------- 统计与日志 ----------------

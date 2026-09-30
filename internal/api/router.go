@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm"
 
 	"token-gateway/internal/agenthelper"
+	"token-gateway/internal/api/me"
 	"token-gateway/internal/api/member"
 	"token-gateway/internal/api/org"
 	"token-gateway/internal/api/platform"
@@ -120,11 +121,26 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		"rate_limit_error", "发送太频繁，请稍后再试",
 	), authH.SendCode)
 	apiGrp.POST("/auth/register", authH.Register)
+	// 忘记密码：邮箱验证发重置链接（与验证码同限流器，防邮件轰炸）；提交端点自带令牌一次性，
+	// 也挂同款限流——匿名可达且每次都查 DB，不给无成本连打的机会
+	apiGrp.POST("/auth/forgot-password", codeLimiter.Middleware(
+		func(c *gin.Context) string { return c.ClientIP() },
+		"rate_limit_error", "发送太频繁，请稍后再试",
+	), authH.ForgotPassword)
+	apiGrp.POST("/auth/reset-password", codeLimiter.Middleware(
+		func(c *gin.Context) string { return c.ClientIP() },
+		"rate_limit_error", "提交太频繁，请稍后再试",
+	), authH.ResetPassword)
 
 	authed := apiGrp.Group("", middleware.JWTAuth(cfg.Security.JWTSecret, db), middleware.Audit(db))
 	{
 		authed.GET("/me", authH.Me)
 		authed.PUT("/me/password", authH.ChangePassword)
+		// 站内通知（三角色通用顶栏铃铛）：按 JWT uid 严格隔离，写入侧扇出决定谁能看到
+		mh := me.NewHandler(db)
+		authed.GET("/me/notifications", mh.ListNotifications)
+		authed.PUT("/me/notifications/:id/read", mh.ReadNotification)
+		authed.PUT("/me/notifications/read-all", mh.ReadAllNotifications)
 		// 管理面访问令牌：仅平台/客户管理员（程序化对接管理 API 用）
 		tk := authed.Group("/me/tokens", middleware.RequireRole(model.RolePlatformAdmin, model.RoleOrgAdmin))
 		{
@@ -182,6 +198,10 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		plat.POST("/models", ph.CreateModel)
 		plat.PUT("/models/:id", ph.UpdateModel)
 		plat.DELETE("/models/:id", ph.DeleteModel)
+		// 客户级差异化定价（挂独立前缀：/models/:id 与 /models/:name 同段参数名不同会触发 gin 路由冲突）
+		plat.GET("/model-prices/:name", ph.ListOrgModelPrices)
+		plat.PUT("/model-prices/:name", ph.SetOrgModelPrice)
+		plat.DELETE("/model-prices/:name/:orgId", ph.DeleteOrgModelPrice)
 
 		plat.GET("/stats/overview", ph.StatsOverview)
 		plat.GET("/usage", ph.ListUsage)
@@ -222,7 +242,6 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 
 		og.GET("/cost-centers", oh.ListCostCenters)
 		og.POST("/cost-centers", oh.CreateCostCenter)
-		og.PUT("/cost-centers/config", oh.UpdateCostCenterConfig)
 		og.PUT("/cost-centers/:id", oh.UpdateCostCenter)
 		og.GET("/reports/cost-centers", oh.CostCenterReport)
 
@@ -246,9 +265,8 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		mg.GET("/keys", mh.ListKeys)
 		mg.POST("/keys", mh.CreateKey)
 		mg.DELETE("/keys/:id", mh.DeleteKey)
-		mg.PUT("/keys/:id/cost-center", mh.AssignKeyCenter)
-		mg.GET("/cost-centers", mh.ListCostCenters)
 		mg.GET("/models", mh.ListModels)
+		mg.GET("/models/available", mh.ListAvailableModels)
 		mg.GET("/stats/overview", mh.StatsOverview)
 		mg.GET("/stats/usage", mh.UsageBreakdown)
 		mg.GET("/usage", mh.ListUsage)

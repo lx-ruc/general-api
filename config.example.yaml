@@ -28,7 +28,7 @@ gateway:
   max_body_mb: 10             # /v1 请求体上限（MB），自动夹取 [1, 4096]。ENV: TG_MAX_BODY_MB
   per_key_rpm: 60           # 每个 API key 每分钟请求数上限；0=不限流。ENV: TG_PER_KEY_RPM
   per_key_burst: 0          # 每 key 突发桶容量（压测 t=0 齐射场景调大）；0=跟随 per_key_rpm。ENV: TG_PER_KEY_BURST
-  upstream_first_byte_timeout: 60s  # ENV: TG_UPSTREAM_FIRST_BYTE_TIMEOUT
+  upstream_first_byte_timeout: 300s  # ENV: TG_UPSTREAM_FIRST_BYTE_TIMEOUT（推理模型非流式生成整段回答，首包可能超 60s）
   # ---- 高并发三件套（见 internal/coord）----
   channel_max_concurrency: 0   # 每渠道最大并发上游请求数；超出排队等待；0=不限
   queue_wait_timeout: 10s      # 排队等待上限，超时换下一候选/返回 429
@@ -43,7 +43,7 @@ gateway:
   auto_probe_interval: 5m      # 熔断禁用的渠道每隔该时长用一次 max_tokens=1 请求探测，成功即自动启用
                                # （并邮件通知平台管理员）；管理员手动禁用的渠道永远不会被自动启用。0=关闭
   retry_key_codes: [429]       # 命中 → 冷却 Key + 同渠道换下一把 Key；支持 "429"/"5xx"/"500-504" 写法
-  disable_key_codes: [401,403] # 命中 → 禁用该 Key + 换渠道（Key 失效类错误，可在 Key 池管理手动恢复）
+  disable_key_codes: [401,402,403] # 命中 → 禁用该 Key + 换下一把（401/403 Key 失效、402 余额不足；Key 池管理里可手动恢复）
   retry_channel_codes: [5xx]   # 命中 → 熔断计数 + 跳过该渠道全部 Key（渠道级故障换 Key 无意义）
                                # 分类优先级：换 Key > 禁 Key > 换渠道；均未命中的 4xx 直接透传客户端
   # ---- 运维自主化（ENV 均可覆盖，TG_ 前缀）----

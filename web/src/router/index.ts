@@ -4,6 +4,7 @@ import { useAuthStore, homeOf } from '../stores/auth'
 const routes: RouteRecordRaw[] = [
   { path: '/login', name: 'login', component: () => import('../views/LoginView.vue') },
   { path: '/register', name: 'register', component: () => import('../views/RegisterView.vue') },
+  { path: '/reset-password', name: 'reset-password', component: () => import('../views/ResetPasswordView.vue') },
   { path: '/', redirect: '/home' },
   {
     path: '/',
@@ -70,7 +71,7 @@ router.onError((error, to) => {
 
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
-  if (to.path === '/login' || to.path === '/register') {
+  if (to.path === '/login' || to.path === '/register' || to.path === '/reset-password') {
     if (auth.token && to.path === '/login') return homeOf(auth.user?.role)
     return true
   }

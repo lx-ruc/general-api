@@ -101,6 +101,31 @@ const claudeExample = computed(() => `# ~/.claude/settings.json
   }
 }`)
 
+// Trae Agent（字节开源 CLI）：YAML 三段式 + TRAE_CONFIG_FILE 环境变量（一键助手自动写 shell rc）
+const traeAgentExample = computed(() => `# ~/.trae-agent/trae_config.yaml
+model_providers:
+  huimu:
+    api_key: "{你的密钥}"
+    provider: openai
+    base_url: "${baseURL}"
+models:
+  huimu_model:
+    model: "${firstModel.value}"
+    model_provider: huimu
+    temperature: 0.5
+    top_p: 1.0
+    top_k: 0
+    parallel_tool_calls: true
+    max_retries: 3
+agents:
+  trae_agent:
+    model: huimu_model
+    max_steps: 200
+    enable_lakeview: false
+
+# shell 配置（一键助手会自动追加）：
+# export TRAE_CONFIG_FILE="$HOME/.trae-agent/trae_config.yaml"`)
+
 
 // Open WebUI / Dify 等平台：管理员设置里加 OpenAI 兼容连接
 const platformExample = computed(() => `平台类型：OpenAI API Compatible
@@ -175,7 +200,7 @@ async function copy(text: string) {
       <pre style="min-height: auto">{{ helperCmd }}</pre>
       <el-button size="small" class="copy-btn" @click="copy(helperCmd)">复制</el-button>
     </div>
-    <p>在终端执行上面的命令即可启动<b>一键接入助手</b>（需要 Node.js ≥ 18）：先展示各工具接入状态，再用方向键选择 <b>接入 / 卸载</b>——一个脚本完成全部操作，无须复制其它命令。支持 <b>Claude Code、Codex CLI、OpenCode、Crush、Factory Droid、Trae</b> 六款工具，安装只增改自己的配置键、不动其它设置。各工具的手动配置与完整说明见 <router-link to="/docs/agent-helper">文档中心「Agent 一键接入」</router-link>。</p>
+    <p>在终端执行上面的命令即可启动<b>一键接入助手</b>（需要 Node.js ≥ 18）：先展示各工具接入状态，再用方向键选择 <b>接入 / 卸载</b>——一个脚本完成全部操作，无须复制其它命令。支持 <b>Claude Code、Codex CLI、OpenCode、Trae Agent</b> 四款工具，安装只增改自己的配置键、不动其它设置。各工具的手动配置与完整说明见 <router-link to="/docs/agent-helper">文档中心「Agent 一键接入」</router-link>。</p>
     <p class="dim">CI / 脚本等无法交互的场景，可在同一命令后加子命令与参数免交互执行（如 <code>install claude-code codex --key {你的密钥} --model {模型} --yes</code>、<code>uninstall all</code>）；日常在终端里用上面的向导即可。</p>
 
     <p class="dim">也可以手动配置：以下工具都支持 OpenAI 兼容接口，把 Base URL 换成本站、密钥换成你的 <code>sk-</code> 密钥即可。配置里的占位符按你的实际值替换。</p>
@@ -207,12 +232,23 @@ async function copy(text: string) {
 
       <el-collapse-item name="trae">
         <template #title><b>Trae</b>（AI IDE）</template>
-        <p>Trae 的自定义模型在 IDE 内登记：设置 → 模型 → 添加模型 → 选「自定义」，按下面信息填写：</p>
+        <p>Trae 的自定义模型在 IDE 内登记（无可写配置文件，须手动配置）：设置 → 模型 → 添加模型 → 选「自定义」，按下面信息填写：</p>
         <ul class="steps">
           <li>API 地址：<code>{{ baseURL }}</code>（开启「完整 URL」开关时填 <code>{{ baseURL }}/chat/completions</code>）</li>
           <li>API Key：<code>{{ exampleKey }}</code></li>
           <li>模型 ID：<code>{{ firstModel }}</code></li>
         </ul>
+        <p class="dim">保存后在对话框的模型列表中选用；要多个模型就重复「添加模型」，每个模型 ID 登记一条。常见问题：<code>403 model_not_allowed</code> = 该密钥未授权此模型（联系管理员在「模型授权」中勾选）；Tab 补全等云托管能力是 Trae 自家服务，自定义接口不支持。</p>
+      </el-collapse-item>
+
+      <el-collapse-item name="trae-agent">
+        <template #title><b>Trae Agent</b>（字节开源 CLI）</template>
+        <p>字节开源的命令行 Agent（与 Trae IDE 相互独立，CLI 本体经 <code>git clone + uv sync</code> 安装）。编辑 <code>~/.trae-agent/trae_config.yaml</code>：</p>
+        <div class="code-block">
+          <pre>{{ traeAgentExample }}</pre>
+          <el-button size="small" class="copy-btn" @click="copy(traeAgentExample)">复制</el-button>
+        </div>
+        <p class="dim">trae-cli 默认只认当前目录的 trae_config.yaml，须在 shell 里 export TRAE_CONFIG_FILE 指向上面的固定路径——一键接入助手会自动把配置与环境变量都写好。CLI 本体安装：<code>uv tool install --with docker --with pexpect --with unidiff "trae-agent @ git+https://github.com/bytedance/trae-agent"</code></p>
       </el-collapse-item>
 
       <el-collapse-item name="continue">

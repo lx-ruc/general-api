@@ -48,8 +48,8 @@ print(resp.choices[0].message.content)`)
         </li>
         <li>
           <span class="st">模型定价</span>
-          <span class="sd">【模型定价】按厂商价目设置输入 / 输出单价（点数 / M token，
-            默认 1 元 = 1,000,000 点，即 ¥2/M 的模型填 2,000,000）。</span>
+          <span class="sd">【模型定价】按「元 / 1K token」设置输入 / 输出单价（即每 1K token 收多少元；
+            如厂商价 ¥2/百万 token 的模型填 0.002），需要时可在定价弹窗里给单个客户设差异化价格。</span>
         </li>
         <li>
           <span class="st">开通客户</span>

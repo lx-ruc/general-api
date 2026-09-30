@@ -213,20 +213,39 @@ CREATE TABLE IF NOT EXISTS vendor_bills (
   UNIQUE(period, channel_id)
 );
 
+-- 子账号申请单（额度申请 kind=quota / 模型授权申请 kind=model，客户管理员审批）
 CREATE TABLE IF NOT EXISTS quota_requests (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  org_id     INTEGER NOT NULL,
-  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  amount     INTEGER NOT NULL,
-  reason     TEXT    NOT NULL DEFAULT '',
-  status     TEXT    NOT NULL DEFAULT 'pending',
-  handled_by INTEGER,
-  handled_at INTEGER,
-  reply      TEXT    NOT NULL DEFAULT '',
-  created_at INTEGER NOT NULL
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id      INTEGER NOT NULL,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind        TEXT    NOT NULL DEFAULT 'quota', -- quota=额度 model=模型授权
+  amount      INTEGER NOT NULL DEFAULT 0,       -- kind=quota 时的申请点数
+  model_names TEXT    NOT NULL DEFAULT '',      -- kind=model 时的申请模型名（逗号分隔）
+  reason      TEXT    NOT NULL DEFAULT '',
+  status      TEXT    NOT NULL DEFAULT 'pending',
+  handled_by  INTEGER,
+  handled_at  INTEGER,
+  reply       TEXT    NOT NULL DEFAULT '',
+  created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_qreq_org  ON quota_requests(org_id, status);
 CREATE INDEX IF NOT EXISTS idx_qreq_user ON quota_requests(user_id);
+
+-- 客户级差异化定价：同一模型对不同客户可设不同售卖价（无覆盖行走 models 默认价）。
+-- 只有售卖三价随客户覆盖；厂商成本价（models.cost_*）保持模型级不变。
+CREATE TABLE IF NOT EXISTS org_model_prices (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id                INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  model_name            TEXT    NOT NULL,
+  input_price           INTEGER NOT NULL DEFAULT 0,
+  output_price          INTEGER NOT NULL DEFAULT 0,
+  input_cache_hit_price INTEGER NOT NULL DEFAULT 0, -- 0=同输入价（与 models 口径一致）
+  remark                TEXT    NOT NULL DEFAULT '',
+  created_at            INTEGER NOT NULL,
+  updated_at            INTEGER NOT NULL,
+  UNIQUE(org_id, model_name)
+);
+CREATE INDEX IF NOT EXISTS idx_org_model_prices_org ON org_model_prices(org_id);
 
 CREATE TABLE IF NOT EXISTS verification_codes (
   email     TEXT PRIMARY KEY,
@@ -234,6 +253,18 @@ CREATE TABLE IF NOT EXISTS verification_codes (
   expire_at INTEGER NOT NULL,
   sent_at   INTEGER NOT NULL,
   attempts  INTEGER NOT NULL DEFAULT 0
+);
+
+-- 密码重置令牌：明文 token 只出现在邮件链接里，SHA-256 落库（UNIQUE 查找）；
+-- 30 分钟有效、一次性（used_at 原子置位防并发双用）
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  email      TEXT    NOT NULL,
+  token_hash TEXT    NOT NULL UNIQUE,
+  expire_at  INTEGER NOT NULL,
+  used_at    INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS recharge_requests (

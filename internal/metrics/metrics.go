@@ -77,6 +77,8 @@ type Metrics struct {
 	UpstreamErrors Counter
 	// 计费结算失败
 	SettleErrors Counter
+	// org 差异化定价点查失败（该期间回退模型默认价计费的错价风险信号）
+	OrgPriceErrors Counter
 	// 渠道熔断自动禁用次数
 	ChannelDisabled Counter
 	// 上游 429（触发 Key 冷却 + 换 Key/渠道重试）
@@ -126,6 +128,7 @@ func (m *Metrics) Handler() http.HandlerFunc {
 		writeSimple(&b, "tg_gateway_active_streams", "当前进行中的 SSE 流数", "gauge", fmt.Sprint(m.ActiveStreams.Value()))
 		writeSimple(&b, "tg_gateway_upstream_errors_total", "上游错误次数（网络失败/5xx）", "counter", fmt.Sprint(m.UpstreamErrors.Value()))
 		writeSimple(&b, "tg_gateway_settle_errors_total", "计费结算失败次数", "counter", fmt.Sprint(m.SettleErrors.Value()))
+		writeSimple(&b, "tg_gateway_org_price_errors_total", "org 差异化定价点查失败次数（该期间按模型默认价计费）", "counter", fmt.Sprint(m.OrgPriceErrors.Value()))
 		writeSimple(&b, "tg_gateway_channels_disabled_total", "渠道熔断自动禁用次数", "counter", fmt.Sprint(m.ChannelDisabled.Value()))
 		writeSimple(&b, "tg_gateway_upstream_429_total", "上游 429 次数（触发 Key 冷却重试）", "counter", fmt.Sprint(m.Upstream429.Value()))
 		writeSimple(&b, "tg_gateway_key_cooldown_total", "Key 进入冷却次数", "counter", fmt.Sprint(m.KeyCooldown.Value()))

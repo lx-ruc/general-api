@@ -17,12 +17,16 @@ import (
 // - 结算 = 同一事务内双记账（user + org）+ 写日志
 
 var (
-	ErrNotFound      = errors.New("not found")
-	ErrUserQuota     = errors.New("employee quota exceeded, please contact your company admin")
-	ErrOrgQuota      = errors.New("company quota exhausted, please contact the platform admin")
-	ErrUserMonthly   = errors.New("employee monthly spending cap reached, resets next month")
-	ErrOrgMonthly    = errors.New("company monthly spending cap reached, resets next month")
+	ErrNotFound = errors.New("not found")
+	// 额度类文案直接面向 /v1 调用方（随 402 错误体下发，也进 usage_logs 供客户管理员排查），
+	// 用中文；「联系谁」的指引由各出口按调用者角色拼接（子账号找本客户管理员，客户管理员找平台）
+	ErrUserQuota     = errors.New("子账号额度已耗尽")
+	ErrOrgQuota      = errors.New("客户额度已耗尽")
+	ErrUserMonthly   = errors.New("子账号单月消费上限已达，次月自动恢复")
+	ErrOrgMonthly    = errors.New("客户单月消费上限已达，次月自动恢复")
 	ErrQuotaOverflow = errors.New("quota limit out of int64 range")
+	// 不限额子账号不接受追加额度（NULL 基线上加额会把「不限」悄悄顶成「限额=追加额」）
+	ErrQuotaUnlimited = errors.New("user quota unlimited")
 )
 
 // currentPeriod 当前账期（账期时区 wall-clock，'YYYY-MM'）
@@ -188,7 +192,8 @@ func SetOrgQuota(db *gorm.DB, orgID, limit, operatorID int64, remark string) (in
 }
 
 // AddUserQuota 客户管理员给子账号追加限额；强制 org 归属校验防越权。
-// 同 AddOrgQuota：锁行 + 回绕拒绝（quota_limit NULL 视作 0 基线）
+// 同 AddOrgQuota：锁行 + 回绕拒绝。不限额子账号（quota_limit NULL）拒绝追加：
+// NULL 基线上加额会把「不限」悄悄顶成「限额=追加额」，转限额请走 SetUserQuotaUnlimited
 func AddUserQuota(db *gorm.DB, orgID, userID, amount, operatorID int64, remark string) error {
 	now := time.Now().Unix()
 	return db.Transaction(func(tx *gorm.DB) error {
@@ -196,10 +201,10 @@ func AddUserQuota(db *gorm.DB, orgID, userID, amount, operatorID int64, remark s
 		if err := lockFirst(tx, &u, userID, "org_id = ?", orgID); err != nil {
 			return err
 		}
-		var base int64
-		if u.QuotaLimit != nil {
-			base = *u.QuotaLimit
+		if u.QuotaLimit == nil {
+			return ErrQuotaUnlimited
 		}
+		base := *u.QuotaLimit
 		if !addNoWrap(base, amount) {
 			return ErrQuotaOverflow
 		}

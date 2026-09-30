@@ -1,11 +1,14 @@
 package model
 
-// QuotaRequest 子账号额度申请（客户管理员审批）
+// QuotaRequest 子账号申请单（客户管理员审批）：额度申请（Kind=quota）或
+// 模型授权申请（Kind=model，ModelNames 逗号分隔）
 type QuotaRequest struct {
 	ID         int64  `gorm:"primaryKey" json:"id"`
 	OrgID      int64  `json:"org_id"`
 	UserID     int64  `json:"user_id"`
-	Amount     int64  `json:"amount"`
+	Kind       string `json:"kind"`       // quota=额度 model=模型授权
+	Amount     int64  `json:"amount"`     // kind=quota 时的申请点数
+	ModelNames string `json:"model_names"` // kind=model 时的申请模型名（逗号分隔）
 	Reason     string `json:"reason"`
 	Status     string `json:"status"` // pending/approved/rejected
 	HandledBy  *int64 `json:"handled_by"`

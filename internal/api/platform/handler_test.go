@@ -481,11 +481,11 @@ func TestListModelsChannelCount(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	seedCh(1, "c-live", "enc-legacy", 1)  // 启用 + legacy 密文
-	seedCh(2, "c-nokey", "", 1)           // 启用但无任何密钥
-	seedCh(3, "c-off", "enc-legacy", 0)   // 有密钥但渠道停用
-	seedCh(4, "c-pool", "", 1)            // 启用 + 池内启用 Key
-	seedCh(5, "c-pooldis", "", 1)         // 启用但池 Key 全禁用
+	seedCh(1, "c-live", "enc-legacy", 1) // 启用 + legacy 密文
+	seedCh(2, "c-nokey", "", 1)          // 启用但无任何密钥
+	seedCh(3, "c-off", "enc-legacy", 0)  // 有密钥但渠道停用
+	seedCh(4, "c-pool", "", 1)           // 启用 + 池内启用 Key
+	seedCh(5, "c-pooldis", "", 1)        // 启用但池 Key 全禁用
 	ab := func(cid int64, m string) {
 		if err := db.Exec(`INSERT INTO channel_abilities (channel_id, model_name) VALUES (?, ?)`, cid, m).Error; err != nil {
 			t.Fatal(err)
@@ -500,6 +500,14 @@ func TestListModelsChannelCount(t *testing.T) {
 		VALUES (4, 'k1', 1, 0, 0), (5, 'k2', 0, 0, 0)`).Error; err != nil {
 		t.Fatal(err)
 	}
+	// m-live 有一家客户设了覆盖价（调用状态区分「完全未定价」与「仅客户价生效」的依据）
+	if err := db.Exec(`INSERT INTO orgs (id, name, status, created_at, updated_at) VALUES (1, 'acme', 1, 0, 0)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO org_model_prices (org_id, model_name, input_price, output_price, created_at, updated_at)
+		VALUES (1, 'm-live', 100, 200, 0, 0), (1, 'ghost', 1, 1, 0, 0)`).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/platform/models", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -509,19 +517,37 @@ func TestListModelsChannelCount(t *testing.T) {
 		t.Fatalf("列表应 200，得 %d: %s", w.Code, w.Body.String())
 	}
 	var rows []struct {
-		Name         string `json:"name"`
-		ChannelCount int64  `json:"channel_count"`
+		Name          string   `json:"name"`
+		ChannelCount  int64    `json:"channel_count"`
+		ChannelNames  []string `json:"channel_names"`
+		OrgPriceCount int64    `json:"org_price_count"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &rows); err != nil {
 		t.Fatal(err)
 	}
 	got := map[string]int64{}
+	names := map[string][]string{}
+	priceCnt := map[string]int64{}
 	for _, r := range rows {
 		got[r.Name] = r.ChannelCount
+		names[r.Name] = r.ChannelNames
+		priceCnt[r.Name] = r.OrgPriceCount
 	}
 	want := map[string]int64{"m-live": 2, "m-nokey": 0, "m-off": 0, "m-none": 0}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("channel_count 口径不符：got %v want %v", got, want)
+	}
+	// 渠道名清单与计数同口径：m-live 挂 c-live 与 c-pool，其余为空
+	wantNames := map[string][]string{
+		"m-live": {"c-live", "c-pool"}, "m-nokey": nil, "m-off": nil, "m-none": nil,
+	}
+	if !reflect.DeepEqual(names, wantNames) {
+		t.Fatalf("channel_names 口径不符：got %v want %v", names, wantNames)
+	}
+	// 客户覆盖价计数：已删模型（ghost）的残留覆盖价不得计入任何在列模型
+	wantPrice := map[string]int64{"m-live": 1, "m-nokey": 0, "m-off": 0, "m-none": 0}
+	if !reflect.DeepEqual(priceCnt, wantPrice) {
+		t.Fatalf("org_price_count 口径不符：got %v want %v", priceCnt, wantPrice)
 	}
 }
 
@@ -594,7 +620,9 @@ func TestUpstreamModelsByForm(t *testing.T) {
 
 // 渠道保存一站式定价：模型行带价则未登记的自动建 models 行（启用、带价），
 // 已登记的只更新填了价的字段；负价拒绝且整单回滚（渠道也不落库）
-func TestChannelSyncModelPrices(t *testing.T) {
+// 渠道保存只兜底登记模型、不碰价格（定价已收敛到「模型定价」页）：
+// 新模型登记为价格 0 的启用行；已登记模型价格一律不动；价格字段即便传来也被忽略
+func TestChannelEnsureModelsExist(t *testing.T) {
 	engine, db, token := newPlatformEnv(t)
 	cipher, _ := crypto.NewCipher("")
 	h := NewHandler(db, cipher, nil, nil, nil)
@@ -610,15 +638,15 @@ func TestChannelSyncModelPrices(t *testing.T) {
 		engine.ServeHTTP(w, req)
 		return w
 	}
-	// 存量模型：已有输入价，渠道侧只补输出价
+	// 存量模型：已定价，渠道侧不得改写
 	if err := db.Exec(`INSERT INTO models (name, input_price, output_price, status, created_at, updated_at)
-		VALUES ('m-exist', 100, 0, 1, 0, 0)`).Error; err != nil {
+		VALUES ('m-exist', 100, 200, 1, 0, 0)`).Error; err != nil {
 		t.Fatal(err)
 	}
 
 	w := post(`{"name":"c1","base_url":"https://up.example","vendor":"volc","upstream_key":"sk-1","models":[
 		{"model_name":"m-new","input_price":3000000,"output_price":9000000},
-		{"model_name":"m-exist","output_price":2000000},
+		{"model_name":"m-exist","input_price":8000000},
 		{"model_name":"m-free"}]}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("创建应 200，得 %d: %s", w.Code, w.Body.String())
@@ -627,41 +655,27 @@ func TestChannelSyncModelPrices(t *testing.T) {
 	if err := db.Where("name = ?", "m-new").First(&mo).Error; err != nil {
 		t.Fatalf("m-new 应被自动登记: %v", err)
 	}
-	if mo.InputPrice != 3000000 || mo.OutputPrice != 9000000 || mo.Status != 1 || mo.Vendor != "volc" {
-		t.Fatalf("m-new 定价不符: %+v", mo)
+	// 携带的价格字段被忽略：登记为价格 0（管理台「模型定价」页再定价）
+	if mo.InputPrice != 0 || mo.OutputPrice != 0 || mo.Status != 1 || mo.Vendor != "volc" {
+		t.Fatalf("m-new 应为价格 0 的启用行: %+v", mo)
 	}
 	mo = model.Model{} // First 复用 struct 会把旧主键拼进条件，先清空
 	if err := db.Where("name = ?", "m-exist").First(&mo).Error; err != nil {
 		t.Fatal(err)
 	}
-	if mo.InputPrice != 100 || mo.OutputPrice != 2000000 {
-		t.Fatalf("m-exist 应只更新输出价、保留原输入价: %+v", mo)
+	if mo.InputPrice != 100 || mo.OutputPrice != 200 {
+		t.Fatalf("m-exist 价格不得被渠道改写: %+v", mo)
 	}
 	var cnt int64
 	db.Model(&model.Model{}).Where("name = ?", "m-free").Count(&cnt)
-	if cnt != 0 {
-		t.Fatal("未填价的模型不应被登记")
+	if cnt != 1 {
+		t.Fatal("未定价的模型也应登记（价格 0）")
 	}
 
-	// 负价：整个事务回滚，渠道与模型都不落库
-	w = post(`{"name":"c2","base_url":"https://up.example","upstream_key":"sk-2","models":[
-		{"model_name":"m-neg","input_price":-1}]}`)
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("负价应失败，得 %d: %s", w.Code, w.Body.String())
-	}
-	db.Model(&model.Channel{}).Where("name = ?", "c2").Count(&cnt)
-	if cnt != 0 {
-		t.Fatal("负价时渠道不应落库")
-	}
-	db.Model(&model.Model{}).Where("name = ?", "m-neg").Count(&cnt)
-	if cnt != 0 {
-		t.Fatal("负价时模型不应登记")
-	}
-
-	// 更新渠道同样生效：给已登记模型补输入价
+	// 更新渠道同样不改价
 	req := httptest.NewRequest(http.MethodPut, "/api/platform/channels/1",
 		strings.NewReader(`{"name":"c1","base_url":"https://up.example","models":[
-			{"model_name":"m-exist","input_price":8000000}]}`))
+			{"model_name":"m-exist","input_price":9999999}]}`))
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	wPut := httptest.NewRecorder()
@@ -673,8 +687,8 @@ func TestChannelSyncModelPrices(t *testing.T) {
 	if err := db.Where("name = ?", "m-exist").First(&mo).Error; err != nil {
 		t.Fatal(err)
 	}
-	if mo.InputPrice != 8000000 || mo.OutputPrice != 2000000 {
-		t.Fatalf("更新应改输入价并保留输出价: %+v", mo)
+	if mo.InputPrice != 100 || mo.OutputPrice != 200 {
+		t.Fatalf("更新渠道不得改价: %+v", mo)
 	}
 }
 
@@ -741,10 +755,161 @@ func TestChannelRequiresKeyForModels(t *testing.T) {
 	if abCount != 0 {
 		t.Fatalf("删最后一把 Key 后能力应清空，得 %d", abCount)
 	}
-	// models 行保留（历史账单锚定模型名）
+	// models 行仍保留：渠道保存会兜底登记模型（价格 0，需管理台「模型定价」定价；
+	// 定价已从渠道侧收敛到模型定价页）
 	var mCount int64
-	db.Raw("SELECT COUNT(*) FROM models WHERE name = 'm1'").Scan(&mCount)
-	if mCount != 0 {
-		t.Fatal("渠道没建模型时不应有 models 行（本例未填价）")
+	db.Raw("SELECT COUNT(*) FROM models WHERE name = 'm1' AND status = 1 AND input_price = 0 AND output_price = 0").Scan(&mCount)
+	if mCount != 1 {
+		t.Fatalf("渠道保存应兜底登记价格 0 的启用模型行，得 %d", mCount)
+	}
+}
+
+// ---------------- 客户级差异化定价 ----------------
+
+// org-prices 三端点：list（使用客户 ∪ 覆盖客户，未覆盖回填默认价 + 授权人数）、
+// upsert（先插后改同一条，UNIQUE 不炸）、delete（回落默认价）
+// 客户覆盖价允许 0（给某客户免费）：gin required 对零值 int64 判失败，指针绑定下 0 是合法值
+func TestOrgModelPriceZeroAllowed(t *testing.T) {
+	engine, db, token := newPlatformEnv(t)
+	cipher, _ := crypto.NewCipher("")
+	h := NewHandler(db, cipher, &http.Client{}, nil, nil)
+	pg := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
+	pg.PUT("/model-prices/:name", h.SetOrgModelPrice)
+
+	now := time.Now().Unix()
+	_ = db.Exec(`INSERT INTO models (name, input_price, output_price, status, created_at, updated_at)
+		VALUES ('glm-5.2', 2000000, 8000000, 1, ?, ?)`, now, now).Error
+	_ = db.Exec(`INSERT INTO orgs (id, name, quota_limit, status, created_at, updated_at)
+		VALUES (1, 'acme', 0, 1, ?, ?)`, now, now).Error
+
+	req := httptest.NewRequest(http.MethodPut, "/api/platform/model-prices/glm-5.2",
+		strings.NewReader(`{"org_id":1,"input_price":0,"output_price":0}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("0 价应合法（给客户免费），得 %d: %s", w.Code, w.Body.String())
+	}
+	var in, out int64
+	_ = db.Raw("SELECT input_price, output_price FROM org_model_prices WHERE org_id = 1 AND model_name = 'glm-5.2'").Row().Scan(&in, &out)
+	if in != 0 || out != 0 {
+		t.Fatalf("覆盖价应落库 0/0，得 %d/%d", in, out)
+	}
+}
+
+func TestOrgModelPrices(t *testing.T) {
+	engine, db, token := newPlatformEnv(t)
+	cipher, _ := crypto.NewCipher("")
+	h := NewHandler(db, cipher, &http.Client{}, nil, nil)
+	pg := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
+	pg.GET("/model-prices/:name", h.ListOrgModelPrices)
+	pg.PUT("/model-prices/:name", h.SetOrgModelPrice)
+	pg.DELETE("/model-prices/:name/:orgId", h.DeleteOrgModelPrice)
+
+	now := time.Now().Unix()
+	_ = db.Exec(`INSERT INTO models (name, input_price, output_price, input_cache_hit_price, status, created_at, updated_at)
+		VALUES ('glm-5.2', 2000000, 8000000, 500000, 1, ?, ?)`, now, now).Error
+	// 客户 1（org_admin id=2 建 org 成员）、客户 2 无授权
+	_ = db.Exec(`INSERT INTO orgs (id, name, quota_limit, status, created_at, updated_at)
+		VALUES (1, 'acme', 0, 1, ?, ?), (2, 'beta', 0, 1, ?, ?)`, now, now, now, now).Error
+	_ = db.Exec(`INSERT INTO users (id, org_id, username, password_hash, role, status, created_at, updated_at)
+		VALUES (10, 1, 'u1', 'x', 'member', 1, ?, ?), (11, 1, 'u2', 'x', 'member', 1, ?, ?)`, now, now, now, now).Error
+	_ = db.Exec(`INSERT INTO user_model_grants (user_id, model_name, created_at)
+		VALUES (10, 'glm-5.2', ?), (11, 'glm-5.2', ?)`, now, now).Error
+
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		var req *http.Request
+		if body == "" {
+			req = httptest.NewRequest(method, path, nil)
+		} else {
+			req = httptest.NewRequest(method, path, strings.NewReader(body))
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+		return w
+	}
+
+	// list（未设任何覆盖）：仅客户 1（有授权），override=false，价格=模型默认价
+	w := call(http.MethodGet, "/api/platform/model-prices/glm-5.2", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("list 应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	var rows []struct {
+		OrgID       int64  `json:"org_id"`
+		OrgName     string `json:"org_name"`
+		MemberCount int64  `json:"member_count"`
+		Override    bool   `json:"override"`
+		InputPrice  int64  `json:"input_price"`
+		OutputPrice int64  `json:"output_price"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].OrgID != 1 || rows[0].MemberCount != 2 || rows[0].Override {
+		t.Fatalf("list 应只含授权客户 1（2 人，未覆盖），得 %+v", rows)
+	}
+	if rows[0].InputPrice != 2_000_000 || rows[0].OutputPrice != 8_000_000 {
+		t.Fatalf("未覆盖应回填默认价，得 %+v", rows[0])
+	}
+
+	// upsert 客户 2（先定价后授权场景）
+	w = call(http.MethodPut, "/api/platform/model-prices/glm-5.2",
+		`{"org_id":2,"input_price":3000000,"output_price":9000000}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("upsert 应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	// 再 upsert 同一客户（改价）→ 更新不新增
+	w = call(http.MethodPut, "/api/platform/model-prices/glm-5.2",
+		`{"org_id":2,"input_price":1500000,"output_price":6000000}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("改价应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	var prows int64
+	_ = db.Raw(`SELECT COUNT(*) FROM org_model_prices WHERE model_name='glm-5.2'`).Scan(&prows).Error
+	if prows != 1 {
+		t.Fatalf("同客户反复定价应只有一行（upsert），得 %d", prows)
+	}
+
+	// list：客户 1（默认价）+ 客户 2（覆盖价）都在
+	w = call(http.MethodGet, "/api/platform/model-prices/glm-5.2", "")
+	_ = json.Unmarshal(w.Body.Bytes(), &rows)
+	if len(rows) != 2 {
+		t.Fatalf("list 应含授权客户与覆盖客户共 2 行，得 %+v", rows)
+	}
+	overridden := map[int64]bool{}
+	price := map[int64]int64{}
+	for _, r := range rows {
+		overridden[r.OrgID] = r.Override
+		price[r.OrgID] = r.InputPrice
+	}
+	if overridden[1] || price[1] != 2_000_000 {
+		t.Fatalf("客户 1 应未覆盖走默认价，得 override=%v price=%d", overridden[1], price[1])
+	}
+	if !overridden[2] || price[2] != 1_500_000 {
+		t.Fatalf("客户 2 应覆盖价 1,500,000，得 override=%v price=%d", overridden[2], price[2])
+	}
+
+	// delete 客户 2 覆盖 → 回落默认价；再 delete → 404
+	if w := call(http.MethodDelete, "/api/platform/model-prices/glm-5.2/2", ""); w.Code != http.StatusOK {
+		t.Fatalf("delete 应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	var cnt int64
+	_ = db.Raw(`SELECT COUNT(*) FROM org_model_prices WHERE org_id=2`).Scan(&cnt).Error
+	if cnt != 0 {
+		t.Fatalf("覆盖行应已删除，得 %d", cnt)
+	}
+	if w := call(http.MethodDelete, "/api/platform/model-prices/glm-5.2/2", ""); w.Code != http.StatusNotFound {
+		t.Fatalf("重复 delete 应 404，得 %d", w.Code)
+	}
+
+	// 模型不存在 → 404；负价 → 400
+	if w := call(http.MethodPut, "/api/platform/model-prices/ghost", `{"org_id":1,"input_price":1,"output_price":1}`); w.Code != http.StatusNotFound {
+		t.Fatalf("模型不存在应 404，得 %d", w.Code)
+	}
+	if w := call(http.MethodPut, "/api/platform/model-prices/glm-5.2", `{"org_id":1,"input_price":-1,"output_price":1}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("负价应 400，得 %d", w.Code)
 	}
 }

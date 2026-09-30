@@ -1,25 +1,20 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { apiMyKeys, apiCreateKey, apiDeleteKey, apiMyCostCenters, apiAssignKeyCenter, type MyKey, type MyCostCenter } from '../../api/member'
+import { apiMyKeys, apiCreateKey, apiDeleteKey, type MyKey } from '../../api/member'
 import { fmtTime } from '../../utils/format'
 import { copyText } from '../../utils/clipboard'
 
 const list = ref<MyKey[]>([])
-const centers = ref<MyCostCenter[]>([])
 
 async function load() {
   list.value = await apiMyKeys()
 }
-onMounted(() => {
-  load()
-  apiMyCostCenters().then((d) => (centers.value = d || [])).catch(() => (centers.value = []))
-})
+onMounted(load)
 
 const createVisible = ref(false)
 const keyName = ref('')
 const keyExpires = ref<string | null>(null)
-const keyCenter = ref<number | null>(null)
 const newKey = ref<string>('')
 const creating = ref(false)
 const nowSec = Math.floor(Date.now() / 1000)
@@ -38,23 +33,15 @@ async function submitCreate() {
   creating.value = true
   try {
     const expiresAt = keyExpires.value ? Number(keyExpires.value) : null
-    const resp = await apiCreateKey(keyName.value || '默认密钥', expiresAt, keyCenter.value)
+    const resp = await apiCreateKey(keyName.value || '默认密钥', expiresAt)
     newKey.value = resp.key
     createVisible.value = false
     keyName.value = ''
     keyExpires.value = null
-    keyCenter.value = null
     load()
   } finally {
     creating.value = false
   }
-}
-
-// 改派只影响未来消耗；历史账单按结算时快照不变
-async function reassign(k: MyKey, centerID: number | null) {
-  await apiAssignKeyCenter(k.id, centerID)
-  ElMessage.success('已改派（历史账单不变）')
-  load()
 }
 
 async function copyKey() {
@@ -108,15 +95,6 @@ async function remove(k: MyKey) {
       <el-table-column label="创建时间" width="160">
         <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
       </el-table-column>
-      <el-table-column label="归集中心" width="150">
-        <template #default="{ row }">
-          <el-select v-if="centers.length" :model-value="row.cost_center_id" size="small" style="width: 120px"
-            placeholder="未归集" clearable @change="(v: any) => reassign(row, v ?? null)">
-            <el-option v-for="cc in centers" :key="cc.id" :label="cc.name" :value="cc.id" />
-          </el-select>
-          <span v-else class="dim">-</span>
-        </template>
-      </el-table-column>
       <el-table-column label="操作" width="90" fixed="right">
         <template #default="{ row }">
           <el-button size="small" type="danger" @click="remove(row)">删除</el-button>
@@ -132,12 +110,6 @@ async function remove(k: MyKey) {
         <el-date-picker v-model="keyExpires" type="datetime" placeholder="永久有效" value-format="X"
           :shortcuts="expiryShortcuts" style="width: 100%" />
         <div class="form-tip">留空 = 永久有效；到期的密钥调用将被拒绝</div>
-      </el-form-item>
-      <el-form-item v-if="centers.length" label="归集">
-        <el-select v-model="keyCenter" placeholder="未归集" clearable style="width: 100%">
-          <el-option v-for="cc in centers" :key="cc.id" :label="cc.name" :value="cc.id" />
-        </el-select>
-        <div class="form-tip">成本中心用于客户按项目核算；改派不影响历史账单</div>
       </el-form-item>
     </el-form>
     <template #footer>
@@ -165,5 +137,4 @@ async function remove(k: MyKey) {
 <style scoped>
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .form-tip { font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.4; margin-top: 4px; }
-.dim { color: var(--el-text-color-secondary); }
 </style>

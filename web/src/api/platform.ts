@@ -62,6 +62,7 @@ export interface Channel {
   has_key?: boolean
   key_count?: number
   key_active_count?: number
+  key_cooling_count?: number
   weight: number
   priority: number
   status: number
@@ -129,12 +130,38 @@ export interface MModel {
   remark: string
   /** 已接通（启用且有可用密钥）的渠道数，0=仅登记未接渠道 */
   channel_count?: number
+  /** 已接通渠道的名称清单（与 channel_count 同口径，定价页点开可看） */
+  channel_names?: string[]
+  /** 已设客户覆盖价的客户数（默认价 0 但有客户价时，仅这些客户计费） */
+  org_price_count?: number
 }
 
 export const apiListModels = () => http.get<any, MModel[]>('/api/platform/models')
 export const apiCreateModel = (data: any) => http.post<any, any>('/api/platform/models', data)
 export const apiUpdateModel = (id: number, data: any) => http.put<any, any>(`/api/platform/models/${id}`, data)
 export const apiDeleteModel = (id: number) => http.delete<any, any>(`/api/platform/models/${id}`)
+
+// ---- 客户级差异化定价 ----
+// 某模型下各客户的生效价：override=false 时三价为回填的模型默认价
+export interface OrgModelPriceRow {
+  org_id: number
+  org_name: string
+  /** 已授权使用该模型的子账号数 */
+  member_count: number
+  override: boolean
+  input_price: number
+  output_price: number
+  input_cache_hit_price: number
+  remark: string
+}
+
+export const apiListOrgModelPrices = (modelName: string) =>
+  http.get<any, OrgModelPriceRow[]>(`/api/platform/model-prices/${encodeURIComponent(modelName)}`)
+export const apiSetOrgModelPrice = (modelName: string, data: {
+  org_id: number; input_price: number; output_price: number; input_cache_hit_price?: number; remark?: string,
+}) => http.put<any, any>(`/api/platform/model-prices/${encodeURIComponent(modelName)}`, data)
+export const apiDeleteOrgModelPrice = (modelName: string, orgId: number) =>
+  http.delete<any, any>(`/api/platform/model-prices/${encodeURIComponent(modelName)}/${orgId}`)
 
 // ---- 统计 / 日志 ----
 export const apiStatsOverview = () => http.get<any, any>('/api/platform/stats/overview')
@@ -164,11 +191,12 @@ export interface NotificationItem {
 }
 
 export const apiListNotifications = () =>
-  http.get<any, { list: NotificationItem[]; unread: number }>('/api/platform/notifications')
+  // 站内通知三角色通用（按 JWT uid 隔离），铃铛对所有登录角色开放
+  http.get<any, { list: NotificationItem[]; unread: number }>('/api/me/notifications')
 export const apiReadNotification = (id: number) =>
-  http.put<any, { message: string }>(`/api/platform/notifications/${id}/read`)
+  http.put<any, { message: string }>(`/api/me/notifications/${id}/read`)
 export const apiReadAllNotifications = () =>
-  http.put<any, { message: string }>('/api/platform/notifications/read-all')
+  http.put<any, { message: string }>('/api/me/notifications/read-all')
 
 // 额度预警：为某客户设置阈值（0 = 关闭）
 export const apiUpdateOrgAlertLevels = (id: number, threshold: number) =>

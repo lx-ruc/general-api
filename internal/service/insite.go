@@ -19,7 +19,71 @@ import (
 // NotificationType 常量：前端按 type 渲染图标与就地动作
 const (
 	NotifyTypeKeyQuotaCooling = "key_quota_cooling"
+	NotifyTypeRequestPending  = "request_pending" // 子账号提交额度/模型申请 → 客户管理员
+	NotifyTypeRequestHandled  = "request_handled" // 审批结果 → 子账号
+	NotifyTypeQuotaAlert      = "quota_alert"     // 额度水位/耗尽 → 客户管理员、子账号
+	NotifyTypeRecharge        = "recharge"        // 充值到账 → 客户管理员；充值申请 → 平台管理员
 )
+
+// insertNotifications 批量落库（扇出公共内核）
+func insertNotifications(db *gorm.DB, rows []model.Notification) bool {
+	if len(rows) == 0 {
+		return false
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		slog.Warn("站内通知写入失败", "err", err)
+		return false
+	}
+	return true
+}
+
+// NotifyUserInsite 给单个用户发一条站内通知（审批结果、个人额度告警等）
+func NotifyUserInsite(db *gorm.DB, userID int64, typ, title, body string) bool {
+	return insertNotifications(db, []model.Notification{{
+		UserID: userID, Type: typ, Title: title, Body: body, CreatedAt: time.Now().Unix(),
+	}})
+}
+
+// NotifyOrgAdminsInsite 给某客户全部启用的管理员各发一条站内通知（申请待审批、充值到账等），返回发出条数
+func NotifyOrgAdminsInsite(db *gorm.DB, orgID int64, typ, title, body string) int {
+	var ids []int64
+	if err := db.Raw(`SELECT id FROM users WHERE org_id = ? AND role = 'org_admin' AND status = 1`,
+		orgID).Scan(&ids).Error; err != nil {
+		slog.Warn("站内通知扇出查询失败", "err", err)
+		return 0
+	}
+	now := time.Now().Unix()
+	rows := make([]model.Notification, 0, len(ids))
+	for _, uid := range ids {
+		rows = append(rows, model.Notification{
+			UserID: uid, Type: typ, Title: title, Body: body, CreatedAt: now,
+		})
+	}
+	if !insertNotifications(db, rows) {
+		return 0
+	}
+	return len(rows)
+}
+
+// NotifyPlatformAdminsInsite 给全部启用的系统管理员各发一条站内通知（充值申请等），返回发出条数
+func NotifyPlatformAdminsInsite(db *gorm.DB, typ, title, body string) int {
+	var ids []int64
+	if err := db.Raw(`SELECT id FROM users WHERE role = 'platform_admin' AND status = 1`).Scan(&ids).Error; err != nil {
+		slog.Warn("站内通知扇出查询失败", "err", err)
+		return 0
+	}
+	now := time.Now().Unix()
+	rows := make([]model.Notification, 0, len(ids))
+	for _, uid := range ids {
+		rows = append(rows, model.Notification{
+			UserID: uid, Type: typ, Title: title, Body: body, CreatedAt: now,
+		})
+	}
+	if !insertNotifications(db, rows) {
+		return 0
+	}
+	return len(rows)
+}
 
 // NotifyThrottle 同一 Key 两次配额冷却通知的最小间隔：死 Key 稳态下每 ~1 分钟被真实
 // 流量/探测再触发一次配额 429，不节流会每分钟刷一条。设为变量便于测试缩短

@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore, homeOf } from '../stores/auth'
+import { apiForgotPassword } from '../api/auth'
 import SiteTopBar from '../components/SiteTopBar.vue'
 import LoginShowcase from '../components/LoginShowcase.vue'
 
@@ -27,6 +28,64 @@ async function submit() {
     errorMsg.value = '用户名或密码不正确，请重试'
   } finally {
     loading.value = false
+  }
+}
+
+// ---- 忘记密码：邮箱验证发重置链接（两步弹窗）----
+const forgotEmail = ref('')
+const forgotStep = ref<'input' | 'sent'>('input')
+const forgotLoading = ref(false)
+const forgotError = ref('')
+const forgotDevLink = ref('')
+// 提交成功后的 60 秒重发冷却（与后端重发窗口同口径）
+const resendCountdown = ref(0)
+let resendTimer: ReturnType<typeof setInterval> | null = null
+
+const emailValid = computed(() => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(forgotEmail.value))
+
+function openForgot() {
+  forgotVisible.value = true
+  forgotStep.value = 'input'
+  forgotError.value = ''
+  forgotDevLink.value = ''
+}
+
+function closeForgot() {
+  forgotVisible.value = false
+}
+
+function startCountdown() {
+  if (resendTimer) clearInterval(resendTimer)
+  resendCountdown.value = 60
+  resendTimer = setInterval(() => {
+    resendCountdown.value--
+    if (resendCountdown.value <= 0 && resendTimer) {
+      clearInterval(resendTimer)
+      resendTimer = null
+    }
+  }, 1000)
+}
+
+async function sendResetLink() {
+  if (!forgotEmail.value.trim()) {
+    forgotError.value = '请输入绑定账号的邮箱'
+    return
+  }
+  if (!emailValid.value) {
+    forgotError.value = '邮箱格式不正确'
+    return
+  }
+  forgotLoading.value = true
+  forgotError.value = ''
+  try {
+    const resp = await apiForgotPassword(forgotEmail.value.trim())
+    forgotDevLink.value = resp.dev_link || ''
+    forgotStep.value = 'sent'
+    startCountdown()
+  } catch (e: unknown) {
+    forgotError.value = e instanceof Error ? e.message : '发送失败，请稍后再试'
+  } finally {
+    forgotLoading.value = false
   }
 }
 </script>
@@ -62,28 +121,72 @@ async function submit() {
           </button>
 
           <div class="form-links">
-            <button type="button" class="link" @click="forgotVisible = true">忘记密码？</button>
+            <button type="button" class="link" @click="openForgot">忘记密码？</button>
           </div>
         </form>
 
-        <!-- 忘记密码：分层找回指引 -->
-        <el-dialog v-model="forgotVisible" title="忘记密码了？" width="440px">
-          <p class="forgot-lead">按你的账号类型找对应的管理员重置：</p>
+        <!-- 忘记密码：邮箱验证发重置链接；管理员重置作为兜底指引 -->
+        <el-dialog :model-value="forgotVisible" title="忘记密码" width="460px" @update:model-value="closeForgot">
+          <!-- 第一步：输入绑定邮箱 -->
+          <template v-if="forgotStep === 'input'">
+            <p class="forgot-lead">输入绑定账号的邮箱，我们将向你发送密码重置链接。</p>
+            <el-input
+              v-model="forgotEmail"
+              placeholder="请输入绑定账号的邮箱"
+              size="large"
+              @keyup.enter="sendResetLink"
+            />
+            <p v-if="forgotError" class="forgot-error" role="alert">{{ forgotError }}</p>
+            <div class="forgot-actions">
+              <el-button @click="closeForgot">取消</el-button>
+              <el-button type="primary" :loading="forgotLoading" @click="sendResetLink">
+                发送重置链接
+              </el-button>
+            </div>
+          </template>
+
+          <!-- 第二步：已发送确认 -->
+          <template v-else>
+            <div class="forgot-sent">
+              <p class="forgot-lead">
+                重置链接已发送至 <b>{{ forgotEmail }}</b>，请查收（注意垃圾邮件箱）。
+                链接 30 分钟内有效、仅可使用一次。
+              </p>
+              <!-- 开发模式：SMTP/site_url 未配置时后端把链接直接带回 -->
+              <p v-if="forgotDevLink" class="forgot-devlink">
+                开发模式（SMTP 未配置），重置链接：
+                <a :href="forgotDevLink" class="devlink-a">{{ forgotDevLink }}</a>
+              </p>
+              <div class="forgot-actions">
+                <el-button @click="forgotStep = 'input'">换个邮箱</el-button>
+                <el-button
+                  type="primary"
+                  :disabled="resendCountdown > 0 || forgotLoading"
+                  :loading="forgotLoading"
+                  @click="sendResetLink"
+                >
+                  {{ resendCountdown > 0 ? `重新发送（${resendCountdown}s）` : '重新发送' }}
+                </el-button>
+              </div>
+            </div>
+          </template>
+
+          <el-divider class="forgot-divider" />
+          <p class="fallback-title">收不到邮件？也可以联系管理员重置：</p>
           <ul class="forgot-list">
             <li>
-              <b>子账号账号</b> — 联系本客户管理员：
-              客户管理员在「子账号管理 → 更多 → 重置密码」为你重置。
+              <b>子账号</b> — 联系本客户管理员：
+              在「子账号管理 → 更多 → 重置密码」为你重置。
             </li>
             <li>
-              <b>客户管理员账号</b> — 联系系统管理员：
+              <b>客户管理员</b> — 联系系统管理员：
               在「客户管理 → 客户详情 → 重置管理员密码」重置。
             </li>
             <li>
-              <b>系统管理员账号</b> — 服务器上执行运维命令重置：
+              <b>系统管理员</b> — 服务器上执行运维命令重置：
               <code>./token-gateway -reset-password admin:新密码</code>
             </li>
           </ul>
-          <p class="forgot-note">重置后请尽快登录，在右上角「修改密码」改成自己的密码。</p>
         </el-dialog>
       </section>
     </div>
@@ -183,7 +286,22 @@ async function submit() {
 }
 .link:hover { text-decoration: underline; }
 
-.forgot-lead { margin: 0 0 10px; font-size: 13.5px; color: var(--tg-ink); }
+.forgot-lead { margin: 0 0 10px; font-size: 13.5px; color: var(--tg-ink); line-height: 1.8; }
+.forgot-lead b { color: var(--tg-green-ink); }
+.forgot-error {
+  margin: 10px 0 0; font-size: 12.5px; color: var(--tg-red);
+  background: #fdf1f0; border: 1px solid #f3d6d3;
+  border-radius: 6px; padding: 7px 10px;
+}
+.forgot-actions { margin-top: 16px; display: flex; justify-content: flex-end; gap: 10px; }
+.forgot-devlink {
+  margin: 10px 0 0; font-size: 12.5px; color: var(--tg-graphite);
+  background: var(--tg-green-wash); border-radius: 6px; padding: 8px 10px;
+  word-break: break-all; line-height: 1.7;
+}
+.devlink-a { color: var(--tg-green-ink); }
+.forgot-divider { margin: 18px 0 12px; }
+.fallback-title { margin: 0 0 8px; font-size: 12.5px; color: var(--tg-muted); }
 .forgot-list { margin: 0; padding-left: 18px; font-size: 13px; color: var(--tg-graphite); line-height: 2; }
 .forgot-list b { color: var(--tg-ink); }
 .forgot-list code {

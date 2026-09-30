@@ -7,6 +7,13 @@ export interface ApiError {
   type?: string
 }
 
+// 自定义请求配置：skipErrorToast = 调用方自己展示错误（如表单内联红字），拦截器不再弹全局 toast
+declare module 'axios' {
+  export interface AxiosRequestConfig {
+    skipErrorToast?: boolean
+  }
+}
+
 const http = axios.create({ timeout: 30000 })
 
 http.interceptors.request.use((cfg) => {
@@ -32,10 +39,12 @@ http.interceptors.response.use(
         location.hash = '#/login'
         ElMessage.error('登录已过期，请重新登录')
       }
-    } else {
+    } else if (!err.config?.skipErrorToast) {
       ElMessage.error(msg)
     }
-    return Promise.reject(err)
+    // 拒绝时带后端文案：调用方 catch 里 e.message 是友好信息，
+    // 而不是 axios 原始的 "Request failed with status code 400"
+    return Promise.reject(new Error(msg))
   },
 )
 

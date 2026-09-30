@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"mime"
 	"net/smtp"
 	"regexp"
 	"strings"
@@ -18,6 +19,9 @@ import (
 	"token-gateway/internal/database"
 	"token-gateway/internal/model"
 )
+
+// BrandName 对外品牌名（邮件主题/落款用；站内 UI 标题各自维护）
+const BrandName = "慧创星途"
 
 // 邮箱验证码：存数据库（多实例共享；5 分钟有效，60 秒重发间隔，验证错 5 次作废）
 const (
@@ -64,7 +68,7 @@ func (v *Verification) SendCode(email string) (devCode string, retryAfter int, e
 	var prev verifyRow
 	_ = v.db.Raw("SELECT * FROM verification_codes WHERE email = ?", email).Scan(&prev).Error
 	if prev.Email != "" && now-prev.SentAt < int64(resendWindow.Seconds()) {
-		left := int(int64(resendWindow.Seconds()) - (now - prev.SentAt)) + 1
+		left := int(int64(resendWindow.Seconds())-(now-prev.SentAt)) + 1
 		return "", left, fmt.Errorf("发送太频繁，请 %d 秒后再试", left)
 	}
 	// 6 位数字验证码
@@ -89,8 +93,8 @@ func (v *Verification) SendCode(email string) (devCode string, retryAfter int, e
 		slog.Warn("SMTP 未配置，验证码以开发模式返回", "email", email, "code", code)
 		return code, 0, nil
 	}
-	if err := sendMail(v.smtp, email, "慧沐引擎注册验证码",
-		fmt.Sprintf("你的注册验证码是：%s\n\n5 分钟内有效。若非本人操作请忽略本邮件。\n—— 慧沐引擎", code)); err != nil {
+	if err := sendMail(v.smtp, email, BrandName+"注册验证码",
+		fmt.Sprintf("你的注册验证码是：%s\n\n5 分钟内有效。若非本人操作请忽略本邮件。\n—— %s", code, BrandName)); err != nil {
 		_ = v.db.Exec("DELETE FROM verification_codes WHERE email = ?", email).Error
 		return "", 0, fmt.Errorf("邮件发送失败: %v", err)
 	}
@@ -184,12 +188,41 @@ func (v *Verification) RegisterCompany(db *gorm.DB, orgName, email, code, userna
 	return nil
 }
 
-// sendMail 标准库 SMTP 发送；465 端口走 SSL，其余走 STARTTLS
+// fromAddr 从 From 配置取裸地址：信封 MAIL FROM 只接受纯地址，
+// 带「展示名 <addr>」形式会被 163 等服务商以语法错误拒信
+func fromAddr(from string) string {
+	s := strings.TrimSpace(from)
+	if i := strings.LastIndex(s, "<"); i >= 0 {
+		if j := strings.Index(s[i:], ">"); j > 0 {
+			return s[i+1 : i+j]
+		}
+	}
+	return s
+}
+
+// fromHeader 头部 From 保留展示名：中文按 RFC 2047 编码（裸 UTF-8 头部
+// 虽被多数客户端容错，但严格网关会乱码或拒信）；无展示名时原样返回
+func fromHeader(from string) string {
+	s := strings.TrimSpace(from)
+	i := strings.LastIndex(s, "<")
+	if i < 0 {
+		return s
+	}
+	name := strings.TrimSpace(s[:i])
+	if name == "" {
+		return s
+	}
+	return mime.QEncoding.Encode("UTF-8", name) + " " + s[i:]
+}
+
+// sendMail 标准库 SMTP 发送；465 端口走 SSL，其余走 STARTTLS。
+// 主题与展示名均按 RFC 2047 编码，中文在各家客户端不乱码
 func sendMail(cfg *config.Smtp, to, subject, body string) error {
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
+	envelope := fromAddr(cfg.From)
 	msg := []byte("To: " + to + "\r\n" +
-		"From: " + cfg.From + "\r\n" +
-		"Subject: " + subject + "\r\n" +
+		"From: " + fromHeader(cfg.From) + "\r\n" +
+		"Subject: " + mime.QEncoding.Encode("UTF-8", subject) + "\r\n" +
 		"Content-Type: text/plain; charset=UTF-8\r\n\r\n" +
 		body)
 	auth := smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host)
@@ -206,7 +239,7 @@ func sendMail(cfg *config.Smtp, to, subject, body string) error {
 		if err = c.Auth(auth); err != nil {
 			return err
 		}
-		if err = c.Mail(cfg.From); err != nil {
+		if err = c.Mail(envelope); err != nil {
 			return err
 		}
 		if err = c.Rcpt(to); err != nil {
@@ -224,5 +257,5 @@ func sendMail(cfg *config.Smtp, to, subject, body string) error {
 		}
 		return c.Quit()
 	}
-	return smtp.SendMail(addr, auth, cfg.From, []string{to}, msg)
+	return smtp.SendMail(addr, auth, envelope, []string{to}, msg)
 }

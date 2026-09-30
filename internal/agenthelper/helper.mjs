@@ -5,9 +5,8 @@
 //   codex         ~/.codex/config.toml（自定义 provider，wire_api=responses，走 /v1/responses）
 //                 + ~/.codex/models.json（模型元数据，桌面端 ChatGPT 内置 Codex 识别用）
 //   opencode      ~/.config/opencode/opencode.json（openai-compatible provider）
-//   crush         ~/.config/crush/crush.json（providers.huimu）
-//   factory-droid ~/.factory/settings.json（customModels，generic-chat-completion-api）
-//   trae          ~/.trae/huimu.json（仅本站标记；Trae 不开放模型配置文件，助手打印 IDE 内登记指引）
+//   trae-agent    ~/.trae-agent/trae_config.yaml（字节开源 CLI，YAML 三段式；trae-cli 默认只认
+//                 当前目录的 trae_config.yaml，故同时把 TRAE_CONFIG_FILE 写进 shell rc）
 // 用法：
 //   node helper.mjs                                   # 交互式向导（状态总览 + 方向键选择 接入/卸载）
 //   node helper.mjs install claude-code codex         # 安装指定 agent
@@ -24,7 +23,7 @@ import { stdin, stdout } from 'node:process';
 
 const DEFAULT_BASE = '__HUIMU_BASE__'; // 网关下发时注入实际地址
 const PROVIDER = 'huimu';
-const VERSION = '1.2.1';
+const VERSION = '1.4.0';
 
 // ---------------- 参数解析 ----------------
 // flag 可出现在任意位置（引导器会把 --base 前置），第一个位置参数是命令，其余是命令参数
@@ -60,6 +59,44 @@ function writeAtomic(path, content) {
 
 function writeJSON(path, obj) {
   writeAtomic(path, JSON.stringify(obj, null, 2) + '\n');
+}
+
+// readText 读文本文件；不存在/损坏返回空串（状态探测用，不抛错）
+function readText(path) {
+  try {
+    if (existsSync(path)) return readFileSync(path, 'utf-8');
+  } catch { /* ignore */ }
+  return '';
+}
+
+// shellRcPath 按登录 shell 选 rc 文件：trae-cli 默认只认当前目录的 trae_config.yaml，
+// 固定路径的配置要靠 TRAE_CONFIG_FILE 环境变量（run/interactive/show-config 都读它），
+// 必须随 shell 启动生效才有意义
+function shellRcPath(home) {
+  const sh = (process.env.SHELL || '').split('/').pop() || '';
+  if (sh.includes('bash')) return join(home, '.bashrc');
+  if (sh.includes('zsh')) return join(home, '.zshrc');
+  return join(home, '.profile'); // 其它 shell 兜底：POSIX export 语法各 shell 通用
+}
+
+// addShellRcExport 向 rc 追加带标记的 export 块（幂等：已有标记不重复追加）
+function addShellRcExport(rcPath, name, value) {
+  const open = `# >>> ${name} huimu >>>`;
+  const block = `${open}\nexport ${name}="${value}"\n# <<< ${name} huimu <<<\n`;
+  const cur = readText(rcPath);
+  if (cur.includes(open)) return;
+  writeAtomic(rcPath, cur ? cur.replace(/\n*$/, '\n') + block : block);
+}
+
+// removeShellRcExport 摘掉指定变量的标记块；摘完 rc 若已空则整体回收（本助手建的场景）
+function removeShellRcExport(rcPath, name) {
+  const cur = readText(rcPath);
+  if (!cur) return;
+  const re = new RegExp(`\\n*# >>> ${name} huimu >>>\\n[\\s\\S]*?# <<< ${name} huimu <<<\\n?`, 'g');
+  const next = cur.replace(re, '');
+  if (next === cur) return;
+  if (next.trim() === '') { try { unlinkSync(rcPath); } catch { /* ignore */ } return; }
+  writeAtomic(rcPath, next);
 }
 
 // 文本输入：TTY 下按次创建/关闭 readline（不与 keySelect 的 raw mode 冲突）；
@@ -361,10 +398,37 @@ function agentDefs(ctx) {
     'claude-code': {
       name: 'Claude Code',
       configPath: join(home, '.claude', 'settings.json'),
+      // 安装会改动/删除非本站的键（ANTHROPIC_API_KEY 等冲突键、顶层 model）：
+      // 改动前把原始值备份到这里，卸载时原样还原——「卸载回到装之前」才成立。
+      // 重复安装不覆盖备份（保住的是最早一次安装前的真实原状）
+      backupPath: join(home, '.huimu', 'claude-code-backup.json'),
+      backupKeysEnv: ['ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL', 'NO_PROXY', 'no_proxy'],
       install() {
         const p = join(home, '.claude', 'settings.json');
         const cfg = readJSON(p);
         const env = { ...(cfg.env || {}) };
+        // 首次安装才写备份：重装/升级不覆盖，保住最早一次安装前的真实原状
+        if (!existsSync(this.backupPath)) {
+          const backup = { env: {}, model: cfg.model };
+          for (const k of this.backupKeysEnv) if (env[k] !== undefined) backup.env[k] = env[k];
+          writeJSON(this.backupPath, backup);
+        }
+        // 清掉其它服务商残留的冲突键：ANTHROPIC_API_KEY 会触发「双 token」警告，
+        // 旧模型名环境变量会盖掉下面的槽位映射
+        for (const k of ['ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL']) delete env[k];
+        // 网关主机加进 NO_PROXY：机器上若有 socks5 等系统代理，Node fetch 对其报
+        // UnsupportedProxyProtocol（连不上 API）——本站流量必须直连不走代理
+        const proxyHosts = [];
+        try {
+          const u = new URL(base);
+          proxyHosts.push(u.hostname);
+          if (u.host !== u.hostname) proxyHosts.push(u.host); // 带端口形式一并加，匹配更稳
+        } catch { /* base 非法时跳过，不阻塞安装 */ }
+        for (const k of ['NO_PROXY', 'no_proxy']) {
+          const list = String(env[k] || '').split(',').map((s) => s.trim()).filter(Boolean);
+          for (const h of proxyHosts) if (!list.includes(h)) list.push(h);
+          if (list.length) env[k] = list.join(',');
+        }
         Object.assign(env, {
           ANTHROPIC_AUTH_TOKEN: key,
           ANTHROPIC_BASE_URL: base, // Claude Code 自行拼接 /v1/messages
@@ -375,7 +439,9 @@ function agentDefs(ctx) {
           ANTHROPIC_DEFAULT_SONNET_MODEL: model,
           ANTHROPIC_DEFAULT_OPUS_MODEL: model,
         });
-        writeJSON(p, { ...cfg, env });
+        // 顶层 model：启动横幅与 /model 默认值显示本站模型（残留的旧服务商
+        // "model": "DeepSeek-V4-Pro" 会盖掉一切槽位映射，请求打到不存在的模型名）
+        writeJSON(p, { ...cfg, env, model });
         // 跳过 Claude Code 首次启动向导（与智谱 helper 同法）
         const ob = join(home, '.claude.json');
         const obCfg = readJSON(ob);
@@ -385,15 +451,35 @@ function agentDefs(ctx) {
         const p = join(home, '.claude', 'settings.json');
         if (!existsSync(p)) return;
         const cfg = readJSON(p);
-        if (!cfg.env) return;
-        const env = { ...cfg.env };
+        const env = { ...(cfg.env || {}) };
         for (const k of [
           'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'API_TIMEOUT_MS',
           'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', 'CLAUDE_CODE_AUTO_COMPACT_WINDOW',
           'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL',
           'ANTHROPIC_API_KEY',
         ]) delete env[k];
+        // NO_PROXY 只摘掉本站主机，用户自己的免代理条目保留
+        let hosts = [];
+        try {
+          const u = new URL(base);
+          hosts = [u.hostname, u.host];
+        } catch { /* ignore */ }
+        for (const k of ['NO_PROXY', 'no_proxy']) {
+          if (!env[k]) continue;
+          const kept = String(env[k]).split(',').map((s) => s.trim())
+            .filter((s) => s && !hosts.includes(s));
+          if (kept.length) env[k] = kept.join(',');
+          else delete env[k];
+        }
         const next = { ...cfg, env };
+        delete next.model; // 顶层 model 为本站安装时写入，一并回收
+        // 有备份则把安装前的原始键值原样放回（卸载 = 回到装之前）
+        const backup = readJSON(this.backupPath);
+        if (backup.env || backup.model !== undefined) {
+          for (const [k, v] of Object.entries(backup.env || {})) env[k] = v;
+          if (backup.model !== undefined) next.model = backup.model;
+          try { unlinkSync(this.backupPath); } catch { /* ignore */ }
+        }
         if (Object.keys(env).length === 0) delete next.env;
         writeJSON(p, next);
       },
@@ -477,112 +563,89 @@ function agentDefs(ctx) {
         return !!(readJSON(join(home, '.config', 'opencode', 'opencode.json')).provider || {})[PROVIDER];
       },
     },
-    'crush': {
-      name: 'Crush',
-      configPath: join(home, '.config', 'crush', 'crush.json'),
+    'trae-agent': {
+      name: 'Trae Agent',
+      configPath: join(home, '.trae-agent', 'trae_config.yaml'),
+      // 覆盖前把用户的原配置备份到这里，卸载还原（重装不覆盖备份，保住最早原状）
+      backupPath: join(home, '.huimu', 'trae-agent-backup.yaml'),
+      envName: 'TRAE_CONFIG_FILE',
+      managedMark: 'managed by huimu-agent-helper',
+      rc() { return shellRcPath(home); },
       install() {
-        const p = join(home, '.config', 'crush', 'crush.json');
-        const cfg = readJSON(p);
-        writeJSON(p, {
-          ...cfg,
-          providers: {
-            ...(cfg.providers || {}),
-            [PROVIDER]: { id: PROVIDER, name: 'Huimu', base_url: chatBase, api_key: key },
-          },
-        });
-      },
-      uninstall() {
-        const p = join(home, '.config', 'crush', 'crush.json');
-        if (!existsSync(p)) return;
-        const cfg = readJSON(p);
-        if (cfg.providers) {
-          delete cfg.providers[PROVIDER];
-          if (Object.keys(cfg.providers).length === 0) delete cfg.providers;
+        const p = this.configPath;
+        // 非本站配置先备份（首次安装才写）：trae_config.yaml 若是用户手写的，卸载要能回到原状
+        const cur = readText(p);
+        if (cur && !cur.includes(this.managedMark) && !existsSync(this.backupPath)) {
+          writeAtomic(this.backupPath, cur);
         }
-        writeJSON(p, cfg);
-      },
-      status() {
-        const cfg = readJSON(join(home, '.config', 'crush', 'crush.json'));
-        return cfg.providers && cfg.providers[PROVIDER] ? '已接入' : '未配置';
-      },
-      installed() {
-        return !!(readJSON(join(home, '.config', 'crush', 'crush.json')).providers || {})[PROVIDER];
-      },
-    },
-    'factory-droid': {
-      name: 'Factory Droid',
-      configPath: join(home, '.factory', 'settings.json'),
-      install() {
-        const p = join(home, '.factory', 'settings.json');
-        const cfg = readJSON(p);
-        const kept = (cfg.customModels || []).filter((m) => !String(m.displayName || '').includes('Huimu'));
-        writeJSON(p, {
-          ...cfg,
-          customModels: [...kept, {
-            displayName: `Huimu Engine [${model}] - Openai`,
-            model,
-            baseUrl: chatBase,
-            apiKey: key,
-            provider: 'generic-chat-completion-api',
-            maxOutputTokens: 131072,
-          }],
-        });
-      },
-      uninstall() {
-        const p = join(home, '.factory', 'settings.json');
-        if (!existsSync(p)) return;
-        const cfg = readJSON(p);
-        if (!cfg.customModels) return;
-        const kept = cfg.customModels.filter((m) => !String(m.displayName || '').includes('Huimu'));
-        const next = { ...cfg, customModels: kept };
-        if (kept.length === 0) delete next.customModels;
-        writeJSON(p, next);
-      },
-      status() {
-        const cfg = readJSON(join(home, '.factory', 'settings.json'));
-        const hit = (cfg.customModels || []).find((m) => String(m.displayName || '').includes('Huimu'));
-        return hit ? `已接入（模型 ${hit.model}）` : '未配置';
-      },
-      installed() {
-        return (readJSON(join(home, '.factory', 'settings.json')).customModels || [])
-          .some((m) => String(m.displayName || '').includes('Huimu'));
-      },
-    },
-    'trae': {
-      name: 'Trae',
-      configPath: join(home, '.trae', 'huimu.json'), // 本站标记文件；Trae 的模型登记在 IDE 设置内（GUI）
-      install() {
-        const p = join(home, '.trae', 'huimu.json');
-        writeJSON(p, { provider: PROVIDER, base, model });
+        // 结构对齐官方 config.py 的强校验三段式（缺段/缺必填键直接 ConfigError）：
+        //   model_providers：OpenAI 兼容网关 = provider: openai + base_url（官方 README 同款接法）
+        //   models：temperature/top_p/top_k/parallel_tool_calls/max_retries 是无默认值必填，
+        //           官方示例省了也会 TypeError，必须显式写全
+        //   agents.trae_agent：max_steps 必填；enable_lakeview 默认 true，但不配 lakeview 段
+        //           会直接 ConfigError，必须显式关掉。YAML 只允许空格缩进（不许 tab）
+        writeAtomic(p, [
+          `# ${this.managedMark}`,
+          'model_providers:',
+          `  ${PROVIDER}:`,
+          `    api_key: ${JSON.stringify(key)}`,
+          '    provider: openai',
+          `    base_url: ${JSON.stringify(chatBase)}`,
+          'models:',
+          `  ${PROVIDER}_model:`,
+          `    model: ${JSON.stringify(model)}`,
+          `    model_provider: ${PROVIDER}`,
+          '    temperature: 0.5',
+          '    top_p: 1.0',
+          '    top_k: 0',
+          '    parallel_tool_calls: true',
+          '    max_retries: 3',
+          'agents:',
+          '  trae_agent:',
+          `    model: ${PROVIDER}_model`,
+          '    max_steps: 200',
+          '    enable_lakeview: false',
+          '',
+        ].join('\n'));
+        // trae-cli 只认「当前目录的 trae_config.yaml」或 TRAE_CONFIG_FILE；写进 rc 才能随处可用
+        addShellRcExport(this.rc(), this.envName, p);
       },
       uninstall() {
-        const p = join(home, '.trae', 'huimu.json');
-        if (existsSync(p)) unlinkSync(p);
+        if (existsSync(this.configPath)) {
+          if (existsSync(this.backupPath)) {
+            writeAtomic(this.configPath, readFileSync(this.backupPath, 'utf-8')); // 还原安装前的原配置
+            unlinkSync(this.backupPath);
+          } else {
+            unlinkSync(this.configPath); // 本助手建的文件直接删
+          }
+        }
+        removeShellRcExport(this.rc(), this.envName);
       },
       status() {
-        const cfg = readJSON(join(home, '.trae', 'huimu.json'));
-        return cfg.model ? `已接入（模型 ${cfg.model}，IDE 内登记）` : '未配置';
+        const t = readText(this.configPath);
+        if (!t) return '未配置';
+        if (!t.includes(this.managedMark)) return '已接入其它服务';
+        const m = t.match(/^ {4}model: "(.+)"$/m); // models 段里的对外模型名（带引号者）
+        const envOk = readText(this.rc()).includes(`# >>> ${this.envName} huimu >>>`);
+        return m ? `已接入（模型 ${m[1]}${envOk ? '' : `，${this.envName} 未写入 rc，请重装修复`}）` : '已接入';
       },
       installed() {
-        return existsSync(join(home, '.trae', 'huimu.json'));
+        return readText(this.configPath).includes(this.managedMark);
       },
-      // Trae 不开放可写的模型配置文件：写标记后打印 IDE 内登记的三样信息
       postInstallHint() {
         return [
-          '  Trae 内登记（设置 → 模型 → 添加模型 → 自定义配置）：',
-          `    API 地址：${base}/v1（开启「完整 URL」开关时填 ${base}/v1/chat/completions）`,
-          `    API Key：${key}`,
-          `    模型 ID：${model}`,
+          '  Trae Agent CLI 未发布 PyPI，全局安装（一次性，需 git 可访问 github）：',
+          '    uv tool install --with docker --with pexpect --with unidiff "trae-agent @ git+https://github.com/bytedance/trae-agent"',
+          '  （--with 补的三个包是上游打包缺陷：核心代码 import docker 但它只在 evaluation extras 里）',
+          `  环境变量已写入 ${this.rc()}，新开终端（或 source）后生效`,
+          '  验证：trae-cli show-config    使用：trae-cli run "任务" / trae-cli interactive',
         ].join('\n');
-      },
-      postUninstallHint() {
-        return '  提示：Trae 设置 → 模型 中登记的自定义模型请在 IDE 内手动删除。';
       },
     },
   };
 }
 
-const AGENT_IDS = ['claude-code', 'codex', 'opencode', 'crush', 'factory-droid', 'trae'];
+const AGENT_IDS = ['claude-code', 'codex', 'opencode', 'trae-agent'];
 
 // ---------------- 密钥校验与模型拉取 ----------------
 async function fetchModels(base, key) {
@@ -758,14 +821,34 @@ function selftest() {
     else { failed++; warn(`✗ ${name} ${detail || ''}`); }
   };
 
-  // claude-code 安装/卸载往返
+  // claude-code 安装/卸载往返：预置其它服务商残留（旧模型名/双 token/系统代理）
+  mkdirSync(join(home, '.claude'), { recursive: true });
+  writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify({
+    model: 'DeepSeek-V4-Pro',
+    statusLine: { type: 'command', command: 'old-provider-statusline' },
+    env: { ANTHROPIC_API_KEY: 'sk-old', ANTHROPIC_MODEL: 'DeepSeek-V4-Pro', NO_PROXY: 'localhost' },
+  }));
   defs['claude-code'].install();
   const s1 = readJSON(join(home, '.claude', 'settings.json'));
   expect('claude env 注入', s1.env && s1.env.ANTHROPIC_BASE_URL === ctx.base && s1.env.ANTHROPIC_AUTH_TOKEN === ctx.key);
+  expect('claude 冲突键清理', s1.env.ANTHROPIC_API_KEY === undefined && s1.env.ANTHROPIC_MODEL === undefined);
+  expect('claude 顶层 model 改写', s1.model === ctx.model);
+  expect('claude 用户键保留', s1.statusLine && s1.statusLine.command === 'old-provider-statusline');
+  expect('claude NO_PROXY 追加网关主机', s1.env.NO_PROXY === 'localhost,gw.test,gw.test:8080');
   expect('claude onboarding 标记', readJSON(join(home, '.claude.json')).hasCompletedOnboarding === true);
+  // 重装不覆盖备份：卸载一次要还原的是最早的原状，而不是上次卸载后的中间态
+  defs['claude-code'].install();
+  const backupPath = join(home, '.huimu', 'claude-code-backup.json');
+  expect('claude 备份文件已建', existsSync(backupPath));
   defs['claude-code'].uninstall();
   const s2 = readJSON(join(home, '.claude', 'settings.json'));
-  expect('claude 卸载后 env 清空', !s2.env || Object.keys(s2.env).length === 0);
+  expect('claude 卸载还原旧服务商键',
+    s2.env && s2.env.ANTHROPIC_API_KEY === 'sk-old' && s2.env.ANTHROPIC_MODEL === 'DeepSeek-V4-Pro');
+  expect('claude 卸载还原顶层 model 与 NO_PROXY',
+    s2.model === 'DeepSeek-V4-Pro' && s2.env.NO_PROXY === 'localhost');
+  expect('claude 卸载保留用户键/清空本站键',
+    s2.statusLine !== undefined && s2.env.ANTHROPIC_AUTH_TOKEN === undefined && s2.env.ANTHROPIC_BASE_URL === undefined);
+  expect('claude 卸载后备份回收', !existsSync(backupPath));
 
   // codex toml：空文件安装、用户已有内容保留、幂等重装、卸载还原
   defs['codex'].install();
@@ -814,7 +897,7 @@ function selftest() {
   defs['codex'].uninstall();
   expect('codex models.json 空时整体回收', !existsSync(join(home, '.codex', 'models.json')));
 
-  // opencode / crush / factory-droid 往返
+  // opencode 往返
   defs['opencode'].install();
   const o1 = readJSON(join(home, '.config', 'opencode', 'opencode.json'));
   expect('opencode provider', o1.provider.huimu.options.baseURL === 'http://gw.test:8080/v1' && o1.model === 'huimu/m-alpha');
@@ -826,30 +909,40 @@ function selftest() {
   const o3 = readJSON(join(home, '.config', 'opencode', 'opencode.json'));
   expect('opencode 卸载还原', !!o3.provider.keep && !o3.provider.huimu && !o3.model);
 
-  defs['crush'].install();
-  const c1 = readJSON(join(home, '.config', 'crush', 'crush.json'));
-  expect('crush provider', c1.providers.huimu.base_url === 'http://gw.test:8080/v1');
-  defs['crush'].uninstall();
-  expect('crush 卸载还原', !readJSON(join(home, '.config', 'crush', 'crush.json')).providers);
-
-  defs['factory-droid'].install();
-  const f1 = readJSON(join(home, '.factory', 'settings.json'));
-  expect('droid customModels', f1.customModels.length === 1 && f1.customModels[0].provider === 'generic-chat-completion-api');
-  writeFileSync(join(home, '.factory', 'settings.json'), JSON.stringify({ customModels: [{ displayName: 'My Own', model: 'x' }] }));
-  defs['factory-droid'].install();
-  const f2 = readJSON(join(home, '.factory', 'settings.json'));
-  expect('droid 已有模型保留', f2.customModels.length === 2);
-  defs['factory-droid'].uninstall();
-  const f3 = readJSON(join(home, '.factory', 'settings.json'));
-  expect('droid 卸载还原', f3.customModels.length === 1 && f3.customModels[0].displayName === 'My Own');
-
-  // trae：无可写模型配置 → 标记文件 + 引导
-  defs['trae'].install();
-  const tr1 = readJSON(join(home, '.trae', 'huimu.json'));
-  expect('trae 标记写入', tr1.provider === 'huimu' && tr1.base === ctx.base && tr1.model === 'm-alpha');
-  expect('trae installed 判定', defs['trae'].installed() === true && defs['trae'].status().includes('m-alpha'));
-  defs['trae'].uninstall();
-  expect('trae 卸载清理标记', !existsSync(join(home, '.trae', 'huimu.json')));
+  // trae-agent：YAML 三段式 + shell rc 环境变量块；用户手写配置先备份、卸载还原
+  const taDir = join(home, '.trae-agent');
+  mkdirSync(taDir, { recursive: true });
+  writeFileSync(join(taDir, 'trae_config.yaml'), '# user own config\nmodel_providers: {}\n');
+  defs['trae-agent'].install();
+  const ta1 = readFileSync(join(taDir, 'trae_config.yaml'), 'utf-8');
+  expect('trae-agent YAML 三段式',
+    ta1.includes('model_providers:') && ta1.includes('models:') && ta1.includes('agents:') && ta1.includes('  trae_agent:'));
+  expect('trae-agent OpenAI 兼容接入',
+    ta1.includes('provider: openai') && ta1.includes(`base_url: "http://gw.test:8080/v1"`) && ta1.includes(`api_key: "${ctx.key}"`));
+  expect('trae-agent 模型与必填采样参数',
+    ta1.includes(`model: "${ctx.model}"`) && ta1.includes('model_provider: huimu')
+      && ta1.includes('temperature: 0.5') && ta1.includes('top_p: 1.0') && ta1.includes('top_k: 0')
+      && ta1.includes('parallel_tool_calls: true') && ta1.includes('max_retries: 3'));
+  expect('trae-agent agents 段必填 max_steps', /^ {4}max_steps: \d+$/m.test(ta1));
+  expect('trae-agent 显式关 lakeview（默认 true 缺 lakeview 段会 ConfigError）', ta1.includes('enable_lakeview: false'));
+  const taRc = shellRcPath(home);
+  expect('trae-agent rc 环境变量块',
+    readText(taRc).includes('export TRAE_CONFIG_FILE=') && readText(taRc).includes(join(taDir, 'trae_config.yaml')));
+  expect('trae-agent 用户原配置已备份', existsSync(join(home, '.huimu', 'trae-agent-backup.yaml')));
+  defs['trae-agent'].install(); // 幂等重装
+  expect('trae-agent 重装 rc 块唯一',
+    (readText(taRc).match(/# >>> TRAE_CONFIG_FILE huimu >>>/g) || []).length === 1);
+  expect('trae-agent 状态', defs['trae-agent'].status() === `已接入（模型 ${ctx.model}）`);
+  defs['trae-agent'].uninstall();
+  expect('trae-agent 卸载还原用户配置',
+    readFileSync(join(taDir, 'trae_config.yaml'), 'utf-8') === '# user own config\nmodel_providers: {}\n');
+  expect('trae-agent 卸载清 rc 块与备份',
+    !readText(taRc).includes('TRAE_CONFIG_FILE') && !existsSync(join(home, '.huimu', 'trae-agent-backup.yaml')));
+  // 无用户配置时的干净安装：卸载直接删文件、rc 空文件回收
+  unlinkSync(join(taDir, 'trae_config.yaml')); // 上一段还原的用户配置先清掉，才是「无外部配置」场景
+  defs['trae-agent'].install();
+  defs['trae-agent'].uninstall();
+  expect('trae-agent 无备份时卸载删配置', !existsSync(join(taDir, 'trae_config.yaml')) && !existsSync(taRc));
 
   // 非 TTY 序号解析（选择器退化路径）
   expect('parsePickOne 序号与默认', parsePickOne('2', 4) === 1 && parsePickOne('', 4) === 0 && parsePickOne('q', 4) === null);

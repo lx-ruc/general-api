@@ -163,3 +163,24 @@ func TestRegisterCompanyConcurrentDuplicateFriendly(t *testing.T) {
 		}
 	}
 }
+
+// From 配置的两种形态：信封必须取裸地址（带展示名会被拒信），头部保留展示名并编码
+func TestFromAddrAndHeader(t *testing.T) {
+	cases := []struct {
+		in, addr, header string
+	}{
+		{"huichuangxingtu@163.com", "huichuangxingtu@163.com", "huichuangxingtu@163.com"},
+		{"慧创星途 <huichuangxingtu@163.com>", "huichuangxingtu@163.com",
+			"=?UTF-8?q?=E6=85=A7=E5=88=9B=E6=98=9F=E9=80=94?= <huichuangxingtu@163.com>"},
+		{"  Name <a@b.cn>  ", "a@b.cn", "Name <a@b.cn>"},
+		{"<only@addr.com>", "only@addr.com", "<only@addr.com>"},
+	}
+	for _, c := range cases {
+		if got := fromAddr(c.in); got != c.addr {
+			t.Errorf("fromAddr(%q) = %q, want %q", c.in, got, c.addr)
+		}
+		if got := fromHeader(c.in); got != c.header {
+			t.Errorf("fromHeader(%q) = %q, want %q", c.in, got, c.header)
+		}
+	}
+}

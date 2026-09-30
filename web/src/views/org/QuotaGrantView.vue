@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiListMembers, apiAddMemberQuota, apiUpdateMember, apiOrgStats, apiOrgQuotaGrants, type Member } from '../../api/org'
 import { fmtTime, fmtQuota } from '../../utils/format'
 
 // 客户额度池（下发的总闸：子账号消耗都在池内结算）
 const org = ref<any>(null)
+// 子账号上限聚合：限额账号上限合计 + 不限账号数（超发提示的比对基准）
+const pool = ref<any>(null)
 async function loadOrg() {
   const resp = await apiOrgStats()
   org.value = resp.org
+  pool.value = resp.quota_pool
 }
 
 // ---- 子账号额度表（读成员列表；下发走与子账号管理同一组端点）----
@@ -31,26 +34,63 @@ onMounted(() => {
 const M = 1_000_000
 const quotaVisible = ref(false)
 const quotaForm = reactive({ member: null as Member | null, amount: 1, remark: '', monthly: 0 })
+const unlimitedMode = ref(false)
 function openQuota(m: Member) {
   quotaForm.member = m
-  quotaForm.amount = 1
+  quotaForm.amount = 0 // 默认 0=不追加：非零默认值会在点「确定」时被顺手提交
   quotaForm.remark = ''
   quotaForm.monthly = (m.monthly_quota || 0) / M
+  unlimitedMode.value = m.quota_limit == null
   quotaVisible.value = true
 }
+
+// 限额/不限额切换（立即生效，不随「确定」提交）：转不限归还全部上限；转限额以当前已用量为起点
+async function onUnlimitedChange(val: boolean | string | number) {
+  const m = quotaForm.member
+  const unlimited = !!val
+  if (!m) return
+  try {
+    await apiUpdateMember(m.id, { quota_unlimited: unlimited })
+    // 同步弹窗内的当前额度展示与外层列表
+    m.quota_limit = unlimited ? null : m.quota_used
+    ElMessage.success(unlimited ? '已设为不限额' : '已转为限额（以当前已用量为起点）')
+    load()
+    loadOrg()
+    grantQuery.page = 1
+    loadGrants()
+  } catch {
+    unlimitedMode.value = !unlimited // 失败回弹开关
+  }
+}
+// 超发提示：本次追加后，限额子账号的上限合计将超过客户额度池剩余（黄色警告，允许提交）。
+// 存在不限账号时合计无参考意义（不限账号本就能吃光池子），不提示
+const overGrant = computed(() => {
+  const m = quotaForm.member
+  if (!m || !org.value || !pool.value || pool.value.unlimited_count > 0 || unlimitedMode.value) return null
+  const amount = Math.round((quotaForm.amount || 0) * M)
+  if (amount <= 0) return null
+  const sumAfter = pool.value.limits_sum + amount
+  const avail = org.value.quota_limit - org.value.quota_used
+  if (sumAfter <= avail) return null
+  return { sumAfter, avail }
+})
+
 async function submitQuota() {
   if (!quotaForm.member) return
   // input-number 清空后是 null（falsy）：追加 0 无意义跳过，但月限等后续步骤必须照常提交，
-  // 否则「只改单月上限」点确定无任何反应
+  // 否则「只改单月上限」点确定无任何反应。不限额账号跳过追加（后端同样拒绝：
+  // NULL 基线上加额会把「不限」悄悄顶成「限额=追加额」）
   const amount = Math.round((quotaForm.amount || 0) * M)
-  if (amount !== 0) {
+  const applied = amount !== 0 && !unlimitedMode.value
+  if (applied) {
     await apiAddMemberQuota(quotaForm.member.id, amount, quotaForm.remark)
   }
   // 单月上限走设值更新（0=不限；与追加额度独立，总是提交保持一致）
   await apiUpdateMember(quotaForm.member.id, { monthly_quota: Math.round((quotaForm.monthly || 0) * M) || 0 })
-  ElMessage.success(amount !== 0 ? '额度与月限已更新' : '单月上限已更新')
+  ElMessage.success(applied ? '额度与月限已更新' : '单月上限已更新')
   quotaVisible.value = false
   load()
+  loadOrg()
   grantQuery.page = 1
   loadGrants()
 }
@@ -192,18 +232,25 @@ function fmtAmount(v: number): string {
       @current-change="(p: number) => { grantQuery.page = p; loadGrants() }" />
   </el-card>
 
-  <el-dialog v-model="quotaVisible" :title="`下发额度：${quotaForm.member?.username || ''}`" width="480px">
+  <el-dialog v-model="quotaVisible" :title="`下发额度：${quotaForm.member?.username || ''}`" width="520px">
+    <el-alert v-if="overGrant" type="warning" :closable="false" show-icon style="margin-bottom: 12px"
+      :title="`下发后子账号额度合计将达 ${fmtQuota(overGrant.sumAfter)}，超过客户额度池剩余 ${fmtQuota(overGrant.avail)}`"
+      description="仍可提交：子账号额度只是各自的上限，实际消耗以客户额度池为硬顶，池子耗尽后全部子账号的调用都会被拦截。" />
     <el-form label-width="130px">
       <el-form-item label="当前额度">
-        <span v-if="quotaForm.member?.quota_limit == null" class="unlimited">不限（下面的追加在此基数上累加）</span>
+        <span v-if="quotaForm.member?.quota_limit == null" class="unlimited">不限（无需追加额度）</span>
         <span v-else>
           已用 {{ fmtQuota(quotaForm.member.quota_used) }} / 上限 {{ fmtQuota(quotaForm.member.quota_limit) }}
           <span v-if="quotaForm.member.quota_limit - quotaForm.member.quota_used < 0" class="red">（已超限，调用会被拦截）</span>
         </span>
       </el-form-item>
+      <el-form-item label="额度模式">
+        <el-switch v-model="unlimitedMode" active-text="不限额" inactive-text="限额" @change="onUnlimitedChange" />
+        <span class="tip">{{ unlimitedMode ? '关闭后以当前已用量为起点恢复上限' : '开启后归还全部上限，不再受该子账号上限约束' }}</span>
+      </el-form-item>
       <el-form-item label="追加（M tokens）">
-        <el-input-number v-model="quotaForm.amount" :step="1" />
-        <span class="tip">负数为回收；= {{ fmtQuota(Math.round((quotaForm.amount || 0) * M)) }}</span>
+        <el-input-number v-model="quotaForm.amount" :disabled="unlimitedMode" :step="1" />
+        <span class="tip">{{ unlimitedMode ? '不限额账号无需追加' : `负数为回收；= ${fmtQuota(Math.round((quotaForm.amount || 0) * M))}` }}</span>
       </el-form-item>
       <el-form-item label="单月上限（M）">
         <el-input-number v-model="quotaForm.monthly" :min="0" :step="1" />

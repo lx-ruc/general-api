@@ -36,7 +36,9 @@ function open(r: QuotaRequestRow, act: 'approve' | 'reject') {
 async function submit() {
   if (!current.value) return
   await apiHandleRequest(current.value.id, action.value, reply.value)
-  ElMessage.success(action.value === 'approve' ? '已批准并追加额度' : '已驳回')
+  ElMessage.success(action.value === 'approve'
+    ? (isModel(current.value) ? '已批准并开通模型授权' : '已批准并追加额度')
+    : '已驳回')
   replyVisible.value = false
   load()
   // 通知布局刷新侧边栏待审批角标（审批后 pending 数已变）
@@ -45,13 +47,14 @@ async function submit() {
 
 const statusType = (s: string) => (s === 'pending' ? 'warning' : s === 'approved' ? 'success' : 'danger')
 const statusName = (s: string) => ({ pending: '待审批', approved: '已批准', rejected: '已驳回' }[s] || s)
+const isModel = (r: QuotaRequestRow) => r.kind === 'model'
 </script>
 
 <template>
   <el-card shadow="never">
     <template #header>
       <div class="card-header">
-        <span>子账号额度申请</span>
+        <span>子账号申请审批</span>
         <el-radio-group v-model="filters.status" @change="filters.page = 1; load()">
           <el-radio-button value="">全部</el-radio-button>
           <el-radio-button value="pending">待审批</el-radio-button>
@@ -61,11 +64,30 @@ const statusName = (s: string) => ({ pending: '待审批', approved: '已批准'
       </div>
     </template>
 
-    <el-table :data="list" v-loading="loading" empty-text="暂无申请记录。子账号额度不足时会在这里发起申请。">
+    <el-table :data="list" v-loading="loading" empty-text="暂无申请记录。子账号额度不足或需要新模型时会在这里发起申请。">
+      <el-table-column type="expand">
+        <template #default="{ row }">
+          <div v-if="isModel(row)" style="padding: 4px 12px">
+            申请开通的模型：
+            <el-tag v-for="n in row.model_names.split(',')" :key="n" size="small" style="margin: 0 4px 4px 0">{{ n }}</el-tag>
+          </div>
+          <div v-else style="padding: 4px 12px; color: #909399">额度申请：{{ fmtQuota(row.amount) }}</div>
+        </template>
+      </el-table-column>
       <el-table-column prop="id" label="#" width="60" />
       <el-table-column prop="username" label="申请人" width="110" />
-      <el-table-column label="申请额度" width="170">
-        <template #default="{ row }">{{ fmtQuota(row.amount) }}</template>
+      <el-table-column label="类型" width="90">
+        <template #default="{ row }">
+          <el-tag :type="isModel(row) ? 'primary' : 'info'" effect="plain">{{ isModel(row) ? '模型' : '额度' }}</el-tag>
+        </template>
+      </el-table-column>
+      <el-table-column label="申请内容" min-width="200">
+        <template #default="{ row }">
+          <template v-if="isModel(row)">
+            <el-tag v-for="n in row.model_names.split(',')" :key="n" size="small" style="margin-right: 4px">{{ n }}</el-tag>
+          </template>
+          <template v-else>{{ fmtQuota(row.amount) }}</template>
+        </template>
       </el-table-column>
       <el-table-column prop="reason" label="理由" min-width="150" show-overflow-tooltip />
       <el-table-column label="状态" width="90">
@@ -91,9 +113,15 @@ const statusName = (s: string) => ({ pending: '待审批', approved: '已批准'
       @current-change="(p: number) => { filters.page = p; load() }" />
   </el-card>
 
-  <el-dialog v-model="replyVisible" :title="action === 'approve' ? '批准额度申请' : '驳回申请'" width="420px">
+  <el-dialog v-model="replyVisible" :title="action === 'approve'
+    ? (current && isModel(current) ? '批准模型申请' : '批准额度申请') : '驳回申请'" width="420px">
     <p v-if="current">
-      申请人：{{ current.username }} · 申请 {{ fmtQuota(current.amount) }}<br />
+      申请人：{{ current.username }} · 申请
+      <template v-if="isModel(current)">
+        <el-tag v-for="n in current.model_names.split(',')" :key="n" size="small" style="margin: 0 4px 4px 0">{{ n }}</el-tag>
+      </template>
+      <template v-else>{{ fmtQuota(current.amount) }}</template>
+      <br />
       <span style="color: #909399">{{ current.reason }}</span>
     </p>
     <el-input v-model="reply" type="textarea" :rows="2" placeholder="审批回复（可选）" style="margin-top: 8px" />

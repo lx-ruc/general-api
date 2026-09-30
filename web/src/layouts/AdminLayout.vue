@@ -51,7 +51,7 @@ const menus = computed<MenuItem[]>(() => {
         { index: '/org/dashboard', title: '客户看板', icon: 'Odometer' },
         { index: '/org/members', title: '子账号管理', icon: 'User' },
         { index: '/org/quotas', title: '配额下发', icon: 'CreditCard' },
-        { index: '/org/requests', title: '额度申请', icon: 'Bell' },
+        { index: '/org/requests', title: '申请审批', icon: 'Bell' },
         { index: '/org/keys', title: '密钥一览', icon: 'Key' },
         { index: '/org/cost-centers', title: '成本中心', icon: 'Coin' },
         { index: '/org/usage', title: '用量统计', icon: 'Document' },
@@ -63,7 +63,7 @@ const menus = computed<MenuItem[]>(() => {
         { index: '/member/models', title: '可用模型', icon: 'Goods' },
         { index: '/member/keys', title: '我的密钥', icon: 'Key' },
         { index: '/member/usage', title: '我的用量', icon: 'TrendCharts' },
-        { index: '/member/quota', title: '额度申请', icon: 'Bell' },
+        { index: '/member/quota', title: '额度/模型申请', icon: 'Bell' },
         { index: '/member/docs', title: '接入文档', icon: 'Notebook' },
       ]
   }
@@ -102,17 +102,17 @@ async function refreshPending() {
 onMounted(() => {
   refreshPending()
   window.addEventListener('quota-requests-changed', refreshPending)
-  if (auth.user?.role === 'platform_admin') {
-    refreshNotifs()
-    notifTimer = window.setInterval(refreshNotifs, 30_000)
-  }
+  // 站内通知铃铛：三角色通用（平台：Key 冷却/充值申请/额度耗尽；客户管理员：申请待审批/
+  // 额度告警/充值到账；子账号：审批结果/个人额度告警），30s 轮询
+  refreshNotifs()
+  notifTimer = window.setInterval(refreshNotifs, 30_000)
 })
 onUnmounted(() => {
   window.removeEventListener('quota-requests-changed', refreshPending)
   if (notifTimer) window.clearInterval(notifTimer)
 })
 
-// ---- 站内通知（仅系统管理员）：Key 配额冷却等需要处理的运营事件 ----
+// ---- 站内通知（三角色通用）：各自角色相关的运营与告警事件 ----
 const notifVisible = ref(false)
 const notifs = ref<NotificationItem[]>([])
 const notifUnread = ref(0)
@@ -120,7 +120,6 @@ const notifClearing = ref(0)
 let notifTimer: number | undefined
 
 async function refreshNotifs() {
-  if (auth.user?.role !== 'platform_admin') return
   try {
     const r = await apiListNotifications()
     notifs.value = r.list || []
@@ -281,8 +280,7 @@ async function revokeToken(row: AccessToken) {
           <h1 class="page-title">{{ pageTitle }}</h1>
         </div>
         <div class="top-right">
-          <button v-if="auth.user?.role === 'platform_admin'" class="pg-btn notif-btn" type="button"
-            @click="openNotifs">
+          <button class="pg-btn notif-btn" type="button" @click="openNotifs">
             <el-icon :size="14"><Bell /></el-icon>
             通知
             <span v-if="notifUnread > 0" class="notif-badge num">

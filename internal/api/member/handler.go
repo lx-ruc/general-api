@@ -3,13 +3,14 @@ package member
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 
-	"token-gateway/internal/httpx"
 	"token-gateway/internal/auth"
+	"token-gateway/internal/httpx"
 	"token-gateway/internal/middleware"
 	"token-gateway/internal/model"
 	"token-gateway/internal/service"
@@ -54,20 +55,6 @@ func (h *Handler) ListKeys(c *gin.Context) {
 	httpx.OK(c, rows)
 }
 
-// ListCostCenters GET /api/member/cost-centers：本 org 启用中的中心（建 key 下拉用）
-func (h *Handler) ListCostCenters(c *gin.Context) {
-	_, o, ok := h.myOrg(c)
-	if !ok {
-		return
-	}
-	var centers []model.CostCenter
-	_ = h.DB.Where("org_id = ? AND status = 1", o.ID).Order("id").Find(&centers).Error
-	if centers == nil {
-		centers = []model.CostCenter{}
-	}
-	httpx.OK(c, centers)
-}
-
 // myOrg 当前子账号与其 org（org 必须存在且启用）
 func (h *Handler) myOrg(c *gin.Context) (*model.User, *model.Org, bool) {
 	var u model.User
@@ -84,13 +71,12 @@ func (h *Handler) myOrg(c *gin.Context) (*model.User, *model.Org, bool) {
 }
 
 // CreateKey POST /api/member/keys：明文完整 key 仅此一次返回；
-// expires_at 可选（unix 秒，须晚于当前时刻，0/缺省=永久）；
-// cost_center_id 可选（org 开启 require_cost_center 后必填），须为本 org 启用中的中心
+// expires_at 可选（unix 秒，须晚于当前时刻，0/缺省=永久）。
+// 成本中心是客户管理员侧的核算概念，子账号建 key 不再涉及归集（由客户管理员在密钥一览里挂靠）。
 func (h *Handler) CreateKey(c *gin.Context) {
 	var req struct {
-		Name         string `json:"name"`
-		ExpiresAt    *int64 `json:"expires_at"`
-		CostCenterID *int64 `json:"cost_center_id"`
+		Name      string `json:"name"`
+		ExpiresAt *int64 `json:"expires_at"`
 	}
 	if !httpx.BindJSON(c, &req) {
 		return
@@ -103,18 +89,6 @@ func (h *Handler) CreateKey(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if req.CostCenterID != nil {
-		var cnt int64
-		_ = h.DB.Raw("SELECT COUNT(*) FROM cost_centers WHERE id = ? AND org_id = ? AND status = 1",
-			*req.CostCenterID, o.ID).Scan(&cnt).Error
-		if cnt != 1 {
-			httpx.Fail(c, http.StatusBadRequest, "成本中心不存在或已归档")
-			return
-		}
-	} else if o.RequireCostCenter == 1 {
-		httpx.Fail(c, http.StatusBadRequest, "本客户已开启强制归集：创建密钥必须选择成本中心")
-		return
-	}
 	plain, prefix, hash, err := auth.GenerateAPIKey()
 	if err != nil {
 		httpx.Fail(c, http.StatusInternalServerError, "生成密钥失败")
@@ -123,7 +97,7 @@ func (h *Handler) CreateKey(c *gin.Context) {
 	k := model.APIKey{
 		OrgID: o.ID, UserID: u.ID, Name: req.Name,
 		KeyPrefix: prefix, KeyHash: hash, Status: 1,
-		ExpiredAt: req.ExpiresAt, CostCenterID: req.CostCenterID,
+		ExpiredAt: req.ExpiresAt,
 	}
 	if err := h.DB.Create(&k).Error; err != nil {
 		httpx.Fail(c, http.StatusInternalServerError, "保存密钥失败")
@@ -135,39 +109,6 @@ func (h *Handler) CreateKey(c *gin.Context) {
 		"cost_center_id": k.CostCenterID,
 		"message":        "请立即保存完整密钥，关闭后将无法再次查看",
 	})
-}
-
-// AssignKeyCenter PUT /api/member/keys/:id/cost-center：子账号改自己 key 的归集（只影响未来）
-func (h *Handler) AssignKeyCenter(c *gin.Context) {
-	id, ok := httpx.PathID(c)
-	if !ok {
-		return
-	}
-	var req struct {
-		CostCenterID *int64 `json:"cost_center_id"`
-	}
-	if !httpx.BindJSON(c, &req) {
-		return
-	}
-	k, ok := h.ownKey(c, id)
-	if !ok {
-		return
-	}
-	if req.CostCenterID != nil {
-		var cnt int64
-		_ = h.DB.Raw("SELECT COUNT(*) FROM cost_centers WHERE id = ? AND org_id = ? AND status = 1",
-			*req.CostCenterID, k.OrgID).Scan(&cnt).Error
-		if cnt != 1 {
-			httpx.Fail(c, http.StatusBadRequest, "成本中心不存在或已归档")
-			return
-		}
-	}
-	if err := h.DB.Exec("UPDATE api_keys SET cost_center_id = ? WHERE id = ?",
-		req.CostCenterID, id).Error; err != nil {
-		httpx.Fail(c, http.StatusInternalServerError, "更新失败")
-		return
-	}
-	httpx.OK(c, gin.H{"message": "已更新（历史账单不变，未来消耗归新中心）"})
 }
 
 // DeleteKey DELETE /api/member/keys/:id
@@ -213,12 +154,12 @@ func (h *Handler) ListModels(c *gin.Context) {
 		monthlyUsed = u.MonthlyCost
 	}
 	httpx.OK(c, gin.H{
-		"models":           models,
-		"quota_limit":      u.QuotaLimit,
-		"quota_used":       u.QuotaUsed,
-		"monthly_quota":    u.MonthlyQuota,
-		"monthly_used":     monthlyUsed,
-		"points_per_yuan":  service.PointsPerYuan(h.DB),
+		"models":          models,
+		"quota_limit":     u.QuotaLimit,
+		"quota_used":      u.QuotaUsed,
+		"monthly_quota":   u.MonthlyQuota,
+		"monthly_used":    monthlyUsed,
+		"points_per_yuan": service.PointsPerYuan(h.DB),
 	})
 }
 
@@ -329,9 +270,9 @@ func (h *Handler) UsageBreakdown(c *gin.Context) {
 
 	httpx.OK(c, gin.H{
 		"start": start, "end": end,
-		"today": totals(dayStart, now.Unix()),
-		"month": totals(monthStart, now.Unix()),
-		"range": totals(start, end),
+		"today":  totals(dayStart, now.Unix()),
+		"month":  totals(monthStart, now.Unix()),
+		"range":  totals(start, end),
 		"by_key": byKey, "by_model": byModel,
 	})
 }
@@ -371,7 +312,7 @@ func (h *Handler) ListUsage(c *gin.Context) {
 	httpx.PageResult(c, rows, total, page, size)
 }
 
-// ---------------- 额度申请 ----------------
+// ---------------- 额度/模型申请 ----------------
 
 // ListRequests GET /api/member/requests
 func (h *Handler) ListRequests(c *gin.Context) {
@@ -383,11 +324,36 @@ func (h *Handler) ListRequests(c *gin.Context) {
 	httpx.OK(c, rows)
 }
 
-// CreateRequest POST /api/member/requests
+// ListAvailableModels GET /api/member/models/available：全部启用模型 + 本人是否已授权，
+// 供模型申请页勾选（前端过滤掉 granted 的即可，已授权模型重复申请无意义）
+func (h *Handler) ListAvailableModels(c *gin.Context) {
+	type row struct {
+		Name        string `json:"name"`
+		DisplayName string `json:"display_name"`
+		Vendor      string `json:"vendor"`
+		Granted     bool   `json:"granted"`
+	}
+	var rows []row
+	_ = h.DB.Raw(`
+		SELECT m.name, m.display_name, m.vendor,
+		       CASE WHEN g.user_id IS NULL THEN 0 ELSE 1 END AS granted
+		FROM models m
+		LEFT JOIN user_model_grants g ON g.model_name = m.name AND g.user_id = ?
+		WHERE m.status = 1 ORDER BY m.name`, uid(c)).Scan(&rows).Error
+	if rows == nil {
+		rows = []row{}
+	}
+	httpx.OK(c, rows)
+}
+
+// CreateRequest POST /api/member/requests：额度申请（amount>0）或模型授权申请
+// （models 非空，剔除本人已授权项后至少剩一个才受理）。kind 由服务端按提交内容
+// 推导，不信任客户端传入；两者都空 → 400
 func (h *Handler) CreateRequest(c *gin.Context) {
 	var req struct {
-		Amount int64  `json:"amount" binding:"required,gt=0"`
-		Reason string `json:"reason"`
+		Amount int64    `json:"amount"`
+		Reason string   `json:"reason"`
+		Models []string `json:"models"`
 	}
 	if !httpx.BindJSON(c, &req) {
 		return
@@ -397,13 +363,86 @@ func (h *Handler) CreateRequest(c *gin.Context) {
 		httpx.Fail(c, http.StatusForbidden, "账号状态异常")
 		return
 	}
-	qr := model.QuotaRequest{
-		OrgID: *u.OrgID, UserID: u.ID, Amount: req.Amount,
-		Reason: req.Reason, Status: "pending",
+
+	qr := model.QuotaRequest{OrgID: *u.OrgID, UserID: u.ID, Reason: req.Reason, Status: "pending"}
+	switch {
+	case len(req.Models) > 0:
+		// 模型申请：校验均为存在且启用的模型；已授权的静默剔除（前端已过滤，
+		// 这里兜底防重复申请），剔除后为空 → 视为空申请
+		names := uniqueNonEmpty(req.Models)
+		var valid []string
+		rows, err := h.DB.Raw(`SELECT name FROM models WHERE status = 1`).Rows()
+		if err != nil {
+			httpx.Fail(c, http.StatusInternalServerError, "查询模型失败")
+			return
+		}
+		enabled := map[string]bool{}
+		for rows.Next() {
+			var n string
+			if err := rows.Scan(&n); err == nil {
+				enabled[n] = true
+			}
+		}
+		_ = rows.Close()
+		var granted []struct{ ModelName string }
+		_ = h.DB.Raw(`SELECT model_name FROM user_model_grants WHERE user_id = ?`, u.ID).Scan(&granted).Error
+		mine := map[string]bool{}
+		for _, g := range granted {
+			mine[g.ModelName] = true
+		}
+		for _, n := range names {
+			if !enabled[n] {
+				httpx.Fail(c, http.StatusBadRequest, "模型不存在或已下架："+n)
+				return
+			}
+			if !mine[n] {
+				valid = append(valid, n)
+			}
+		}
+		if len(valid) == 0 {
+			httpx.Fail(c, http.StatusBadRequest, "申请的模型均已授权，无需重复申请")
+			return
+		}
+		qr.Kind, qr.ModelNames = "model", strings.Join(valid, ",")
+	case req.Amount > 0:
+		qr.Kind, qr.Amount = "quota", req.Amount
+	default:
+		httpx.Fail(c, http.StatusBadRequest, "请填写申请额度或选择申请的模型")
+		return
 	}
 	if err := h.DB.Create(&qr).Error; err != nil {
 		httpx.Fail(c, http.StatusInternalServerError, "提交申请失败")
 		return
 	}
+	// 站内通知客户管理员审批（顶栏铃铛；邮件不给审批人——站内即达且不打扰）
+	go func() {
+		who := u.DisplayName
+		if who == "" {
+			who = u.Username
+		}
+		title, body := fmt.Sprintf("额度申请待审批：%s", who), fmt.Sprintf(
+			"子账号「%s」(%s) 提交了额度申请 +%d token。事由：%s。\n到【申请审批】处理。",
+			who, u.Username, qr.Amount, qr.Reason)
+		if qr.Kind == "model" {
+			title, body = fmt.Sprintf("模型申请待审批：%s", who), fmt.Sprintf(
+				"子账号「%s」(%s) 申请使用模型：%s。\n到【申请审批】处理。",
+				who, u.Username, qr.ModelNames)
+		}
+		service.NotifyOrgAdminsInsite(h.DB, *u.OrgID, service.NotifyTypeRequestPending, title, body)
+	}()
 	httpx.OK(c, qr)
+}
+
+// uniqueNonEmpty 去重去空
+func uniqueNonEmpty(in []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s != "" && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }

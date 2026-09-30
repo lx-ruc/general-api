@@ -96,6 +96,17 @@ func TestQuotaLedgerInvariant(t *testing.T) {
 		t.Fatalf("转不限后 limit 应为 NULL，得 %v", *nullLimit)
 	}
 
+	// 不限账号拒绝追加：NULL 基线上加额会把「不限」悄悄顶成「限额=追加额」；
+	// 拒绝必须干净（limit 保持 NULL、无流水、不变量不断）
+	if err := AddUserQuota(gdb, oid, uid, 1_000_000, 9, "误追加"); err != ErrQuotaUnlimited {
+		t.Fatalf("不限账号追加应报 ErrQuotaUnlimited，得 %v", err)
+	}
+	_ = gdb.Raw(`SELECT quota_limit FROM users WHERE id = ?`, uid).Scan(&nullLimit).Error
+	if nullLimit != nil {
+		t.Fatalf("被拒后 limit 应保持 NULL，得 %v", *nullLimit)
+	}
+	assertInvariant("不限拒追加")
+
 	// 制造消耗后 不限 → 限额：以当前消耗为起点
 	if err := gdb.Exec(`UPDATE users SET quota_used = 800000 WHERE id = ?`, uid).Error; err != nil {
 		t.Fatal(err)

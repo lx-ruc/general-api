@@ -4,16 +4,15 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   apiListChannels, apiCreateChannel, apiUpdateChannel, apiUpdateChannelStatus,
   apiDeleteChannel, apiTestChannel, apiListModels, apiListChannelKeys, apiFetchUpstreamModels,
-  apiFetchUpstreamModelsByForm, apiCreateModel, apiUpdateModel,
+  apiFetchUpstreamModelsByForm,
   apiUpdateChannelKeyStatus, apiAddChannelKeys, apiDeleteChannelKey, apiClearChannelKeyCooldown,
-  type Channel, type ChannelKeyRow, type MModel,
+  type Channel, type ChannelKeyRow,
 } from '../../api/platform'
-import { fmtTime, fmtPrice1K, yuan1KToPoints, pointsToYuan1K } from '../../utils/format'
+import { fmtTime } from '../../utils/format'
 import { parseCurl } from '../../utils/curl'
 
 const list = ref<Channel[]>([])
 const allModels = ref<string[]>([])
-const modelMap = ref<Record<string, MModel>>({})
 const loading = ref(false)
 
 async function load() {
@@ -26,7 +25,6 @@ async function load() {
 }
 async function loadModels() {
   const models = await apiListModels()
-  modelMap.value = Object.fromEntries(models.map((m) => [m.name, m]))
   allModels.value = models.map((m) => m.name)
 }
 onMounted(async () => {
@@ -34,37 +32,10 @@ onMounted(async () => {
   await loadModels()
 })
 
-// 一站式定价（元/1K，入库换算点；¥1/1K = ¥1000/M，1 元 = 1,000,000 点）
-const PPY = 1_000_000
-
-// 模型能力行：价格留空（null）= 不登记/不改动；填了则保存渠道时自动登记或更新定价
+// 模型能力行（定价不在此处：模型保存时自动登记为价格 0，统一到「模型定价」页定价）
 type ModelRow = {
   model_name: string
   upstream_model_name?: string
-  input_price?: number | null
-  output_price?: number | null
-}
-
-// 已登记且已有价的模型显示现价（只读）；未登记或未定价的就在这里填价
-function priced(name: string): boolean {
-  const m = modelMap.value[name.trim()]
-  return !!m && (m.input_price > 0 || m.output_price > 0)
-}
-
-// 渠道列表模型 chip 上的单价：¥输入/¥输出（元/1K，四位小数去尾零）；未定价的标黄提醒
-function chipPrice(name: string): string {
-  const m = modelMap.value[name]
-  if (!m) return ''
-  const f = (p: number) => `¥${(p / PPY / 1000).toFixed(4).replace(/\.?0+$/, '')}`
-  return `${f(m.input_price)}/${f(m.output_price)}`
-}
-
-function chipTitle(name: string): string {
-  const m = modelMap.value[name]
-  if (!m) return `${name}：未登记定价（无法授权调用）`
-  if (m.input_price === 0 && m.output_price === 0) return `${name}：未定价（0 元计费，可在操作列「定价」里补）`
-  const hit = m.input_cache_hit_price > 0 ? ` / 命中 ${fmtPrice1K(m.input_cache_hit_price, PPY)}` : ''
-  return `${name}：输入 ${fmtPrice1K(m.input_price, PPY)}${hit} / 输出 ${fmtPrice1K(m.output_price, PPY)} 元/1K`
 }
 
 // 新建 / 编辑
@@ -102,15 +73,13 @@ async function openEdit(ch: Channel) {
     models: (full?.models || []).map((m) => ({
       model_name: m.model_name,
       upstream_model_name: m.upstream_model_name || '',
-      input_price: null, // 已登记模型的现价只读展示；只有填了新值才会更新
-      output_price: null,
     })),
   })
   editVisible.value = true
 }
 
 function addModelRow() {
-  form.models.push({ model_name: '', upstream_model_name: '', input_price: null, output_price: null })
+  form.models.push({ model_name: '', upstream_model_name: '' })
 }
 function removeModelRow(i: number) {
   form.models.splice(i, 1)
@@ -175,7 +144,7 @@ function addUpstreamModel(name: string) {
     ElMessage.info('已在列表中')
     return
   }
-  form.models.push({ model_name: name, upstream_model_name: '', input_price: null, output_price: null })
+  form.models.push({ model_name: name, upstream_model_name: '' })
 }
 
 // 粘贴 curl 快速接入（仅新建模式）：本地解析出 base_url / 端点 / 密钥 / 模型名预填表单
@@ -193,10 +162,7 @@ function applyCurl(): void {
   if (!form.name) form.name = parsed.host
   if (parsed.apiKey) form.upstream_key = parsed.apiKey
   if (parsed.model && !hasModelRow(parsed.model)) {
-    form.models.push({ model_name: parsed.model, upstream_model_name: '', input_price: null, output_price: null })
-    if (!allModels.value.includes(parsed.model)) {
-      ElMessage.warning(`模型「${parsed.model}」尚未登记定价：可直接在下方模型行填单价，保存渠道时自动登记`)
-    }
+    form.models.push({ model_name: parsed.model, upstream_model_name: '' })
   }
   ElMessage.success('已解析并填充表单')
   for (const w of parsed.warnings) ElMessage.warning(w)
@@ -232,9 +198,6 @@ async function submit() {
       .map((m) => ({
         model_name: m.model_name,
         upstream_model_name: m.upstream_model_name || null,
-        // 元/1K → 点/M；null=不登记/不改动（0 是合法的免费价，照发）
-        input_price: m.input_price == null ? null : yuan1KToPoints(m.input_price, PPY),
-        output_price: m.output_price == null ? null : yuan1KToPoints(m.output_price, PPY),
       })),
   }
   if (isEdit.value) {
@@ -244,19 +207,6 @@ async function submit() {
     const res = await apiCreateChannel(payload)
     ElMessage.success('渠道已创建')
     autoTestCreated(res?.id)
-  }
-  await loadModels() // 渠道侧登记的定价要反映到模型行「已定价」判断里
-  // 保存后兜底提醒：仍未登记且这次也没填价的模型（定价页不出现、无法授权计费）
-  const unregistered = [...new Set(
-    form.models
-      .filter((m) => {
-        const n = m.model_name.trim()
-        return n && !allModels.value.includes(n) && m.input_price == null && m.output_price == null
-      })
-      .map((m) => m.model_name.trim()),
-  )]
-  if (unregistered.length > 0) {
-    ElMessage.warning(`模型 ${unregistered.join('、')} 尚未定价：无法授权调用。编辑渠道填单价或到「模型定价」登记（0 元=免费）`)
   }
   editVisible.value = false
   load()
@@ -346,8 +296,18 @@ async function toggleKey(row: ChannelKeyRow) {
 // 配额冷却汇总：进弹窗第一眼就能看到有几把 Key 因厂商侧限额被冷却（不用逐行找）
 const quotaCoolingCount = computed(() => keyList.value.filter((k) => k.quota_cooling).length)
 
-// 冷却行整行高亮（配额=琥珀、普通限流=浅灰），冷却状态不被淹没在表格里
+// 禁用 Key 汇总：多为上游 401/403 自动禁用（Key 过期 / 余额不足），备注列注明原因与时间
+const disabledKeyCount = computed(() => keyList.value.filter((k) => k.status === 0).length)
+
+// 渠道列表行的被禁用 Key 数（key_count − key_active_count；legacy 单 Key 渠道无池不计）
+function channelDeadKeys(row: Channel): number {
+  const total = row.key_count || 0
+  return total - (row.key_active_count ?? total)
+}
+
+// 行高亮：禁用=浅红（哪把 Key 坏了一眼定位）、配额=琥珀、普通限流=浅灰
 function keyRowClass({ row }: { row: ChannelKeyRow }): string {
+  if (row.status === 0) return 'key-dead-row'
   if (row.quota_cooling) return 'quota-cooling-row'
   if (row.cooling) return 'cooling-row'
   return ''
@@ -419,78 +379,6 @@ async function removeKey(row: ChannelKeyRow) {
   }
 }
 
-// 渠道级定价：从列表「定价」进来，看该渠道的全部模型并就地填价（元/1K，入库换算点）。
-// 未登记的模型填价即建 models 行；已登记的改价即更新，留空字段保持不变
-const priceVisible = ref(false)
-const priceChannel = ref<Channel | null>(null)
-const priceRows = ref<PriceRow[]>([])
-const priceSaving = ref(false)
-
-type PriceRow = {
-  name: string
-  registered: boolean
-  input_price: number | null   // 元/1K；null=保持不变（未登记模型=不建）
-  output_price: number | null
-  cache_price: number | null   // 缓存命中输入单价（元/1K）；0=同输入价
-}
-
-function openPricing(ch: Channel) {
-  priceChannel.value = ch
-  priceRows.value = (ch.models || []).map((ab) => {
-    const m = modelMap.value[ab.model_name]
-    return {
-      name: ab.model_name,
-      registered: !!m,
-      input_price: m ? pointsToYuan1K(m.input_price, PPY) : null,
-      output_price: m ? pointsToYuan1K(m.output_price, PPY) : null,
-      cache_price: m ? pointsToYuan1K(m.input_cache_hit_price, PPY) : 0,
-    }
-  })
-  priceVisible.value = true
-}
-
-async function savePricing() {
-  if (!priceChannel.value) return
-  priceSaving.value = true
-  try {
-    let touched = 0
-    for (const r of priceRows.value) {
-      const m = modelMap.value[r.name]
-      if (m) {
-        // 已登记：只提交变化的字段，其余沿用现值（UpdateModel 未传字段不动）
-        const newIn = r.input_price == null ? m.input_price : yuan1KToPoints(r.input_price, PPY)
-        const newOut = r.output_price == null ? m.output_price : yuan1KToPoints(r.output_price, PPY)
-        const newHit = r.cache_price == null ? m.input_cache_hit_price : yuan1KToPoints(r.cache_price, PPY)
-        if (newIn === m.input_price && newOut === m.output_price && newHit === m.input_cache_hit_price) continue
-        await apiUpdateModel(m.id, {
-          display_name: m.display_name, vendor: m.vendor, remark: m.remark,
-          input_price: newIn, output_price: newOut, input_cache_hit_price: newHit,
-          cost_input_price: m.cost_input_price, cost_output_price: m.cost_output_price,
-          status: m.status,
-        })
-        touched++
-      } else if (r.input_price != null || r.output_price != null) {
-        await apiCreateModel({
-          name: r.name, display_name: '', vendor: priceChannel.value.vendor,
-          input_price: yuan1KToPoints(r.input_price ?? 0, PPY),
-          output_price: yuan1KToPoints(r.output_price ?? 0, PPY),
-          input_cache_hit_price: yuan1KToPoints(r.cache_price ?? 0, PPY),
-          cost_input_price: 0, cost_output_price: 0, status: 1, remark: '',
-        })
-        touched++
-      }
-    }
-    if (touched > 0) {
-      ElMessage.success(`已保存 ${touched} 个模型的定价`)
-    } else {
-      ElMessage.info('没有变动')
-    }
-    await loadModels()
-    priceVisible.value = false
-  } finally {
-    priceSaving.value = false
-  }
-}
 </script>
 
 <template>
@@ -506,19 +394,29 @@ async function savePricing() {
       empty-text="还没有渠道。新建渠道（base_url + 上游密钥 + 模型列表）即可开始转发，预置的 DeepSeek/智谱/通义填入密钥后启用。">
       <el-table-column prop="name" label="渠道" width="140" />
       <el-table-column prop="vendor" label="厂商" width="90" />
-      <el-table-column label="模型（含单价 元/1K）" min-width="200">
+      <el-table-column label="模型" min-width="200">
         <template #default="{ row }">
-          <code v-for="m in row.models" :key="m.model_name" class="model-chip"
-            :class="{ 'chip-unpriced': !priced(m.model_name) }" :title="chipTitle(m.model_name)">
+          <code v-for="m in row.models" :key="m.model_name" class="model-chip" :title="m.model_name">
             {{ m.model_name }}
-            <span v-if="priced(m.model_name)" class="chip-price">{{ chipPrice(m.model_name) }}</span>
-            <span v-else class="chip-zero">未定价</span>
           </code>
         </template>
       </el-table-column>
-      <el-table-column label="密钥" width="110" align="center">
+      <el-table-column label="密钥" width="130" align="center">
         <template #default="{ row }">
-          <span v-if="row.has_key" class="key-ok">
+          <el-tooltip v-if="row.has_key && channelDeadKeys(row) > 0" placement="top"
+            :content="`有 ${channelDeadKeys(row)} 把 Key 被自动禁用（上游 401/402/403：Key 过期或余额不足）——点「Key 池」看是哪一把，更换后点「启用」恢复`">
+            <span class="key-warn">
+              ● {{ row.key_count || 1 }} 把（启 {{ row.key_active_count ?? row.key_count }}
+              <template v-if="row.key_cooling_count">，冷 {{ row.key_cooling_count }}</template>）
+            </span>
+          </el-tooltip>
+          <el-tooltip v-else-if="row.has_key && row.key_cooling_count > 0" placement="top"
+            :content="`有 ${row.key_cooling_count} 把 Key 处于厂商侧配额冷却（限额/余额耗尽）：冷却期自动跳过、到期自动恢复——点「Key 池」看是哪一把，恢复后可手动「清除冷却」立即复用`">
+            <span class="key-warn">
+              ● {{ row.key_count || 1 }} 把（启 {{ row.key_active_count ?? row.key_count }}，冷 {{ row.key_cooling_count }}）
+            </span>
+          </el-tooltip>
+          <span v-else-if="row.has_key" class="key-ok">
             ● {{ row.key_count || 1 }} 把<span v-if="row.key_count > 1">（启 {{ row.key_active_count ?? row.key_count }}）</span>
           </span>
           <span v-else class="key-miss">● 缺失</span>
@@ -545,13 +443,12 @@ async function savePricing() {
           <span v-else class="dim">未测试</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="380" fixed="right">
+      <el-table-column label="操作" width="310" fixed="right">
         <template #default="{ row }">
-          <!-- 六颗按钮必须一行：nowrap + 收紧按钮间距 -->
+          <!-- 五颗按钮必须一行：nowrap + 收紧按钮间距 -->
           <div class="ops">
             <el-button size="small" :loading="testing === row.id" @click="test(row)">测试</el-button>
             <el-button size="small" @click="openEdit(row)">编辑</el-button>
-            <el-button size="small" @click="openPricing(row)">定价</el-button>
             <el-button size="small" @click="openKeys(row)">Key 池</el-button>
             <el-button size="small" @click="toggleStatus(row)">{{ row.status === 1 ? '停用' : '启用' }}</el-button>
             <el-button size="small" type="danger" @click="remove(row)">删除</el-button>
@@ -637,20 +534,6 @@ async function savePricing() {
           </el-tag>
           <el-button type="danger" :icon="'Delete'" circle size="small" style="margin-left: 8px" @click="removeModelRow(i)" />
         </div>
-        <!-- 一站式定价：已定价的模型只读显示现价；未定价的可当场填价，保存渠道时自动登记（元/1K） -->
-        <div v-if="m.model_name && priced(m.model_name)" class="price-row priced">
-          已定价 {{ fmtPrice1K(modelMap[m.model_name.trim()].input_price, PPY) }} /
-          {{ fmtPrice1K(modelMap[m.model_name.trim()].output_price, PPY) }} 元/1K（如需调整请到「模型定价」）
-        </div>
-        <div v-else-if="m.model_name" class="price-row">
-          <span class="price-label">单价（元/1K）</span>
-          <el-input-number v-model="m.input_price" :min="0" :step="0.001" :precision="6" size="small"
-            style="width: 116px" placeholder="输入" controls-position="right" />
-          <span class="dim">输入 ·</span>
-          <el-input-number v-model="m.output_price" :min="0" :step="0.001" :precision="6" size="small"
-            style="width: 116px" placeholder="输出" controls-position="right" />
-          <span class="dim">输出 · 留空=暂不登记（无法授权调用）</span>
-        </div>
       </div>
       <el-button style="margin-top: 8px" :icon="'Plus'" @click="addModelRow">添加模型</el-button>
     </el-form>
@@ -668,6 +551,9 @@ async function savePricing() {
 
     <el-alert v-if="quotaCoolingCount > 0" type="warning" :closable="false" class="keys-alert"
       :title="`有 ${quotaCoolingCount} 把 Key 因厂商侧配额耗尽处于冷却（该行已标黄）：限额恢复后点行内「清除冷却」立即复用，无需等自动到期`" />
+
+    <el-alert v-if="disabledKeyCount > 0" type="error" :closable="false" class="keys-alert"
+      :title="`有 ${disabledKeyCount} 把 Key 已禁用（该行已标红，备注列注明原因）：多为上游 401/403（Key 过期或余额不足），更换新 Key 后点行内「启用」恢复`" />
 
     <div class="keys-toolbar">
       <el-button type="primary" size="small" @click="toggleAdd">新增 Key</el-button>
@@ -744,41 +630,6 @@ async function savePricing() {
     </div>
   </el-dialog>
 
-  <!-- 渠道级定价：该渠道的全部模型一览，未定价的当场登记、已定价的就地改价 -->
-  <el-dialog v-model="priceVisible" :title="`定价 — ${priceChannel?.name || ''}`" width="680px">
-    <el-alert v-if="priceRows.length === 0" type="info" :closable="false"
-      title="该渠道还没有配置模型能力，先在「编辑」里添加模型。" />
-    <div v-for="r in priceRows" :key="r.name" class="price-card">
-      <div class="price-head">
-        <code class="model-chip">{{ r.name }}</code>
-        <span v-if="r.registered && modelMap[r.name] && (modelMap[r.name].input_price > 0 || modelMap[r.name].output_price > 0)"
-          class="dim">现价 {{ fmtPrice1K(modelMap[r.name].input_price, PPY) }}
-          <template v-if="modelMap[r.name].input_cache_hit_price > 0">（命中 {{ fmtPrice1K(modelMap[r.name].input_cache_hit_price, PPY) }}）</template>
-          / {{ fmtPrice1K(modelMap[r.name].output_price, PPY) }} 元/1K</span>
-        <el-tag v-else type="warning" effect="plain" size="small">未定价</el-tag>
-      </div>
-      <div class="price-edit-row">
-        <span class="price-label">单价（元/1K）</span>
-        <el-input-number v-model="r.input_price" :min="0" :step="0.001" :precision="6" size="small"
-          style="width: 118px" placeholder="输入" controls-position="right" />
-        <span class="dim">输入</span>
-        <el-input-number v-model="r.cache_price" :min="0" :step="0.001" :precision="6" size="small"
-          style="width: 118px" placeholder="缓存命中" controls-position="right" />
-        <span class="dim">命中</span>
-        <el-input-number v-model="r.output_price" :min="0" :step="0.001" :precision="6" size="small"
-          style="width: 118px" placeholder="输出" controls-position="right" />
-        <span class="dim">输出</span>
-      </div>
-    </div>
-    <div class="tip" style="margin-top: 8px">
-      按元/1K token 填写，保存时自动换算成 token 点数入库；缓存命中 = 上游提示缓存命中的输入 tokens 单价（0 = 同输入价）；
-      已定价模型留空 = 保持不变，未定价模型留空 = 不登记（无法授权调用，0 元=免费）。
-    </div>
-    <template #footer>
-      <el-button @click="priceVisible = false">取消</el-button>
-      <el-button type="primary" :loading="priceSaving" @click="savePricing">保存定价</el-button>
-    </template>
-  </el-dialog>
 </template>
 
 <style scoped>
@@ -800,26 +651,18 @@ async function savePricing() {
 .cool-cell { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .cool-clear { padding: 0; }
 /* 冷却行整行底色（配额=琥珀 / 普通限流=浅灰），一眼锁定需要关注的 Key */
-:deep(.el-table .quota-cooling-row) { --el-table-tr-bg-color: #fdf3e3; }
-:deep(.el-table .cooling-row) { --el-table-tr-bg-color: #f5f6f7; }
+/* 行高亮直接落 td 背景（CSS 变量方案在当前 Element Plus 版本下不生效——
+   tr 上重定义 --el-table-tr-bg-color 不会改变已渲染 td 的背景色）；
+   悬停高亮的选择器优先级更高（.el-table tbody tr:hover>td），不受影响 */
+:deep(.el-table .quota-cooling-row td) { background-color: #fdf3e3; }
+:deep(.el-table .cooling-row td) { background-color: #f5f6f7; }
+:deep(.el-table .key-dead-row td) { background-color: #fdeaea; }
 .model-row { display: flex; align-items: center; }
-/* 模型能力卡片：上行=名称/映射，下行=就地定价 */
+/* 模型能力卡片 */
 .model-card {
   border: 1px solid var(--el-border-color-lighter); border-radius: 6px;
   padding: 8px 10px; margin-bottom: 8px; background: var(--el-fill-color-blank);
 }
-.price-row {
-  display: flex; align-items: center; gap: 8px; margin-top: 8px;
-}
-.price-row.priced { font-size: 12px; color: var(--tg-muted); }
-.price-label { font-size: 12.5px; color: var(--el-text-color-regular); }
-/* 渠道级定价弹窗的模型行 */
-.price-card {
-  border: 1px solid var(--el-border-color-lighter); border-radius: 6px;
-  padding: 8px 12px; margin-bottom: 8px;
-}
-.price-head { display: flex; align-items: center; gap: 10px; }
-.price-edit-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 /* 粘贴 curl 快速接入区 */
 .curl-box { width: 100%; }
 .curl-actions { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
@@ -829,17 +672,12 @@ async function savePricing() {
 .dim { color: var(--tg-muted); font-size: 12px; }
 .key-ok { color: var(--tg-green-ink); font-size: 12px; }
 .key-miss { color: var(--tg-red); font-size: 12px; }
+/* 有 Key 被禁用的渠道：密钥数标琥珀 + 悬浮提示引导去 Key 池 */
+.key-warn { color: var(--tg-amber); font-size: 12px; cursor: help; }
 .model-chip {
   display: inline-block; margin: 1px 4px 1px 0; padding: 1px 7px;
   background: var(--tg-green-wash); border-radius: 4px;
   font-size: 11.5px; color: var(--tg-green-ink);
-}
-/* 渠道列表：chip 内嵌单价（绿色正常 / 黄色未定价） */
-.chip-price { margin-left: 4px; opacity: 0.85; }
-.chip-zero { margin-left: 4px; }
-.chip-unpriced {
-  background: transparent; border: 1px dashed var(--tg-amber);
-  color: var(--tg-amber);
 }
 /* 从上游拉取的模型候选：可点选添加，已添加的置灰 */
 .up-row { margin-bottom: 8px; display: flex; align-items: center; gap: 10px; }

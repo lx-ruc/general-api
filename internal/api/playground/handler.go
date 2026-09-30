@@ -144,12 +144,16 @@ func (h *Handler) Chat(c *gin.Context) {
 			return
 		}
 		if st.UserStatus != 1 || st.OrgStatus == 0 {
-			openaiFail(c, http.StatusForbidden, "permission_error", "account or organization is disabled")
+			openaiFail(c, http.StatusForbidden, "permission_error", "账号或所在客户已被停用，请联系管理员确认")
 			return
 		}
 		if st.OrgStatus == 2 { // 欠费停服：与数据面口径一致（402，重试无意义）
-			openaiFail(c, http.StatusPaymentRequired, "insufficient_balance",
-				"organization suspended for arrears (quota exhausted), please contact the platform admin to recharge")
+			// 指引按角色：与数据面鉴权层同款文案
+			msg := "客户额度已耗尽（欠费停服），请联系平台管理员充值恢复"
+			if role == model.RoleMember {
+				msg = "所在客户额度已耗尽（欠费停服），请联系贵司管理员充值恢复"
+			}
+			openaiFail(c, http.StatusPaymentRequired, "insufficient_balance", msg)
 			return
 		}
 		if !h.modelAllowed(role, uid, orgID, req.Model) {

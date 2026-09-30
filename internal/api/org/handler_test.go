@@ -1,6 +1,7 @@
 package org
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -61,7 +62,6 @@ func newOrgEnv(t *testing.T) *orgEnv {
 	og.PUT("/members/:id", h.UpdateMember)
 	og.GET("/cost-centers", h.ListCostCenters)
 	og.POST("/cost-centers", h.CreateCostCenter)
-	og.PUT("/cost-centers/config", h.UpdateCostCenterConfig)
 	og.PUT("/cost-centers/:id", h.UpdateCostCenter)
 	og.GET("/reports/cost-centers", h.CostCenterReport)
 	og.GET("/billing", h.Billing)
@@ -204,6 +204,77 @@ func TestHandleRequestConcurrentApproveOnce(t *testing.T) {
 	}
 }
 
+// 审批不限额子账号的额度申请必须整体拒绝：NULL 基线上加额会把「不限」悄悄顶成
+// 「限额=追加额」（真实事故：下发弹窗默认 +1M 被顺手提交，超限拦截全客户调用）。
+// 拒绝要干净——申请保持 pending（切回限额后可重批）、无流水、limit 保持 NULL
+// 审批额度溢出预检：limit 已近 MaxInt64 时批准申请应 400 拒绝（而非 SQL 溢出 500），申请保持 pending
+func TestHandleRequestApproveQuotaOverflow(t *testing.T) {
+	e := newOrgEnv(t)
+	now := time.Now().Unix()
+	if err := e.db.Exec(`INSERT INTO users (id, org_id, username, password_hash, role, quota_limit, status, created_at, updated_at)
+		VALUES (13, 1, 'm3', 'x', 'member', 9223372036854774807, 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := e.db.Exec(`INSERT INTO quota_requests (id, org_id, user_id, amount, reason, status, created_at)
+		VALUES (79, 1, 13, 5000, 'big', 'pending', ?)`, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(e.db)
+	g := e.engine.Group("/api/org", middleware.JWTAuth("test-secret", e.db))
+	g.PUT("/requests/:id", h.HandleRequest)
+
+	w := e.do(http.MethodPut, "/api/org/requests/79", `{"action":"approve"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("code = %d, want 400（溢出必须显式拒绝而非 500）", w.Code)
+	}
+	var status string
+	_ = e.db.Raw("SELECT status FROM quota_requests WHERE id = 79").Scan(&status).Error
+	if status != "pending" {
+		t.Errorf("申请应保持 pending（可调低后重批），得 %q", status)
+	}
+	if got := e.sumUserGrants(13); got != 0 {
+		t.Errorf("Σgrants(user) = %d, want 0（不得留半截流水）", got)
+	}
+}
+
+func TestHandleRequestApproveUnlimitedMember(t *testing.T) {
+	e := newOrgEnv(t)
+	now := time.Now().Unix()
+	// 不限额子账号（quota_limit NULL）+ 一份 pending 额度申请
+	if err := e.db.Exec(`INSERT INTO users (id, org_id, username, password_hash, role, quota_limit, status, created_at, updated_at)
+		VALUES (12, 1, 'm2', 'x', 'member', NULL, 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := e.db.Exec(`INSERT INTO quota_requests (id, org_id, user_id, amount, reason, status, created_at)
+		VALUES (78, 1, 12, 5000, 'need more', 'pending', ?)`, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(e.db)
+	g := e.engine.Group("/api/org", middleware.JWTAuth("test-secret", e.db))
+	g.PUT("/requests/:id", h.HandleRequest)
+
+	w := e.do(http.MethodPut, "/api/org/requests/78", `{"action":"approve"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("code = %d, want 400（不限额账号加额必须显式拒绝）", w.Code)
+	}
+
+	var nullLimit *int64
+	if err := e.db.Raw("SELECT quota_limit FROM users WHERE id = 12").Scan(&nullLimit).Error; err != nil {
+		t.Fatal(err)
+	}
+	if nullLimit != nil {
+		t.Errorf("被拒后 limit 应保持 NULL，得 %v", *nullLimit)
+	}
+	if got := e.sumUserGrants(12); got != 0 {
+		t.Errorf("Σgrants(user) = %d, want 0（不得留半截流水）", got)
+	}
+	var status string
+	_ = e.db.Raw("SELECT status FROM quota_requests WHERE id = 78").Scan(&status).Error
+	if status != "pending" {
+		t.Errorf("申请应保持 pending 以便切回限额后重批，得 %q", status)
+	}
+}
+
 // 删除子账号必须连带清理其管理面访问令牌（tgp_），否则令牌在账号删除后仍可调用管理 API
 func TestDeleteMemberCleansAccessTokens(t *testing.T) {
 	e := newOrgEnv(t)
@@ -294,5 +365,202 @@ func TestCreateMemberRejectNegativeQuota(t *testing.T) {
 	_ = e.db.Raw(`SELECT COUNT(*) FROM quota_grants WHERE amount < 0`).Scan(&negGrants).Error
 	if users != 0 || negGrants != 0 {
 		t.Fatalf("拒绝后不应落库：users=%d neg_grants=%d", users, negGrants)
+	}
+}
+
+// 模型申请审批：approve 逐模型写 user_model_grants（granted_by=审批人），已授权的
+// 幂等跳过；reject 不落授权；审批时模型已下架 → 400 整单拒绝（不留半截授权）
+func TestHandleRequestModelKind(t *testing.T) {
+	e := newOrgEnv(t)
+	now := time.Now().Unix()
+	// 启用模型 m1/m2，m3 下架
+	for _, m := range []struct {
+		name   string
+		status int
+	}{{"m1", 1}, {"m2", 1}, {"m3", 0}} {
+		if err := e.db.Exec(`INSERT INTO models (name, input_price, output_price, status, created_at, updated_at)
+			VALUES (?, 1000000, 1000000, ?, ?, ?)`, m.name, m.status, now, now).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := e.db.Exec(`INSERT INTO users (id, org_id, username, password_hash, role, status, created_at, updated_at)
+		VALUES (10, 1, 'mem10', 'x', 'member', 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	// mem10 已被授权 m1（申请里重复出现应幂等跳过）
+	if err := e.db.Exec(`INSERT INTO user_model_grants (user_id, model_name, created_at) VALUES (10, 'm1', ?)`, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	// pending 模型申请：m1（已授权，重复）+ m2（新）
+	if err := e.db.Exec(`INSERT INTO quota_requests (id, org_id, user_id, kind, model_names, reason, status, created_at)
+		VALUES (81, 1, 10, 'model', 'm1,m2', '项目需要', 'pending', ?)`, now).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewHandler(e.db)
+	g := e.engine.Group("/api/org", middleware.JWTAuth("test-secret", e.db))
+	g.PUT("/requests/:id", h.HandleRequest)
+
+	if w := e.do(http.MethodPut, "/api/org/requests/81", `{"action":"approve"}`); w.Code != http.StatusOK {
+		t.Fatalf("审批模型申请应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	var cnt int64
+	_ = e.db.Raw(`SELECT COUNT(*) FROM user_model_grants WHERE user_id = 10`).Scan(&cnt).Error
+	if cnt != 2 {
+		t.Fatalf("授权应恰为 m1/m2 两行（重复的幂等跳过），得 %d", cnt)
+	}
+	var grantedBy *int64
+	_ = e.db.Raw(`SELECT granted_by FROM user_model_grants WHERE user_id = 10 AND model_name = 'm2'`).Scan(&grantedBy).Error
+	if grantedBy == nil || *grantedBy != 2 {
+		t.Fatalf("新授权 granted_by 应为审批人（org_admin id=2），得 %v", grantedBy)
+	}
+	// 额度 untouched：模型申请不得动 quota_limit / 流水
+	var limit *int64
+	_ = e.db.Raw(`SELECT quota_limit FROM users WHERE id = 10`).Scan(&limit).Error
+	if limit != nil {
+		t.Fatalf("模型申请不应动 quota_limit，得 %v", *limit)
+	}
+	if got := e.sumUserGrants(10); got != 0 {
+		t.Fatalf("模型申请不应产生额度流水，得 %d", got)
+	}
+	// 重复审批 → 404（pending 已消费），授权行数不变
+	if w := e.do(http.MethodPut, "/api/org/requests/81", `{"action":"approve"}`); w.Code != http.StatusNotFound {
+		t.Fatalf("重复审批应 404，得 %d", w.Code)
+	}
+	_ = e.db.Raw(`SELECT COUNT(*) FROM user_model_grants WHERE user_id = 10`).Scan(&cnt).Error
+	if cnt != 2 {
+		t.Fatalf("重复审批不得再落授权，得 %d", cnt)
+	}
+
+	// reject 分支：不落任何授权
+	if err := e.db.Exec(`INSERT INTO quota_requests (id, org_id, user_id, kind, model_names, status, created_at)
+		VALUES (82, 1, 10, 'model', 'm2', 'pending', ?)`, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	// 先删 m2 授权模拟「未授权状态」再拒绝
+	if err := e.db.Exec(`DELETE FROM user_model_grants WHERE user_id = 10 AND model_name = 'm2'`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if w := e.do(http.MethodPut, "/api/org/requests/82", `{"action":"reject","reply":"暂不开放"}`); w.Code != http.StatusOK {
+		t.Fatalf("拒绝应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	_ = e.db.Raw(`SELECT COUNT(*) FROM user_model_grants WHERE user_id = 10 AND model_name = 'm2'`).Scan(&cnt).Error
+	if cnt != 0 {
+		t.Fatalf("拒绝不得落授权，得 %d", cnt)
+	}
+
+	// 审批时模型已下架 → 400，整单拒绝不落授权
+	if err := e.db.Exec(`INSERT INTO quota_requests (id, org_id, user_id, kind, model_names, status, created_at)
+		VALUES (83, 1, 10, 'model', 'm3', 'pending', ?)`, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if w := e.do(http.MethodPut, "/api/org/requests/83", `{"action":"approve"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("下架模型审批应 400，得 %d: %s", w.Code, w.Body.String())
+	}
+	_ = e.db.Raw(`SELECT COUNT(*) FROM user_model_grants WHERE user_id = 10 AND model_name = 'm3'`).Scan(&cnt).Error
+	if cnt != 0 {
+		t.Fatalf("下架模型不得落授权，得 %d", cnt)
+	}
+	var status string
+	_ = e.db.Raw(`SELECT status FROM quota_requests WHERE id = 83`).Scan(&status).Error
+	if status != "pending" {
+		t.Fatalf("整单拒绝后申请应保持 pending（由管理员显式拒绝），得 %q", status)
+	}
+}
+
+// 统计端点的子账号上限聚合（配额下发页超发提示的数据源）：
+// 限额子账号的 quota_limit 合计 + 不限账号数；org_admin 不计入
+func TestStatsOverviewQuotaPool(t *testing.T) {
+	e := newOrgEnv(t)
+	g := e.engine.Group("/api/org", middleware.JWTAuth("test-secret", e.db))
+	h := NewHandler(e.db)
+	g.GET("/stats/overview", h.StatsOverview)
+
+	now := time.Now().Unix()
+	seed := func(id int64, name, role string, limit *int64) {
+		var lim any
+		if limit != nil {
+			lim = *limit
+		}
+		if err := e.db.Exec(`INSERT INTO users (id, org_id, username, password_hash, role, quota_limit, status, created_at, updated_at)
+			VALUES (?, 1, ?, 'x', ?, ?, 1, ?, ?)`, id, name, role, lim, now, now).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	l30, l20 := int64(30_000_000), int64(20_000_000)
+	seed(10, "m1", "member", &l30)
+	seed(11, "m2", "member", &l20)
+	seed(12, "m3", "member", nil) // 不限账号：不计入合计，单列计数
+	seed(13, "boss", "org_admin", &l30)
+
+	w := e.do(http.MethodGet, "/api/org/stats/overview", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("统计应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	var out struct {
+		QuotaPool struct {
+			LimitsSum      int64 `json:"limits_sum"`
+			MemberCount    int64 `json:"member_count"`
+			UnlimitedCount int64 `json:"unlimited_count"`
+		} `json:"quota_pool"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.QuotaPool.LimitsSum != 50_000_000 || out.QuotaPool.MemberCount != 3 || out.QuotaPool.UnlimitedCount != 1 {
+		t.Fatalf("quota_pool 聚合不符：got %+v（want sum=50M count=3 unlimited=1）", out.QuotaPool)
+	}
+}
+
+// waitForNotification 轮询等异步站内通知落库（审批结果在 go func 里写，需短暂等待）
+func waitForNotification(t *testing.T, db *gorm.DB, userID int64, typ string) bool {
+	t.Helper()
+	for i := 0; i < 40; i++ {
+		var cnt int64
+		_ = db.Raw("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND type = ?", userID, typ).Scan(&cnt).Error
+		if cnt > 0 {
+			return true
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	return false
+}
+
+// 审批结果站内通知申请人（顶栏铃铛）：approve 额度申请 → 子账号收到 request_handled，
+// 标题与正文含到账额度；org_admin 不收到（结果只发给申请人本人）
+func TestHandleRequestNotifiesMember(t *testing.T) {
+	e := newOrgEnv(t)
+	now := time.Now().Unix()
+	if err := e.db.Exec(`INSERT INTO users (id, org_id, username, password_hash, role, quota_limit, status, created_at, updated_at)
+		VALUES (10, 1, 'm1', 'x', 'member', 1000, 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := e.db.Exec(`INSERT INTO quota_requests (id, org_id, user_id, amount, reason, status, created_at)
+		VALUES (88, 1, 10, 5000, 'need more', 'pending', ?)`, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler(e.db)
+	g := e.engine.Group("/api/org", middleware.JWTAuth("test-secret", e.db))
+	g.PUT("/requests/:id", h.HandleRequest)
+
+	if w := e.do(http.MethodPut, "/api/org/requests/88", `{"action":"approve"}`); w.Code != http.StatusOK {
+		t.Fatalf("审批应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	if !waitForNotification(t, e.db, 10, "request_handled") {
+		t.Fatal("子账号应收到审批结果站内通知")
+	}
+	var row struct {
+		Title string
+		Body  string
+	}
+	_ = e.db.Raw("SELECT title, body FROM notifications WHERE user_id = 10 AND type = 'request_handled'").Scan(&row).Error
+	if !strings.Contains(row.Title, "额度申请已通过") || !strings.Contains(row.Body, "5000") {
+		t.Fatalf("通知内容应含到账额度：title=%q body=%q", row.Title, row.Body)
+	}
+	// 管理员自己不应收到审批结果（扇出只给申请人）
+	var adminCnt int64
+	_ = e.db.Raw("SELECT COUNT(*) FROM notifications WHERE user_id = 2 AND type = 'request_handled'").Scan(&adminCnt).Error
+	if adminCnt != 0 {
+		t.Fatalf("审批人不应收到 request_handled，实际 %d 条", adminCnt)
 	}
 }
