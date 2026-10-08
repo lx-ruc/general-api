@@ -52,7 +52,7 @@ const usedPct = computed(() => {
     </el-card>
 
     <el-card shadow="never">
-      <template #header>我可用的大模型<span class="unit">（由客户管理员授权）</span></template>
+      <template #header>我可用的大模型<span class="unit">（由管理员授权）</span></template>
       <el-table :data="data.models"
         empty-text="还没有被授权任何模型。请联系客户管理员在「子账号管理 → 模型授权」中为你勾选。">
         <el-table-column prop="name" label="模型名" min-width="160">
