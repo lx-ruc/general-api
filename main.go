@@ -81,6 +81,12 @@ func main() {
 		slog.Error("初始化管理员失败", "err", err)
 		os.Exit(1)
 	}
+	// 存量继承客户级模型白名单（子账号已授权并集）——必须在 SetupRouter 前，
+	// 否则收窄逻辑面对空白名单，上线瞬间所有模型不可授权
+	if err := service.BackfillOrgModelGrants(db); err != nil {
+		slog.Error("客户模型白名单存量继承失败", "err", err)
+		os.Exit(1)
+	}
 	cipher, err := crypto.NewCipher(cfg.Security.AESKey)
 	if err != nil {
 		slog.Error("初始化加密器失败", "err", err)

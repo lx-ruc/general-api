@@ -110,7 +110,8 @@ const isModel = (row: any) => row.kind === 'model'
                 </el-checkbox>
               </div>
             </el-checkbox-group>
-            <p v-if="selectable.length === 0" class="hint">所有已上线的模型均已授权给你，无需申请</p>
+            <p v-if="selectable.length === 0" class="hint">本客户已开通的模型均已授权给你，无需申请；想用还没开通的模型，请联系管理员向平台申请</p>
+            <p v-else class="hint">仅显示本客户已开通的模型；想用其他模型，请联系管理员向平台申请开通</p>
             <div v-if="grantedModels.length > 0" class="hint granted-block">
               已授权：<el-tag v-for="m in grantedModels" :key="m.name" size="small" style="margin-right: 4px">{{ m.name }}</el-tag>
             </div>

@@ -106,6 +106,33 @@ export const apiOrgRequests = (params?: any) => http.get<any, any>('/api/org/req
 export const apiHandleRequest = (id: number, action: 'approve' | 'reject', reply: string) =>
   http.put<any, any>(`/api/org/requests/${id}`, { action, reply })
 
+// ---- 模型开通申请（向平台） ----
+export interface ModelRequestCandidate {
+  name: string
+  display_name: string
+  vendor: string
+  granted: boolean
+  pending: boolean
+}
+
+export interface OrgModelRequestRow {
+  id: number
+  org_id: number
+  model_names: string
+  reason: string
+  status: 'pending' | 'approved' | 'rejected'
+  reply: string
+  created_at: number
+  handled_at: number | null
+}
+
+export const apiModelRequestCandidates = () =>
+  http.get<any, ModelRequestCandidate[]>('/api/org/model-requests/candidates')
+export const apiOrgModelRequests = () =>
+  http.get<any, OrgModelRequestRow[]>('/api/org/model-requests')
+export const apiCreateModelRequest = (models: string[], reason: string) =>
+  http.post<any, any>('/api/org/model-requests', { models, reason })
+
 // ---- 充值 / 账单 ----
 export const apiOrgRecharges = () => http.get<any, any>('/api/org/recharges')
 export const apiCreateRecharge = (amount: number, voucher: string) =>

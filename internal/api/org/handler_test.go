@@ -391,6 +391,10 @@ func TestHandleRequestModelKind(t *testing.T) {
 	if err := e.db.Exec(`INSERT INTO user_model_grants (user_id, model_name, created_at) VALUES (10, 'm1', ?)`, now).Error; err != nil {
 		t.Fatal(err)
 	}
+	// 客户已开通 m1/m2（白名单收窄后审批复查 org 范围）
+	if err := e.db.Exec(`INSERT INTO org_model_grants (org_id, model_name, created_at) VALUES (1, 'm1', ?), (1, 'm2', ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
 	// pending 模型申请：m1（已授权，重复）+ m2（新）
 	if err := e.db.Exec(`INSERT INTO quota_requests (id, org_id, user_id, kind, model_names, reason, status, created_at)
 		VALUES (81, 1, 10, 'model', 'm1,m2', '项目需要', 'pending', ?)`, now).Error; err != nil {

@@ -345,8 +345,11 @@ func (h *Handler) GetMemberModels(c *gin.Context) {
 	var granted []string
 	_ = h.DB.Model(&model.UserModelGrant{}).Where("user_id = ?", id).
 		Order("model_name").Pluck("model_name", &granted).Error
+	// 候选收窄为客户已开通模型（平台级白名单）；已授权但已被平台回收的仍会出现在
+	// granted 里，前端展示已有授权不受影响
 	var available []model.Model
-	_ = h.DB.Where("status = 1").Order("name").Find(&available).Error
+	_ = h.DB.Where("status = 1 AND name IN (SELECT model_name FROM org_model_grants WHERE org_id = ?)", oid).
+		Order("name").Find(&available).Error
 	if granted == nil {
 		granted = []string{}
 	}
@@ -375,7 +378,8 @@ func (h *Handler) SetMemberModels(c *gin.Context) {
 		httpx.Fail(c, http.StatusNotFound, "子账号不存在")
 		return
 	}
-	// 校验模型都存在且启用
+	// 校验模型都存在且启用，且在客户开通范围内（平台级白名单）
+	grantedOrg := service.OrgGrantedSet(h.DB, oid)
 	dedup := make([]string, 0, len(req.Models))
 	seen := map[string]bool{}
 	for _, name := range req.Models {
@@ -386,6 +390,11 @@ func (h *Handler) SetMemberModels(c *gin.Context) {
 		_ = h.DB.Model(&model.Model{}).Where("name = ? AND status = 1", name).Count(&mc).Error
 		if mc == 0 {
 			httpx.Fail(c, http.StatusBadRequest, "模型不存在或未启用: "+name)
+			return
+		}
+		if _, open := grantedOrg[name]; !open {
+			httpx.Fail(c, http.StatusBadRequest,
+				"模型 "+name+" 未在本客户开通，请先在【模型申请】向平台申请开通")
 			return
 		}
 		seen[name] = true
@@ -410,6 +419,122 @@ func (h *Handler) SetMemberModels(c *gin.Context) {
 		return
 	}
 	httpx.OK(c, gin.H{"message": fmt.Sprintf("已授权 %d 个模型", len(dedup)), "models": dedup})
+}
+
+// ---------------- 模型开通申请（向平台） ----------------
+
+// ListModelRequestCandidates GET /api/org/model-requests/candidates
+// 全部启用模型 + 本客户是否已开通/在途申请中，供申请页勾选。
+// 注意：候选目录必须是全量启用模型（申请的目的就是开通还没有的），
+// 白名单收窄只作用于给子账号授权、子账号申请等上下文
+func (h *Handler) ListModelRequestCandidates(c *gin.Context) {
+	oid, ok := orgID(c)
+	if !ok {
+		return
+	}
+	type row struct {
+		Name        string `json:"name"`
+		DisplayName string `json:"display_name"`
+		Vendor      string `json:"vendor"`
+		Granted     bool   `json:"granted"`
+		Pending     bool   `json:"pending"`
+	}
+	var rows []row
+	_ = h.DB.Raw(`
+		SELECT m.name, m.display_name, m.vendor,
+		       CASE WHEN og.id IS NULL THEN 0 ELSE 1 END AS granted,
+		       CASE WHEN pr.id IS NULL THEN 0 ELSE 1 END AS pending
+		FROM models m
+		LEFT JOIN org_model_grants og ON og.model_name = m.name AND og.org_id = ?
+		LEFT JOIN (SELECT DISTINCT id, model_names AS model_name FROM org_model_requests
+			WHERE org_id = ? AND status = 'pending') pr ON pr.model_name = m.name
+		WHERE m.status = 1 ORDER BY m.name`, oid, oid).Scan(&rows).Error
+	if rows == nil {
+		rows = []row{}
+	}
+	httpx.OK(c, rows)
+}
+
+// CreateModelRequest POST /api/org/model-requests：向平台申请开通模型。
+// 校验启用 → 去重 → 静默剔除本客户已开通项（重复申请无意义），剩空 → 400
+func (h *Handler) CreateModelRequest(c *gin.Context) {
+	oid, ok := orgID(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Models []string `json:"models" binding:"required"`
+		Reason string   `json:"reason"`
+	}
+	if !httpx.BindJSON(c, &req) {
+		return
+	}
+	// 去重去空
+	seen := map[string]bool{}
+	names := make([]string, 0, len(req.Models))
+	for _, n := range req.Models {
+		if n == "" || seen[n] {
+			continue
+		}
+		seen[n] = true
+		names = append(names, n)
+	}
+	if len(names) == 0 {
+		httpx.Fail(c, http.StatusBadRequest, "请选择要申请的模型")
+		return
+	}
+	var enabledRows []struct{ Name string }
+	_ = h.DB.Raw(`SELECT name FROM models WHERE status = 1`).Scan(&enabledRows).Error
+	enabled := map[string]bool{}
+	for _, r := range enabledRows {
+		enabled[r.Name] = true
+	}
+	granted := service.OrgGrantedSet(h.DB, oid)
+	var valid []string
+	for _, n := range names {
+		if !enabled[n] {
+			httpx.Fail(c, http.StatusBadRequest, "模型不存在或已下架："+n)
+			return
+		}
+		if _, open := granted[n]; !open {
+			valid = append(valid, n)
+		}
+	}
+	if len(valid) == 0 {
+		httpx.Fail(c, http.StatusBadRequest, "申请的模型均已开通，无需重复申请")
+		return
+	}
+	r := model.OrgModelRequest{
+		OrgID: oid, ModelNames: strings.Join(valid, ","), Reason: req.Reason, Status: "pending",
+	}
+	if err := h.DB.Create(&r).Error; err != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "提交申请失败")
+		return
+	}
+	// 站内通知平台管理员审批（顶栏铃铛）
+	go func() {
+		var orgName string
+		_ = h.DB.Raw("SELECT name FROM orgs WHERE id = ?", oid).Scan(&orgName).Error
+		service.NotifyPlatformAdminsInsite(h.DB, service.NotifyTypeModelRequest,
+			fmt.Sprintf("模型开通申请待审批：%s", orgName),
+			fmt.Sprintf("客户「%s」申请开通模型：%s。\n事由：%s\n到【模型开通】处理。",
+				orgName, r.ModelNames, req.Reason))
+	}()
+	httpx.OK(c, gin.H{"id": r.ID, "models": valid, "message": "申请已提交，平台审批通过后即可在子账号管理中授权这些模型"})
+}
+
+// ListModelRequests GET /api/org/model-requests：本客户的开通申请记录
+func (h *Handler) ListModelRequests(c *gin.Context) {
+	oid, ok := orgID(c)
+	if !ok {
+		return
+	}
+	var rows []model.OrgModelRequest
+	_ = h.DB.Where("org_id = ?", oid).Order("id DESC").Limit(100).Find(&rows).Error
+	if rows == nil {
+		rows = []model.OrgModelRequest{}
+	}
+	httpx.OK(c, rows)
 }
 
 // ---------------- 统计 / 日志 / 密钥 ----------------
@@ -602,11 +727,17 @@ func (h *Handler) HandleRequest(c *gin.Context) {
 	// 由 UNIQUE/启用约束兜底，写入已禁用模型不会破坏数据，仅不可调用）
 	if qr.Kind == "model" && req.Action == "approve" {
 		names := modelNamesOf(qr.ModelNames)
+		orgOpen := service.OrgGrantedSet(h.DB, oid)
 		for _, n := range names {
 			var cnt int64
 			_ = h.DB.Raw("SELECT COUNT(*) FROM models WHERE name = ? AND status = 1", n).Scan(&cnt).Error
 			if cnt != 1 {
 				httpx.Fail(c, http.StatusBadRequest, "模型 "+n+" 已下架或不存在，请拒绝本次申请")
+				return
+			}
+			// 平台已回收该模型（子账号提交申请后客户开通被撤销的窗口）
+			if _, open := orgOpen[n]; !open {
+				httpx.Fail(c, http.StatusBadRequest, "模型 "+n+" 已被平台回收，无法授权，请拒绝本次申请")
 				return
 			}
 		}

@@ -44,6 +44,7 @@ const menus = computed<MenuItem[]>(() => {
         { index: '/platform/usage', title: '调用日志', icon: 'Document' },
         { index: '/platform/audit', title: '审计日志', icon: 'List' },
         { index: '/platform/recharges', title: '充值审批', icon: 'Wallet' },
+        { index: '/platform/model-grants', title: '模型开通', icon: 'Unlock' },
         { index: '/platform/demo-key', title: '在线体验', icon: 'Promotion' },
       ]
     case 'org_admin':
@@ -52,6 +53,7 @@ const menus = computed<MenuItem[]>(() => {
         { index: '/org/members', title: '子账号管理', icon: 'User' },
         { index: '/org/quotas', title: '配额下发', icon: 'CreditCard' },
         { index: '/org/requests', title: '申请审批', icon: 'Bell' },
+        { index: '/org/model-requests', title: '模型申请', icon: 'Goods' },
         { index: '/org/keys', title: '密钥一览', icon: 'Key' },
         { index: '/org/cost-centers', title: '成本中心', icon: 'Coin' },
         { index: '/org/usage', title: '用量统计', icon: 'Document' },

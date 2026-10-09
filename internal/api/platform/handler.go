@@ -1408,7 +1408,8 @@ func (h *Handler) ListOrgModelPrices(c *gin.Context) {
 			GROUP BY u.org_id
 		) mc ON mc.org_id = o.id
 		WHERE p.id IS NOT NULL OR mc.org_id IS NOT NULL
-		ORDER BY o.name`, m.InputPrice, m.OutputPrice, m.InputCacheHitPrice, name, name).
+			OR EXISTS (SELECT 1 FROM org_model_grants og WHERE og.org_id = o.id AND og.model_name = ?)
+		ORDER BY o.name`, m.InputPrice, m.OutputPrice, m.InputCacheHitPrice, name, name, name).
 		Scan(&rows).Error; err != nil {
 		httpx.Fail(c, http.StatusInternalServerError, "查询客户定价失败")
 		return
@@ -1687,7 +1688,242 @@ func (h *Handler) HandleRecharge(c *gin.Context) {
 	httpx.OK(c, gin.H{"message": "已驳回"})
 }
 
-// ---------------- 站内通知 ----------------
+// ---------------- 模型开通申请审批与客户开通管理 ----------------
+
+// ListModelRequests GET /api/platform/model-requests：开通申请列表（跨客户）
+func (h *Handler) ListModelRequests(c *gin.Context) {
+	page, size, offset := httpx.PageParams(c)
+	cond, args := "r.org_id > 0", []any{}
+	if st := c.Query("status"); st != "" {
+		cond += " AND r.status = ?"
+		args = append(args, st)
+	}
+	var total int64
+	_ = h.DB.Raw(fmt.Sprintf("SELECT COUNT(*) FROM org_model_requests r WHERE %s", cond), args...).Scan(&total).Error
+	type row struct {
+		model.OrgModelRequest
+		OrgName string `json:"org_name"`
+	}
+	var rows []row
+	_ = h.DB.Raw(fmt.Sprintf(`
+		SELECT r.*, o.name AS org_name FROM org_model_requests r
+		JOIN orgs o ON o.id = r.org_id
+		WHERE %s ORDER BY r.id DESC LIMIT ? OFFSET ?`, cond),
+		append(args, size, offset)...).Scan(&rows).Error
+	if rows == nil {
+		rows = []row{}
+	}
+	httpx.PageResult(c, rows, total, page, size)
+}
+
+// HandleModelRequest PUT /api/platform/model-requests/:id：审批开通申请。
+// 批准 = 同事务逐模型写 org_model_grants（UNIQUE + ON CONFLICT DO NOTHING 幂等）
+func (h *Handler) HandleModelRequest(c *gin.Context) {
+	id, ok := httpx.PathID(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Action string `json:"action" binding:"required,oneof=approve reject"`
+		Reply  string `json:"reply"`
+	}
+	if !httpx.BindJSON(c, &req) {
+		return
+	}
+	var r model.OrgModelRequest
+	if err := h.DB.Where("id = ? AND status = 'pending'", id).First(&r).Error; err != nil {
+		httpx.Fail(c, http.StatusNotFound, "申请不存在或已处理")
+		return
+	}
+	names := service.SplitModelNames(r.ModelNames)
+	// 批准时前置校验模型仍启用（事务外快速失败，窗口内下架由幂等写兜底不破坏数据）
+	if req.Action == "approve" {
+		for _, n := range names {
+			var cnt int64
+			_ = h.DB.Raw("SELECT COUNT(*) FROM models WHERE name = ? AND status = 1", n).Scan(&cnt).Error
+			if cnt != 1 {
+				httpx.Fail(c, http.StatusBadRequest, "模型 "+n+" 已下架或不存在，请拒绝本次申请")
+				return
+			}
+		}
+	}
+	now := time.Now().Unix()
+	operator := middleware.GetUID(c)
+	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		newStatus := "approved"
+		if req.Action == "reject" {
+			newStatus = "rejected"
+		}
+		// 条件更新防并发双审批
+		res := tx.Exec(`UPDATE org_model_requests SET status = ?, handled_by = ?, handled_at = ?, reply = ?
+			WHERE id = ? AND status = 'pending'`, newStatus, operator, now, req.Reply, id)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return gorm.ErrRecordNotFound
+		}
+		if req.Action == "approve" {
+			for _, n := range names {
+				if err := tx.Exec(`INSERT INTO org_model_grants (org_id, model_name, granted_by, source, created_at)
+					VALUES (?, ?, ?, 'grant', ?) ON CONFLICT (org_id, model_name) DO NOTHING`,
+					r.OrgID, n, operator, now).Error; err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			httpx.Fail(c, http.StatusNotFound, "申请不存在或已处理")
+			return
+		}
+		httpx.Fail(c, http.StatusInternalServerError, "审批失败")
+		return
+	}
+	// 站内通知客户管理员审批结果（顶栏铃铛）
+	go func() {
+		var title, body string
+		if req.Action == "approve" {
+			title = "模型开通申请已通过"
+			body = fmt.Sprintf("平台已为客户开通模型：%s。现在可在【子账号管理 → 模型授权】为成员勾选这些模型。", r.ModelNames)
+		} else {
+			title = "模型开通申请已被拒绝"
+			body = "平台拒绝了本次模型开通申请。"
+			if req.Reply != "" {
+				body += "回复：" + req.Reply
+			}
+		}
+		service.NotifyOrgAdminsInsite(h.DB, r.OrgID, service.NotifyTypeModelRequest, title, body)
+	}()
+	if req.Action == "approve" {
+		httpx.OK(c, gin.H{"message": "已批准并开通，客户管理员可立即为子账号授权"})
+		return
+	}
+	httpx.OK(c, gin.H{"message": "已驳回"})
+}
+
+// GetOrgModels GET /api/platform/orgs/:id/models：客户已开通模型 + 全部启用模型（手动管理勾选用）
+func (h *Handler) GetOrgModels(c *gin.Context) {
+	id, ok := httpx.PathID(c)
+	if !ok {
+		return
+	}
+	var granted []string
+	_ = h.DB.Model(&model.OrgModelGrant{}).Where("org_id = ?", id).
+		Order("model_name").Pluck("model_name", &granted).Error
+	var available []model.Model
+	_ = h.DB.Where("status = 1").Order("name").Find(&available).Error
+	if granted == nil {
+		granted = []string{}
+	}
+	httpx.OK(c, gin.H{"granted": granted, "available": available})
+}
+
+// SetOrgModels PUT /api/platform/orgs/:id/models：整体替换客户开通范围。
+// 回收必须级联——同事务删除该客户全部子账号对被回收模型的 user_model_grants，
+// 否则数据面（只查子账号白名单）仍会放行已回收模型
+func (h *Handler) SetOrgModels(c *gin.Context) {
+	id, ok := httpx.PathID(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Models []string `json:"models"`
+	}
+	if !httpx.BindJSON(c, &req) {
+		return
+	}
+	var cnt int64
+	_ = h.DB.Model(&model.Org{}).Where("id = ?", id).Count(&cnt).Error
+	if cnt == 0 {
+		httpx.Fail(c, http.StatusNotFound, "客户不存在")
+		return
+	}
+	// 去重去空 + 校验存在且启用（事务外快速失败）
+	seen := map[string]bool{}
+	dedup := make([]string, 0, len(req.Models))
+	for _, name := range req.Models {
+		if name == "" || seen[name] {
+			continue
+		}
+		var mc int64
+		_ = h.DB.Model(&model.Model{}).Where("name = ? AND status = 1", name).Count(&mc).Error
+		if mc == 0 {
+			httpx.Fail(c, http.StatusBadRequest, "模型不存在或未启用: "+name)
+			return
+		}
+		seen[name] = true
+		dedup = append(dedup, name)
+	}
+	// diff 出新增/回收（整体替换的增量语义，避免删全量重插造成 source 归一）
+	var old []string
+	_ = h.DB.Model(&model.OrgModelGrant{}).Where("org_id = ?", id).Pluck("model_name", &old).Error
+	oldSet := map[string]bool{}
+	for _, n := range old {
+		oldSet[n] = true
+	}
+	newSet := map[string]bool{}
+	for _, n := range dedup {
+		newSet[n] = true
+	}
+	var added, removed []string
+	for _, n := range dedup {
+		if !oldSet[n] {
+			added = append(added, n)
+		}
+	}
+	for _, n := range old {
+		if !newSet[n] {
+			removed = append(removed, n)
+		}
+	}
+	now := time.Now().Unix()
+	operator := middleware.GetUID(c)
+	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		for _, n := range removed {
+			if err := tx.Where("org_id = ? AND model_name = ?", id, n).
+				Delete(&model.OrgModelGrant{}).Error; err != nil {
+				return err
+			}
+			// 级联：该客户全部子账号对被回收模型的授权一并移除（同事务）
+			if err := tx.Exec(`DELETE FROM user_model_grants WHERE model_name = ?
+				AND user_id IN (SELECT id FROM users WHERE org_id = ?)`, n, id).Error; err != nil {
+				return err
+			}
+		}
+		for _, n := range added {
+			if err := tx.Create(&model.OrgModelGrant{
+				OrgID: id, ModelName: n, GrantedBy: opID(operator), Source: "grant", CreatedAt: now,
+			}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "保存失败: "+err.Error())
+		return
+	}
+	// 开通/回收结果站内通知客户管理员（顶栏铃铛）
+	go func() {
+		for _, n := range added {
+			service.NotifyOrgAdminsInsite(h.DB, id, service.NotifyTypeModelRequest,
+				fmt.Sprintf("模型已开通：%s", n),
+				fmt.Sprintf("平台已为客户开通模型「%s」，可在【子账号管理 → 模型授权】为成员勾选。", n))
+		}
+		for _, n := range removed {
+			service.NotifyOrgAdminsInsite(h.DB, id, service.NotifyTypeModelRequest,
+				fmt.Sprintf("模型已被回收：%s", n),
+				fmt.Sprintf("平台回收了模型「%s」。该客户全部子账号的相应授权已同步移除，相关调用将立即被拒绝。", n))
+		}
+	}()
+	httpx.OK(c, gin.H{
+		"message": fmt.Sprintf("已更新：开通 %d 个，回收 %d 个", len(added), len(removed)),
+		"added":   added, "removed": removed,
+	})
+}
 
 // notificationsKeepDays 已读/过期通知的保留期：列表查询时顺手清理，防表无限增长
 const notificationsKeepDays = 30

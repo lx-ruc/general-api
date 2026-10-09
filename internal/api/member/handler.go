@@ -324,9 +324,14 @@ func (h *Handler) ListRequests(c *gin.Context) {
 	httpx.OK(c, rows)
 }
 
-// ListAvailableModels GET /api/member/models/available：全部启用模型 + 本人是否已授权，
-// 供模型申请页勾选（前端过滤掉 granted 的即可，已授权模型重复申请无意义）
+// ListAvailableModels GET /api/member/models/available：客户已开通的启用模型 + 本人是否已授权，
+// 供模型申请页勾选（前端过滤掉 granted 的即可，已授权模型重复申请无意义）。
+// 候选限定客户开通范围（平台级白名单）；想用客户还没开通的模型需请管理员向平台申请
 func (h *Handler) ListAvailableModels(c *gin.Context) {
+	_, o, ok := h.myOrg(c)
+	if !ok {
+		return
+	}
 	type row struct {
 		Name        string `json:"name"`
 		DisplayName string `json:"display_name"`
@@ -339,7 +344,9 @@ func (h *Handler) ListAvailableModels(c *gin.Context) {
 		       CASE WHEN g.user_id IS NULL THEN 0 ELSE 1 END AS granted
 		FROM models m
 		LEFT JOIN user_model_grants g ON g.model_name = m.name AND g.user_id = ?
-		WHERE m.status = 1 ORDER BY m.name`, uid(c)).Scan(&rows).Error
+		WHERE m.status = 1
+		  AND m.name IN (SELECT model_name FROM org_model_grants WHERE org_id = ?)
+		ORDER BY m.name`, uid(c), o.ID).Scan(&rows).Error
 	if rows == nil {
 		rows = []row{}
 	}
@@ -390,9 +397,15 @@ func (h *Handler) CreateRequest(c *gin.Context) {
 		for _, g := range granted {
 			mine[g.ModelName] = true
 		}
+		orgOpen := service.OrgGrantedSet(h.DB, *u.OrgID)
 		for _, n := range names {
 			if !enabled[n] {
 				httpx.Fail(c, http.StatusBadRequest, "模型不存在或已下架："+n)
+				return
+			}
+			// 平台级白名单：客户未开通的模型不可申请（需请管理员先向平台申请开通）
+			if _, open := orgOpen[n]; !open {
+				httpx.Fail(c, http.StatusBadRequest, "模型 "+n+" 尚未在本客户开通，请联系管理员向平台申请")
 				return
 			}
 			if !mine[n] {

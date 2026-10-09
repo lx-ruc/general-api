@@ -42,6 +42,21 @@ type RechargeRequest struct {
 
 func (RechargeRequest) TableName() string { return "recharge_requests" }
 
+// OrgModelRequest 客户向平台申请开通模型（platform_admin 审批），ModelNames 逗号分隔
+type OrgModelRequest struct {
+	ID         int64  `gorm:"primaryKey" json:"id"`
+	OrgID      int64  `json:"org_id"`
+	ModelNames string `json:"model_names"`
+	Reason     string `json:"reason"`
+	Status     string `json:"status"` // pending/approved/rejected
+	HandledBy  *int64 `json:"handled_by"`
+	HandledAt  *int64 `json:"handled_at"`
+	Reply      string `json:"reply"`
+	CreatedAt  int64  `gorm:"autoCreateTime" json:"created_at"`
+}
+
+func (OrgModelRequest) TableName() string { return "org_model_requests" }
+
 // AuditLog 管理台操作审计
 type AuditLog struct {
 	ID        int64  `gorm:"primaryKey" json:"id"`

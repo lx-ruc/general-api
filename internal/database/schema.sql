@@ -247,6 +247,34 @@ CREATE TABLE IF NOT EXISTS org_model_prices (
 );
 CREATE INDEX IF NOT EXISTS idx_org_model_prices_org ON org_model_prices(org_id);
 
+-- 客户级模型白名单：平台开通（审批/手动）后客户才能给子账号授权该模型；
+-- 无记录=未开通，回收=删行（与 user_model_grants 同语义）。
+-- source: grant=审批/手动开通，backfill=存量继承（首次升级自动写入）。
+CREATE TABLE IF NOT EXISTS org_model_grants (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id     INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  model_name TEXT    NOT NULL,
+  granted_by INTEGER,
+  source     TEXT    NOT NULL DEFAULT 'grant',
+  created_at INTEGER NOT NULL,
+  UNIQUE(org_id, model_name)
+);
+CREATE INDEX IF NOT EXISTS idx_org_grants_org ON org_model_grants(org_id);
+
+-- 客户向平台申请开通模型（platform_admin 审批），形状同 recharge_requests
+CREATE TABLE IF NOT EXISTS org_model_requests (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id      INTEGER NOT NULL,
+  model_names TEXT    NOT NULL DEFAULT '',
+  reason      TEXT    NOT NULL DEFAULT '',
+  status      TEXT    NOT NULL DEFAULT 'pending',
+  handled_by  INTEGER,
+  handled_at  INTEGER,
+  reply       TEXT    NOT NULL DEFAULT '',
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_omreq_org ON org_model_requests(org_id, status);
+
 CREATE TABLE IF NOT EXISTS verification_codes (
   email     TEXT PRIMARY KEY,
   code      TEXT    NOT NULL,

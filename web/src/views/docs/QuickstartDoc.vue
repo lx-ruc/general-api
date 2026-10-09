@@ -61,8 +61,13 @@ print(resp.choices[0].message.content)`)
       <h2>客户管理员：组织子账号与授权</h2>
       <ol class="doc-steps">
         <li>
+          <span class="st">为客户申请开通模型</span>
+          <span class="sd">【模型申请】勾选需要的模型向平台提交开通申请（已开通/审批中的不可重复申请），
+            系管理员审批通过后即可给子账号授权；想用的模型不在候选里，多半是客户还没开通。</span>
+        </li>
+        <li>
           <span class="st">创建子账号并授权模型</span>
-          <span class="sd">【子账号管理】新建子账号账号，勾选「模型授权」——只有被授权的模型才会出现在子账号的
+          <span class="sd">【子账号管理】新建子账号账号，勾选「模型授权」（仅限客户已开通的模型）——只有被授权的模型才会出现在子账号的
             <code>/v1/models</code> 列表里，未授权模型调用会被拒绝。</span>
         </li>
         <li>
@@ -113,7 +118,8 @@ print(resp.choices[0].message.content)`)
       <h2>接入检查清单</h2>
       <ul>
         <li>返回 <code>401 invalid_api_key</code> → 密钥填错或未带 <code>Bearer </code> 前缀。</li>
-        <li>返回 <code>403 model_not_allowed</code> → 该模型未授权给你，联系客户管理员。</li>
+        <li>返回 <code>403 model_not_allowed</code> → 该模型未授权给你，联系客户管理员；
+          若客户管理员处也看不到该模型，则是客户尚未开通，需由客户管理员向平台申请开通。</li>
         <li>返回 <code>404</code> → 模型名写错，以「可用模型」列表为准。</li>
         <li>返回 <code>429 rate_limit_error</code> → 密钥触发每分钟请求数上限（默认 60），稍后重试或联系管理员调高。</li>
         <li>流式不生效 → 客户端要按 SSE 处理响应（curl 加 <code>-N</code>，SDK 传 <code>stream=True</code>）。</li>

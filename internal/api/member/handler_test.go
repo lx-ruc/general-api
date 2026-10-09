@@ -406,6 +406,8 @@ func TestCreateRequestModelKind(t *testing.T) {
 		VALUES ('m1', 1000000, 1000000, 1, ?, ?), ('m2', 1000000, 1000000, 1, ?, ?), ('m3', 1000000, 1000000, 0, ?, ?)`,
 		now, now, now, now, now, now).Error
 	_ = e.db.Exec(`INSERT INTO user_model_grants (user_id, model_name, created_at) VALUES (1, 'm1', ?)`, now).Error
+	// 客户已开通 m1/m2（白名单收窄后 member 申请候选 = 开通 ∩ 启用）
+	_ = e.db.Exec(`INSERT INTO org_model_grants (org_id, model_name, created_at) VALUES (1, 'm1', ?), (1, 'm2', ?)`, now, now).Error
 
 	// 模型申请：含已授权的 m1 → 静默剔除后只落 m2
 	w := e.postRequest(`{"models":["m1","m2"],"reason":"项目需要"}`)
@@ -461,6 +463,7 @@ func TestListAvailableModels(t *testing.T) {
 		VALUES ('m1', 1000000, 1000000, 1, ?, ?), ('m2', 1000000, 1000000, 1, ?, ?), ('m3', 1000000, 1000000, 0, ?, ?)`,
 		now, now, now, now, now, now).Error
 	_ = e.db.Exec(`INSERT INTO user_model_grants (user_id, model_name, created_at) VALUES (1, 'm1', ?)`, now).Error
+	_ = e.db.Exec(`INSERT INTO org_model_grants (org_id, model_name, created_at) VALUES (1, 'm1', ?), (1, 'm2', ?)`, now, now).Error
 
 	req := httptest.NewRequest(http.MethodGet, "/api/member/models/available", nil)
 	req.Header.Set("Authorization", "Bearer "+e.token)
@@ -530,5 +533,38 @@ func TestCreateRequestNotifiesOrgAdmin(t *testing.T) {
 	_ = e.db.Raw("SELECT COUNT(*) FROM notifications WHERE user_id = 1").Scan(&selfCnt).Error
 	if selfCnt != 0 {
 		t.Fatalf("提交人不应收到 request_pending，实际 %d 条", selfCnt)
+	}
+}
+
+// T11 白名单收窄：available = 客户已开通 ∩ 启用；申请未开通模型 → 400
+func TestAvailableModelsNarrowedByOrgGrants(t *testing.T) {
+	e := newMemberEnv(t)
+	now := time.Now().Unix()
+	_ = e.db.Exec(`INSERT INTO models (name, input_price, output_price, status, created_at, updated_at)
+		VALUES ('m1', 1000000, 1000000, 1, ?, ?), ('m2', 1000000, 1000000, 1, ?, ?)`,
+		now, now, now, now).Error
+	// 客户仅开通 m1
+	_ = e.db.Exec(`INSERT INTO org_model_grants (org_id, model_name, created_at) VALUES (1, 'm1', ?)`, now).Error
+
+	req := httptest.NewRequest(http.MethodGet, "/api/member/models/available", nil)
+	req.Header.Set("Authorization", "Bearer "+e.token)
+	w := httptest.NewRecorder()
+	e.engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("应 200，得 %d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), `"name":"m2"`) {
+		t.Fatalf("未开通的 m2 不应出现在候选: %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"name":"m1"`) {
+		t.Fatalf("已开通的 m1 应在候选: %s", w.Body.String())
+	}
+	// 申请未开通的 m2 → 400
+	if w := e.postRequest(`{"models":["m2"],"reason":"x"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("申请未开通模型应 400，得 %d: %s", w.Code, w.Body.String())
+	}
+	// 申请已开通未授权的 m1 → 200
+	if w := e.postRequest(`{"models":["m1"],"reason":"x"}`); w.Code != http.StatusOK {
+		t.Fatalf("申请已开通模型应 200，得 %d: %s", w.Code, w.Body.String())
 	}
 }

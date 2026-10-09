@@ -203,6 +203,12 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		plat.PUT("/model-prices/:name", ph.SetOrgModelPrice)
 		plat.DELETE("/model-prices/:name/:orgId", ph.DeleteOrgModelPrice)
 
+		// 客户模型开通：申请审批 + 手动开通/回收
+		plat.GET("/model-requests", ph.ListModelRequests)
+		plat.PUT("/model-requests/:id", ph.HandleModelRequest)
+		plat.GET("/orgs/:id/models", ph.GetOrgModels)
+		plat.PUT("/orgs/:id/models", ph.SetOrgModels)
+
 		plat.GET("/stats/overview", ph.StatsOverview)
 		plat.GET("/usage", ph.ListUsage)
 		plat.GET("/reports/cost-centers", ph.CostCenterCrossReport)
@@ -247,6 +253,9 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 
 		og.GET("/requests", oh.ListRequests)
 		og.PUT("/requests/:id", oh.HandleRequest)
+		og.GET("/model-requests/candidates", oh.ListModelRequestCandidates)
+		og.GET("/model-requests", oh.ListModelRequests)
+		og.POST("/model-requests", oh.CreateModelRequest)
 		og.GET("/recharges", oh.ListRecharges)
 		og.POST("/recharges", oh.CreateRecharge)
 		og.GET("/bank-info", oh.GetBankInfo)

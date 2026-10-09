@@ -68,14 +68,19 @@ func (h *Handler) Models(c *gin.Context) {
 			httpx.OK(c, gin.H{"models": []pgModel{}})
 			return
 		}
+		// 客户级白名单收窄：org_admin 集合 = 本客户子账号授权并集 ∩ 平台已开通。
+		// 数据面（gateway）为性能不做 org 级复查，此处与管理面一致收窄，
+		// 堵回收级联遗漏时「下拉里出现已回收模型」的可见性漏洞
 		filter = ` AND m.name IN (
 			SELECT g.model_name FROM user_model_grants g
-			JOIN users u ON u.id = g.user_id AND u.org_id = ?)`
-		args = append(args, *orgID)
+			JOIN users u ON u.id = g.user_id AND u.org_id = ?)
+			AND m.name IN (SELECT model_name FROM org_model_grants WHERE org_id = ?)`
+		args = append(args, *orgID, *orgID)
 	case model.RoleMember:
 		filter = ` AND m.name IN (
-			SELECT model_name FROM user_model_grants WHERE user_id = ?)`
-		args = append(args, uid)
+			SELECT model_name FROM user_model_grants WHERE user_id = ?)
+			AND m.name IN (SELECT model_name FROM org_model_grants WHERE org_id = ?)`
+		args = append(args, uid, *orgID)
 	default:
 		httpx.Fail(c, http.StatusForbidden, "未知角色")
 		return
@@ -183,14 +188,20 @@ func (h *Handler) modelAllowed(role string, uid int64, orgID *int64, modelName s
 		if orgID == nil {
 			return false
 		}
+		// 与 Models 列表同口径：并集 ∩ 客户已开通（白名单）
 		filter = ` AND m.name IN (
 			SELECT g.model_name FROM user_model_grants g
-			JOIN users u ON u.id = g.user_id AND u.org_id = ?)`
-		args = append(args, *orgID)
+			JOIN users u ON u.id = g.user_id AND u.org_id = ?)
+			AND m.name IN (SELECT model_name FROM org_model_grants WHERE org_id = ?)`
+		args = append(args, *orgID, *orgID)
 	case model.RoleMember:
+		if orgID == nil {
+			return false
+		}
 		filter = ` AND m.name IN (
-			SELECT model_name FROM user_model_grants WHERE user_id = ?)`
-		args = append(args, uid)
+			SELECT model_name FROM user_model_grants WHERE user_id = ?)
+			AND m.name IN (SELECT model_name FROM org_model_grants WHERE org_id = ?)`
+		args = append(args, uid, *orgID)
 	default:
 		return false
 	}

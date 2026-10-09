@@ -230,6 +230,42 @@ export const apiGetBankInfo = () => http.get<any, { bank_info: string }>('/api/p
 export const apiUpdateBankInfo = (bankInfo: string) =>
   http.put<any, { message: string }>('/api/platform/bank-info', { bank_info: bankInfo })
 
+// ---- 模型开通申请审批与客户开通管理 ----
+
+export interface ModelRequestRow {
+  id: number
+  org_id: number
+  org_name: string
+  model_names: string
+  reason: string
+  status: 'pending' | 'approved' | 'rejected'
+  handled_by: number | null
+  handled_at: number | null
+  reply: string
+  created_at: number
+}
+
+export interface ModelRequestPage { list: ModelRequestRow[]; total: number; page: number; page_size: number }
+
+export interface OrgModelsInfo {
+  granted: string[]
+  available: { name: string; display_name: string; vendor: string }[]
+}
+
+export const apiListModelRequests = (params?: any) =>
+  http.get<any, ModelRequestPage>('/api/platform/model-requests', { params })
+
+// 批准=客户立即可给子账号授权这些模型；驳回附回复说明
+export const apiHandleModelRequest = (id: number, action: 'approve' | 'reject', reply = '') =>
+  http.put<any, { message: string }>(`/api/platform/model-requests/${id}`, { action, reply })
+
+export const apiGetOrgModels = (orgId: number) =>
+  http.get<any, OrgModelsInfo>(`/api/platform/orgs/${orgId}/models`)
+
+// 整体替换客户开通范围；回收会级联移除该客户全部子账号的相应授权
+export const apiSetOrgModels = (orgId: number, models: string[]) =>
+  http.put<any, { message: string; added: string[]; removed: string[] }>(`/api/platform/orgs/${orgId}/models`, { models })
+
 // 平台视角对账单
 export const apiOrgStatement = (id: number, month: string) =>
   http.get<any, any>(`/api/platform/orgs/${id}/statement`, { params: { month } })

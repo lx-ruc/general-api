@@ -82,6 +82,9 @@ func newPGEnv(t *testing.T) *pgEnv {
 	mustExec(t, db, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (1, 'm1'), (1, 'm2')`)
 	mustExec(t, db, `INSERT INTO user_model_grants (user_id, model_name, created_at) VALUES
 		(2, 'm1', ?), (2, 'm4', ?), (4, 'm2', ?)`, now, now, now)
+	// 客户已开通 m1/m2/m4（白名单收窄后 playground 集合 = 授权 ∩ 开通 ∩ 可路由）
+	mustExec(t, db, `INSERT INTO org_model_grants (org_id, model_name, created_at) VALUES
+		(1, 'm1', ?), (1, 'm2', ?), (1, 'm4', ?)`, now, now, now)
 
 	cfg := &config.Config{}
 	cfg.Gateway = config.Gateway{
