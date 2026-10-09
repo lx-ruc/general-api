@@ -22,6 +22,15 @@ const errorMsg = ref('')
 const lastUsage = ref<PGUsage | null>(null)
 const aborter = ref<AbortController | null>(null)
 const listEl = ref<HTMLElement>()
+// 流式自动跟随开关：仅当用户本来就停在底部附近才随新内容滚底；
+// 用户向上翻阅历史时置 false，不再打断——直到重新滚回底部或发送新消息
+const stickBottom = ref(true)
+
+function onListScroll() {
+  const el = listEl.value
+  if (!el) return
+  stickBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+}
 
 onMounted(async () => {
   modelsLoading.value = true
@@ -36,6 +45,7 @@ onMounted(async () => {
 })
 
 watch(() => messages.value[messages.value.length - 1]?.content, async () => {
+  if (!stickBottom.value) return
   await nextTick()
   if (listEl.value) listEl.value.scrollTop = listEl.value.scrollHeight
 })
@@ -52,6 +62,7 @@ async function send() {
   errorMsg.value = ''
   lastUsage.value = null
   input.value = ''
+  stickBottom.value = true // 新发送的消息用户必然关注，恢复自动跟随
   messages.value = [...messages.value, { role: 'user', content: text }, { role: 'assistant', content: '' }]
 
   streaming.value = true
@@ -123,7 +134,7 @@ function onKeydown(e: KeyboardEvent) {
     </div>
 
     <!-- 消息区 -->
-    <div ref="listEl" class="pg-list">
+    <div ref="listEl" class="pg-list" @scroll="onListScroll">
       <div v-if="!messages.length" class="pg-empty">
         <template v-if="models.length">
           选择模型后直接对话，走与 API 调用完全一致的路由与计费链路。
