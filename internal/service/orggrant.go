@@ -36,8 +36,10 @@ func BackfillOrgModelGrants(db *gorm.DB) error {
 			return nil
 		}
 		// 单事务：并集继承（幂等）→ 写标记。PG 多实例由咨询锁串行化。
+		// granted_by 的 NULL 必须显式定型：PG 在 DISTINCT 下会把未定型字面量解析为
+		// text，插入 bigint 列报 42804 并导致启动失败（SQLite 不做此检查，故单测不拦）。
 		res := tx.Exec(`INSERT INTO org_model_grants (org_id, model_name, granted_by, source, created_at)
-			SELECT DISTINCT u.org_id, g.model_name, NULL, 'backfill', ?
+			SELECT DISTINCT u.org_id, g.model_name, CAST(NULL AS BIGINT), 'backfill', CAST(? AS BIGINT)
 			FROM user_model_grants g JOIN users u ON u.id = g.user_id
 			WHERE u.org_id IS NOT NULL AND u.org_id > 0
 			ON CONFLICT (org_id, model_name) DO NOTHING`, time.Now().Unix())
