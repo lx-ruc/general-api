@@ -36,6 +36,28 @@ func seedModelsForOrg(t *testing.T, db *gorm.DB, names ...string) {
 			t.Fatal(err)
 		}
 	}
+	// 可见性联动上游 Key 可用性：默认挂一条有启用 Key 的渠道，让种子模型「可路由」。
+	// 需要构造上游不可用场景的用例自行禁用 Key 或不挂渠道
+	seedLiveUpstreamForOrg(t, db, names...)
+}
+
+// seedLiveUpstreamForOrg 造一条启用渠道 + 启用 Key，并把 models 挂到该渠道能力上
+func seedLiveUpstreamForOrg(t *testing.T, db *gorm.DB, names ...string) {
+	t.Helper()
+	now := time.Now().Unix()
+	if err := db.Exec(`INSERT INTO channels (id, name, base_url, path, status, created_at, updated_at)
+		VALUES (1, 'live-ch', 'https://up.example', '/v1/chat/completions', 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO channel_keys (channel_id, key_enc, status, created_at, updated_at)
+		VALUES (1, 'seed-key', 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range names {
+		if err := db.Exec(`INSERT INTO channel_abilities (channel_id, model_name) VALUES (1, ?)`, n).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 // waitForOrgModelNotification 轮询等待异步站内通知落库（最多 1s）
@@ -163,5 +185,39 @@ func TestCreateModelRequest(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), `"granted":true`) || !strings.Contains(w.Body.String(), `"pending":true`) {
 		t.Fatalf("候选应带 granted/pending 标记: %s", w.Body.String())
+	}
+}
+
+// 可见性联动上游 Key：授权弹窗候选不含 Key 全禁用渠道承接的模型
+// （给成员授权一个上游已死的模型只会换来调用 503）
+func TestMemberModelsHideDeadUpstream(t *testing.T) {
+	e := newModelRequestEnv(t)
+	now := time.Now().Unix()
+	seedModelsForOrg(t, e.db, "alive", "dead")
+	if err := e.db.Exec(`INSERT INTO users (id, org_id, username, password_hash, role, status, created_at, updated_at)
+		VALUES (10, 1, 'mem10', 'x', 'member', 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	// dead 挂到独立渠道，唯一 Key 已禁用；把 dead 从 live 渠道摘下
+	if err := e.db.Exec(`INSERT INTO channels (id, name, base_url, path, status, created_at, updated_at)
+		VALUES (2, 'dead-ch', 'https://up2.example', '/v1/chat/completions', 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	_ = e.db.Exec(`INSERT INTO channel_keys (channel_id, key_enc, status, remark, created_at, updated_at)
+		VALUES (2, 'dead-key', 0, '上游 401', ?, ?)`, now, now).Error
+	_ = e.db.Exec(`INSERT INTO channel_abilities (channel_id, model_name) VALUES (2, 'dead')`).Error
+	_ = e.db.Exec(`DELETE FROM channel_abilities WHERE channel_id = 1 AND model_name = 'dead'`).Error
+	// 客户两个模型都已开通
+	_ = e.db.Exec(`INSERT INTO org_model_grants (org_id, model_name, created_at) VALUES (1, 'dead', ?), (1, 'alive', ?)`, now, now).Error
+
+	w := e.do(http.MethodGet, "/api/org/members/10/models", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("应 200，得 %d", w.Code)
+	}
+	if strings.Contains(w.Body.String(), `"name":"dead"`) {
+		t.Fatalf("上游 Key 全禁用的模型不应出现在授权候选: %s", w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"name":"alive"`) {
+		t.Fatalf("有可用 Key 的模型应在授权候选: %s", w.Body.String())
 	}
 }

@@ -96,8 +96,9 @@ print(resp.choices[0].message.content)`)
         </li>
         <li>
           <span class="st">确认可用模型</span>
-          <span class="sd">【可用模型】列出你被授权且已启用的模型及其单价；不确定模型名时以这里为准，
-            也可直接调用 <code>GET /v1/models</code>。</span>
+          <span class="sd">【可用模型】列出你被授权、已启用且上游渠道当前有可用密钥的模型及其单价；
+            不确定模型名时以这里为准，也可直接调用 <code>GET /v1/models</code>。
+            平台更换失效密钥后模型会自动回到列表，无需重新授权。</span>
         </li>
         <li>
           <span class="st">发起第一次调用</span>
@@ -121,6 +122,8 @@ print(resp.choices[0].message.content)`)
         <li>返回 <code>403 model_not_allowed</code> → 该模型未授权给你，联系客户管理员；
           若客户管理员处也看不到该模型，则是客户尚未开通，需由客户管理员向平台申请开通。</li>
         <li>返回 <code>404</code> → 模型名写错，以「可用模型」列表为准。</li>
+        <li>模型昨天还能调、今天在「可用模型」里消失了 → 平台侧该模型的上游密钥失效（如被上游吊销），
+          平台更换密钥后自动恢复，可联系平台确认进度。</li>
         <li>返回 <code>429 rate_limit_error</code> → 密钥触发每分钟请求数上限（默认 60），稍后重试或联系管理员调高。</li>
         <li>流式不生效 → 客户端要按 SSE 处理响应（curl 加 <code>-N</code>，SDK 传 <code>stream=True</code>）。</li>
       </ul>

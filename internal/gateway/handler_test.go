@@ -102,6 +102,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	v1.POST("/embeddings", h.Embeddings)
 	v1.POST("/messages", h.Messages)
 	v1.POST("/responses", h.Responses)
+	v1.GET("/models", h.ListModels)
 	return &testEnv{f: f, h: h, cd: cd, m: m, engine: engine, apiKey: apiKey, userID: 1, orgID: 1, cfg: cfg}
 }
 
@@ -1130,5 +1131,42 @@ func TestOrgModelPriceOverrideBilling(t *testing.T) {
 	}
 	if cost, _, _ := e.usageRow(t, e.lastUsage(t)); cost != 38 {
 		t.Fatalf("删除覆盖后 cost 应回 38，得 %d", cost)
+	}
+}
+
+// /v1/models 只宣传当前可路由的模型：已授权但承接渠道 Key 全禁用的模型
+// 不出现在列表（照列表调用只会吃到 503 channel_key_missing），Key 恢复即回归
+func TestListModelsHidesDeadUpstream(t *testing.T) {
+	e := newTestEnv(t)
+	now := time.Now().Unix()
+	// m1 挂启用 Key 的渠道（newTestEnv 只造了模型与授权，无渠道）
+	e.seedUpstreamChannel(t, 1, "live", "http://live.example", []string{"k1"}, 0)
+	// dead 模型：启用且已授权，但承接渠道唯一 Key 被禁用（如上游 401 自动禁用）
+	mustExec(t, e.f, `INSERT INTO models (name, input_price, output_price, status, created_at, updated_at)
+		VALUES ('dead', 1000000, 1000000, 1, ?, ?)`, now, now)
+	mustExec(t, e.f, `INSERT INTO user_model_grants (user_id, model_name, created_at) VALUES (1, 'dead', ?)`, now)
+	mustExec(t, e.f, `INSERT INTO channels (id,name,base_url,path,weight,priority,status,created_at,updated_at)
+		VALUES (2,'dead-ch','http://up.example','/v1/chat/completions',1,0,1,?,?)`, now, now)
+	mustExec(t, e.f, `INSERT INTO channel_keys (channel_id,key_enc,weight,status,remark,created_at,updated_at)
+		VALUES (2,'k1',1,0,'上游 401',?,?)`, now, now)
+	mustExec(t, e.f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (2, 'dead')`)
+
+	get := func() string {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		req.Header.Set("Authorization", "Bearer "+e.apiKey)
+		w := httptest.NewRecorder()
+		e.engine.ServeHTTP(w, req)
+		return w.Body.String()
+	}
+	if body := get(); strings.Contains(body, `"dead"`) {
+		t.Fatalf("Key 全禁用的模型不应出现在 /v1/models: %s", body)
+	}
+	if body := get(); !strings.Contains(body, `"m1"`) {
+		t.Fatalf("可路由的 m1 应出现: %s", body)
+	}
+	// 换上新 Key → 立即恢复宣传
+	mustExec(t, e.f, `UPDATE channel_keys SET status = 1 WHERE channel_id = 2`)
+	if body := get(); !strings.Contains(body, `"dead"`) {
+		t.Fatalf("Key 恢复后模型应重新出现: %s", body)
 	}
 }

@@ -345,11 +345,15 @@ func (h *Handler) GetMemberModels(c *gin.Context) {
 	var granted []string
 	_ = h.DB.Model(&model.UserModelGrant{}).Where("user_id = ?", id).
 		Order("model_name").Pluck("model_name", &granted).Error
-	// 候选收窄为客户已开通模型（平台级白名单）；已授权但已被平台回收的仍会出现在
-	// granted 里，前端展示已有授权不受影响
+	// 候选收窄为客户已开通模型（平台级白名单）且当前有可用上游 Key——
+	// 给成员授权一个上游已死的模型只会换来调用 503；已授权但已被平台回收的
+	// 仍会出现在 granted 里，前端展示已有授权不受影响
 	var available []model.Model
-	_ = h.DB.Where("status = 1 AND name IN (SELECT model_name FROM org_model_grants WHERE org_id = ?)", oid).
-		Order("name").Find(&available).Error
+	_ = h.DB.Raw(`SELECT m.* FROM models m
+		WHERE m.status = 1
+		  AND m.name IN (SELECT model_name FROM org_model_grants WHERE org_id = ?)
+		  AND `+service.ModelHasLiveUpstream+`
+		ORDER BY m.name`, oid).Scan(&available).Error
 	if granted == nil {
 		granted = []string{}
 	}
@@ -438,12 +442,17 @@ func (h *Handler) ListModelRequestCandidates(c *gin.Context) {
 		Vendor      string `json:"vendor"`
 		Granted     bool   `json:"granted"`
 		Pending     bool   `json:"pending"`
+		// Routable=false 表示该模型当前没有可用上游 Key（如渠道 Key 因上游 401
+		// 被自动禁用）——仍可申请（平台可能换 Key/换渠道），但前端要提示开通后
+		// 未必立即可用
+		Routable bool `json:"routable"`
 	}
 	var rows []row
 	_ = h.DB.Raw(`
 		SELECT m.name, m.display_name, m.vendor,
 		       CASE WHEN og.id IS NULL THEN 0 ELSE 1 END AS granted,
-		       CASE WHEN pr.id IS NULL THEN 0 ELSE 1 END AS pending
+		       CASE WHEN pr.id IS NULL THEN 0 ELSE 1 END AS pending,
+		       CASE WHEN `+service.ModelHasLiveUpstream+` THEN 1 ELSE 0 END AS routable
 		FROM models m
 		LEFT JOIN org_model_grants og ON og.model_name = m.name AND og.org_id = ?
 		LEFT JOIN (SELECT DISTINCT id, model_names AS model_name FROM org_model_requests

@@ -1219,6 +1219,8 @@ func (h *Handler) ListModels(c *gin.Context) {
 	_ = h.DB.Order("name").Find(&models).Error
 	counts, chNames := h.modelChannelCounts()
 	priceCnts := h.modelOrgPriceCounts()
+	live := h.modelLiveUpstreamNames()
+	hasCh := h.modelEnabledChannelModels()
 	list := make([]gin.H, 0, len(models))
 	for _, m := range models {
 		list = append(list, gin.H{
@@ -1231,9 +1233,38 @@ func (h *Handler) ListModels(c *gin.Context) {
 			"channel_count":   counts[m.Name],
 			"channel_names":   chNames[m.Name],
 			"org_price_count": priceCnts[m.Name],
+			// 当前是否有可用上游 Key（channel_count 只数渠道，这里给出布尔口径
+			// 供前端亮「上游暂不可用」标签；启用 × 渠道启用 × 有 Key 三者同时满足才为真）
+			"routable": live[m.Name],
+			// 有启用渠道承接但 Key 全不可用时为真——用于区分「未接渠道」与「密钥失效」
+			"has_enabled_channel": hasCh[m.Name],
 		})
 	}
 	httpx.OK(c, list)
+}
+
+// modelLiveUpstreamNames 当前有可用上游 Key 的模型名集合（谓词语义见 service.ModelHasLiveUpstream）
+func (h *Handler) modelLiveUpstreamNames() map[string]bool {
+	var names []string
+	_ = h.DB.Raw(`SELECT m.name FROM models m WHERE ` + service.ModelHasLiveUpstream).Scan(&names).Error
+	set := make(map[string]bool, len(names))
+	for _, n := range names {
+		set[n] = true
+	}
+	return set
+}
+
+// modelEnabledChannelModels 有启用渠道承接（但未必有可用 Key）的模型名集合：
+// 与 routable 组合可区分「未接渠道」与「已接渠道但密钥全部失效/未配置」（如上游 401 自动禁用后）
+func (h *Handler) modelEnabledChannelModels() map[string]bool {
+	var names []string
+	_ = h.DB.Raw(`SELECT DISTINCT ca.model_name FROM channel_abilities ca
+		JOIN channels c ON c.id = ca.channel_id WHERE c.status = 1`).Scan(&names).Error
+	set := make(map[string]bool, len(names))
+	for _, n := range names {
+		set[n] = true
+	}
+	return set
 }
 
 // CreateModel POST /api/platform/models

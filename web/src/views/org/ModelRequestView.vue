@@ -79,11 +79,16 @@ function toggleModel(name: string, checked: boolean) {
         </el-table-column>
         <el-table-column prop="display_name" label="说明" min-width="160" />
         <el-table-column prop="vendor" label="厂商" width="110" />
-        <el-table-column label="状态" width="100" align="center">
+        <el-table-column label="状态" width="170" align="center">
           <template #default="{ row }">
             <el-tag v-if="row.granted" size="small" type="success">已开通</el-tag>
             <el-tag v-else-if="row.pending" size="small" type="warning">审批中</el-tag>
             <el-tag v-else size="small" type="info" effect="plain">可申请</el-tag>
+            <!-- 上游密钥失效仍可申请（平台换密钥后即恢复），但先亮牌避免开通过了调不通 -->
+            <el-tooltip v-if="row.routable === false" placement="top"
+              content="平台已接渠道但上游密钥暂时不可用，开通后需等平台更换密钥才能调用">
+              <el-tag size="small" type="danger" effect="plain" style="margin-left: 4px">上游暂不可用</el-tag>
+            </el-tooltip>
           </template>
         </el-table-column>
       </el-table>

@@ -346,6 +346,7 @@ func (h *Handler) ListAvailableModels(c *gin.Context) {
 		LEFT JOIN user_model_grants g ON g.model_name = m.name AND g.user_id = ?
 		WHERE m.status = 1
 		  AND m.name IN (SELECT model_name FROM org_model_grants WHERE org_id = ?)
+		  AND `+service.ModelHasLiveUpstream+`
 		ORDER BY m.name`, uid(c), o.ID).Scan(&rows).Error
 	if rows == nil {
 		rows = []row{}

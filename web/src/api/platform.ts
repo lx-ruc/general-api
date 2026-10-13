@@ -134,6 +134,10 @@ export interface MModel {
   channel_names?: string[]
   /** 已设客户覆盖价的客户数（默认价 0 但有客户价时，仅这些客户计费） */
   org_price_count?: number
+  /** 当前是否可路由（模型启用 × 有启用渠道承接 × 有可用密钥）；false 时数据面调不通 */
+  routable?: boolean
+  /** 有启用渠道承接（但密钥可能全部失效）；用于区分「未接渠道」与「上游密钥不可用」 */
+  has_enabled_channel?: boolean
 }
 
 export const apiListModels = () => http.get<any, MModel[]>('/api/platform/models')

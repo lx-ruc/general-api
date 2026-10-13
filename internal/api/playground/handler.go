@@ -13,6 +13,7 @@ import (
 	"token-gateway/internal/httpx"
 	"token-gateway/internal/middleware"
 	"token-gateway/internal/model"
+	"token-gateway/internal/service"
 )
 
 // 在线体验：管理台顶栏对话框，JWT 鉴权后注入合成 KeyInfo 复用数据面完整编排
@@ -45,12 +46,14 @@ type pgModel struct {
 	Vendor      string `json:"vendor"`
 }
 
-// routableJoin 可路由模型的公共 JOIN：启用模型 × 启用渠道（channel_abilities）
+// routableJoin 可路由模型的公共 JOIN：启用模型 × 启用渠道（channel_abilities）×
+// 渠道有可用上游 Key（service.ModelHasLiveUpstream，口径与数据面候选选择一致）。
+// Key 全部失效的模型不进体验下拉，避免选了就报 channel_key_missing
 const routableJoin = `
 	FROM models m
 	JOIN channel_abilities ab ON ab.model_name = m.name
 	JOIN channels ch ON ch.id = ab.channel_id AND ch.status = 1
-	WHERE m.status = 1`
+	WHERE m.status = 1 AND ` + service.ModelHasLiveUpstream
 
 // Models GET /api/playground/models 按角色返回可体验的模型列表
 func (h *Handler) Models(c *gin.Context) {

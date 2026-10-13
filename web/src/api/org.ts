@@ -113,6 +113,8 @@ export interface ModelRequestCandidate {
   vendor: string
   granted: boolean
   pending: boolean
+  /** 平台侧当前是否有可用上游密钥；false = 已接渠道但密钥失效/未配置 */
+  routable?: boolean
 }
 
 export interface OrgModelRequestRow {

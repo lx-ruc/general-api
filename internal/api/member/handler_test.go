@@ -455,6 +455,26 @@ func TestCreateRequestModelKind(t *testing.T) {
 	}
 }
 
+// seedLiveUpstream 造「启用渠道 + 启用 Key」并把指定模型挂到渠道能力上。
+// 可见性联动上游 Key 可用性后，种子模型必须可路由才会出现在各可用列表里
+func seedLiveUpstream(t *testing.T, db *gorm.DB, names ...string) {
+	t.Helper()
+	now := time.Now().Unix()
+	if err := db.Exec(`INSERT INTO channels (id, name, base_url, path, status, created_at, updated_at)
+		VALUES (1, 'live-ch', 'https://up.example', '/v1/chat/completions', 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO channel_keys (channel_id, key_enc, status, created_at, updated_at)
+		VALUES (1, 'seed-key', 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range names {
+		if err := db.Exec(`INSERT INTO channel_abilities (channel_id, model_name) VALUES (1, ?)`, n).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 // available 列表：全部启用模型 + 本人 granted 标记（下架模型不出现）
 func TestListAvailableModels(t *testing.T) {
 	e := newMemberEnv(t)
@@ -462,6 +482,7 @@ func TestListAvailableModels(t *testing.T) {
 	_ = e.db.Exec(`INSERT INTO models (name, input_price, output_price, status, created_at, updated_at)
 		VALUES ('m1', 1000000, 1000000, 1, ?, ?), ('m2', 1000000, 1000000, 1, ?, ?), ('m3', 1000000, 1000000, 0, ?, ?)`,
 		now, now, now, now, now, now).Error
+	seedLiveUpstream(t, e.db, "m1", "m2")
 	_ = e.db.Exec(`INSERT INTO user_model_grants (user_id, model_name, created_at) VALUES (1, 'm1', ?)`, now).Error
 	_ = e.db.Exec(`INSERT INTO org_model_grants (org_id, model_name, created_at) VALUES (1, 'm1', ?), (1, 'm2', ?)`, now, now).Error
 
@@ -543,6 +564,7 @@ func TestAvailableModelsNarrowedByOrgGrants(t *testing.T) {
 	_ = e.db.Exec(`INSERT INTO models (name, input_price, output_price, status, created_at, updated_at)
 		VALUES ('m1', 1000000, 1000000, 1, ?, ?), ('m2', 1000000, 1000000, 1, ?, ?)`,
 		now, now, now, now).Error
+	seedLiveUpstream(t, e.db, "m1", "m2")
 	// 客户仅开通 m1
 	_ = e.db.Exec(`INSERT INTO org_model_grants (org_id, model_name, created_at) VALUES (1, 'm1', ?)`, now).Error
 
@@ -566,5 +588,42 @@ func TestAvailableModelsNarrowedByOrgGrants(t *testing.T) {
 	// 申请已开通未授权的 m1 → 200
 	if w := e.postRequest(`{"models":["m1"],"reason":"x"}`); w.Code != http.StatusOK {
 		t.Fatalf("申请已开通模型应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// 可见性联动上游 Key：模型启用且客户已开通，但承接渠道的 Key 全部禁用
+// （如上游 401 自动禁用）→ 不进 available 候选；换新 Key 后恢复
+func TestAvailableModelsHideDeadUpstream(t *testing.T) {
+	e := newMemberEnv(t)
+	now := time.Now().Unix()
+	_ = e.db.Exec(`INSERT INTO models (name, input_price, output_price, status, created_at, updated_at)
+		VALUES ('dead', 1000000, 1000000, 1, ?, ?), ('alive', 1000000, 1000000, 1, ?, ?)`,
+		now, now, now, now).Error
+	seedLiveUpstream(t, e.db, "alive")
+	// dead 挂在另一条渠道上，唯一 Key 已被禁用（模拟上游 401 自动禁用后的状态）
+	_ = e.db.Exec(`INSERT INTO channels (id, name, base_url, path, status, created_at, updated_at)
+		VALUES (2, 'dead-ch', 'https://up2.example', '/v1/chat/completions', 1, ?, ?)`, now, now).Error
+	_ = e.db.Exec(`INSERT INTO channel_keys (channel_id, key_enc, status, remark, created_at, updated_at)
+		VALUES (2, 'dead-key', 0, '上游 401', ?, ?)`, now, now).Error
+	_ = e.db.Exec(`INSERT INTO channel_abilities (channel_id, model_name) VALUES (2, 'dead')`).Error
+	_ = e.db.Exec(`INSERT INTO org_model_grants (org_id, model_name, created_at) VALUES (1, 'dead', ?), (1, 'alive', ?)`, now, now).Error
+
+	get := func() string {
+		req := httptest.NewRequest(http.MethodGet, "/api/member/models/available", nil)
+		req.Header.Set("Authorization", "Bearer "+e.token)
+		w := httptest.NewRecorder()
+		e.engine.ServeHTTP(w, req)
+		return w.Body.String()
+	}
+	if body := get(); strings.Contains(body, `"name":"dead"`) {
+		t.Fatalf("上游 Key 全禁用的模型不应出现在候选: %s", body)
+	}
+	if body := get(); !strings.Contains(body, `"name":"alive"`) {
+		t.Fatalf("有可用 Key 的模型应出现在候选: %s", body)
+	}
+	// 平台换上新 Key → dead 立即恢复可见（派生查询，无需改模型状态）
+	_ = e.db.Exec(`UPDATE channel_keys SET status = 1 WHERE channel_id = 2`).Error
+	if body := get(); !strings.Contains(body, `"name":"dead"`) {
+		t.Fatalf("Key 恢复后模型应重新可见: %s", body)
 	}
 }

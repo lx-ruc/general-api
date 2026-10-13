@@ -1107,7 +1107,9 @@ func DisablePoolKey(db *gorm.DB, channelID, keyID int64, status int) {
 	slog.Warn("已自动禁用渠道 Key", "channel_id", channelID, "key_id", keyID, "status", status)
 }
 
-// ListModels GET /v1/models：该 key 授权范围内启用的模型（OpenAI list 格式）
+// ListModels GET /v1/models：该 key 授权范围内、当前可路由的启用模型（OpenAI list 格式）。
+// 可路由 = 有启用渠道且渠道有可用上游 Key：Key 全部失效（如上游 401 自动禁用）的
+// 模型不再对外宣传，避免客户端照列表调用吃到 503 channel_key_missing
 func (h *Handler) ListModels(c *gin.Context) {
 	ki := middleware.GetKeyInfo(c)
 	var rows []struct {
@@ -1118,7 +1120,7 @@ func (h *Handler) ListModels(c *gin.Context) {
 	if err := h.DB.Raw(`
 		SELECT m.name, m.display_name, m.vendor
 		FROM user_model_grants g JOIN models m ON m.name = g.model_name
-		WHERE g.user_id = ? AND m.status = 1
+		WHERE g.user_id = ? AND m.status = 1 AND `+service.ModelHasLiveUpstream+`
 		ORDER BY m.name`, ki.UserID).Scan(&rows).Error; err != nil {
 		openaiError(c, http.StatusInternalServerError, "internal_error", "failed to list models")
 		return
