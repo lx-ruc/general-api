@@ -63,6 +63,7 @@ ok "git $(git --version | awk '{print $3}') / curl / openssl / sqlite3 就绪"
 # ============================================================================
 step "Docker Engine 与 Compose 插件"
 # ============================================================================
+FRESH_DOCKER=0
 if ! command -v docker >/dev/null 2>&1; then
     info "安装 Docker（发行版源）"
     if [ "$PKGINST" = "apt" ]; then
@@ -72,6 +73,13 @@ if ! command -v docker >/dev/null 2>&1; then
         (yum install -y -q docker 2>/dev/null || dnf install -y -q docker) \
             || die "请先按 Docker 官方文档安装 Engine 与 compose 插件后重跑本脚本"
     fi
+    FRESH_DOCKER=1
+fi
+# 新装 Docker 且无 daemon.json：写入国内镜像加速（直连 Docker Hub 拉基础镜像常超时）
+if [ "$FRESH_DOCKER" -eq 1 ] && [ ! -f /etc/docker/daemon.json ]; then
+    mkdir -p /etc/docker
+    printf '{\n  "registry-mirrors": ["https://docker.m.daocloud.io"]\n}\n' > /etc/docker/daemon.json
+    info "已配置镜像加速（daocloud）；如需换源请编辑 /etc/docker/daemon.json"
 fi
 systemctl enable --now docker >/dev/null 2>&1 || true
 docker info >/dev/null 2>&1 || die "Docker 未运行：systemctl status docker 排查"
