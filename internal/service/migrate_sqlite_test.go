@@ -2,6 +2,7 @@ package service
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"token-gateway/internal/config"
@@ -42,6 +43,12 @@ func TestMigrateFromSQLite(t *testing.T) {
 		// 切 PG 搬数据会静默丢充值审批与操作审计流水
 		`INSERT INTO recharge_requests (id, org_id, amount, voucher, status, handled_by, handled_at, reply, created_at) VALUES (1, 1, 500, 'V1', 'approved', 1, 1, 'ok', 1)`,
 		`INSERT INTO audit_logs (id, actor_id, actor, method, path, status, detail, ip, created_at) VALUES (1, 1, 'u1', 'POST', '/api/x', 200, 'd', '127.0.0.1', 1)`,
+		// 回归点：org_model_* 与 notifications 也曾整体漏迁——丢客户差异化定价
+		// （计费直接回落平台价）与模型开通白名单，靠漏表守卫防再犯
+		`INSERT INTO org_model_grants (id, org_id, model_name, granted_by, source, created_at) VALUES (1, 1, 'm1', NULL, 'grant', 1)`,
+		`INSERT INTO org_model_prices (id, org_id, model_name, input_price, output_price, created_at, updated_at) VALUES (1, 1, 'm1', 100, 200, 1, 1)`,
+		`INSERT INTO org_model_requests (id, org_id, model_names, reason, status, created_at) VALUES (1, 1, 'm1', 'r', 'pending', 1)`,
+		`INSERT INTO notifications (id, user_id, type, title, body, created_at) VALUES (1, 1, 't', '标题', '正文', 1)`,
 	}
 	for _, q := range seed {
 		if err := src.Exec(q).Error; err != nil {
@@ -69,6 +76,8 @@ func TestMigrateFromSQLite(t *testing.T) {
 	for _, tc := range []struct{ table string; want int64 }{
 		{"orgs", 1}, {"users", 1}, {"settings", 1},
 		{"recharge_requests", 1}, {"audit_logs", 1},
+		{"org_model_grants", 1}, {"org_model_prices", 1},
+		{"org_model_requests", 1}, {"notifications", 1},
 	} {
 		var got int64
 		if err := dst.Table(tc.table).Count(&got).Error; err != nil {
@@ -94,5 +103,58 @@ func TestMigrateFromSQLite(t *testing.T) {
 	_ = dst.Table("users").Count(&n).Error
 	if n != 1 {
 		t.Fatalf("重复导入了数据: users=%d", n)
+	}
+}
+
+// 漏表守卫：源库出现清单未覆盖的表（模拟 schema.sql 加了新表但迁移清单没同步）
+// 必须硬失败并点名漏网表；瞬态白名单内的表（验证码等）即便有数据也不触发。
+// 守卫先于复制执行：失败时目标库不应残留任何已搬数据。
+func TestMigrateFromSQLiteUncoveredTableGuard(t *testing.T) {
+	srcPath := filepath.Join(t.TempDir(), "src.db")
+	src, err := database.Open(config.Database{Driver: "sqlite", Path: srcPath})
+	if err != nil {
+		t.Fatalf("打开源库失败: %v", err)
+	}
+	if err := database.Migrate(src); err != nil {
+		t.Fatalf("建源库 schema 失败: %v", err)
+	}
+	seed := []string{
+		`INSERT INTO orgs (id, name, quota_limit, status, created_at, updated_at) VALUES (1, 'o1', 1000, 1, 0, 0)`,
+		`INSERT INTO verification_codes (email, code, expire_at, sent_at) VALUES ('a@b.c', '123456', 99, 1)`,
+		`CREATE TABLE future_business (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)`,
+		`INSERT INTO future_business (id, payload) VALUES (1, 'x')`,
+	}
+	for _, q := range seed {
+		if err := src.Exec(q).Error; err != nil {
+			t.Fatalf("造源数据失败: %v (%s)", err, q)
+		}
+	}
+	if sqlDB, _ := src.DB(); sqlDB != nil {
+		_ = sqlDB.Close()
+	}
+
+	dst, err := database.Open(config.Database{Driver: "sqlite", Path: filepath.Join(t.TempDir(), "dst.db")})
+	if err != nil {
+		t.Fatalf("打开目标库失败: %v", err)
+	}
+	if err := database.Migrate(dst); err != nil {
+		t.Fatalf("建目标库 schema 失败: %v", err)
+	}
+	t.Cleanup(func() { sqlDB, _ := dst.DB(); _ = sqlDB.Close() })
+
+	err = MigrateFromSQLite(dst, srcPath)
+	if err == nil {
+		t.Fatal("源库存在未覆盖表时应报错，而非静默丢表")
+	}
+	if !strings.Contains(err.Error(), "future_business") {
+		t.Fatalf("错误信息应点名漏网表 future_business: %v", err)
+	}
+	if strings.Contains(err.Error(), "verification_codes") {
+		t.Fatalf("瞬态白名单表不应被报为漏网: %v", err)
+	}
+	var n int64
+	_ = dst.Table("orgs").Count(&n).Error
+	if n != 0 {
+		t.Fatalf("守卫应先于复制执行，目标库不应有数据: orgs=%d", n)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"gorm.io/gorm"
 
@@ -11,13 +12,21 @@ import (
 	"token-gateway/internal/database"
 )
 
-// 迁移表顺序（满足外键依赖）
+// 迁移表顺序（满足外键依赖）。
+// 历史教训（两回）：recharge_requests/audit_logs、org_model_*/notifications 都曾漏在
+// 清单外，切 PG 静默丢数据——清单必须与 schema.sql 的业务表保持一致，漏表由下方
+// 源表差集守卫兜底报错，不允许静默。
 var migrateTables = []string{
 	"orgs", "users", "channels", "channel_keys", "models", "channel_abilities",
 	"user_model_grants", "cost_centers", "api_keys", "access_tokens", "usage_logs",
-	"quota_grants", "quota_requests", "recharge_requests", "audit_logs",
-	"period_balances", "vendor_bills", "settings",
+	"quota_grants", "quota_requests", "recharge_requests",
+	"org_model_prices", "org_model_grants", "org_model_requests", "notifications",
+	"audit_logs", "period_balances", "vendor_bills", "settings",
 }
+
+// 刻意不迁的瞬态表：分钟级时效（验证码/重置令牌），迁移停机窗口内必然过期，
+// 搬过去只剩误导。新增瞬态表放这里，业务表一律进 migrateTables。
+var migrateTransientTables = []string{"verification_codes", "password_reset_tokens"}
 
 // MigrateFromSQLite 把一个 SQLite 库的全部业务数据搬到当前库（通常为 postgres）。
 // 目标表非空时跳过该表（防重复导入）；迁移后打印逐表行数核对。
@@ -33,6 +42,12 @@ func MigrateFromSQLite(dst *gorm.DB, srcPath string) error {
 	}
 	sqlSrc, _ := src.DB()
 	defer sqlSrc.Close()
+
+	// 漏表守卫：源库存在而清单未覆盖的表（瞬态白名单除外）→ 拒迁报错。
+	// schema.sql 未来新增表若忘了同步清单，这里硬失败而不是静默丢数据。
+	if err := guardAllTablesCovered(src); err != nil {
+		return err
+	}
 
 	var totalSrc, totalDst int64
 	for _, t := range migrateTables {
@@ -96,6 +111,34 @@ func MigrateFromSQLite(dst *gorm.DB, srcPath string) error {
 	slog.Info("SQLite → 当前库 迁移结束", "总行数", totalDst)
 	if totalDst != totalSrc {
 		return fmt.Errorf("存在被跳过的表：源总计 %d 行，实际迁移 %d 行", totalSrc, totalDst)
+	}
+	return nil
+}
+
+// guardAllTablesCovered 源库用户表必须全部落在 migrateTables ∪ migrateTransientTables，
+// 否则报错列出漏网表。检查的是表存在性而非行数：空表也必须被显式归类，
+// 迫使新增 schema 时做出有意识的决定，而不是靠运气。
+func guardAllTablesCovered(src *gorm.DB) error {
+	var names []string
+	if err := src.Raw(
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`,
+	).Scan(&names).Error; err != nil {
+		return fmt.Errorf("读取源库表清单失败: %w", err)
+	}
+	covered := make(map[string]struct{}, len(migrateTables)+len(migrateTransientTables))
+	for _, t := range append(append([]string{}, migrateTables...), migrateTransientTables...) {
+		covered[t] = struct{}{}
+	}
+	var missing []string
+	for _, n := range names {
+		if _, ok := covered[n]; !ok {
+			missing = append(missing, n)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf(
+			"源库存在未纳入迁移清单的表：%s；请在 migrate_sqlite.go 的 migrateTables（业务表）或 migrateTransientTables（瞬态表）补齐后重跑，避免静默丢数据",
+			strings.Join(missing, ", "))
 	}
 	return nil
 }
