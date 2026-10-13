@@ -756,11 +756,17 @@ func TestChannelRequiresKeyForModels(t *testing.T) {
 		t.Fatalf("删最后一把 Key 后能力应清空，得 %d", abCount)
 	}
 	// models 行仍保留：渠道保存会兜底登记模型（价格 0，需管理台「模型定价」定价；
-	// 定价已从渠道侧收敛到模型定价页）
-	var mCount int64
-	db.Raw("SELECT COUNT(*) FROM models WHERE name = 'm1' AND status = 1 AND input_price = 0 AND output_price = 0").Scan(&mCount)
-	if mCount != 1 {
-		t.Fatalf("渠道保存应兜底登记价格 0 的启用模型行，得 %d", mCount)
+	// 定价已从渠道侧收敛到模型定价页）。最后一把 Key 删光后模型失去全部可用上游，
+	// 按联动规则自动停用（status=0 + auto_disabled_at>0；换回 Key 自动恢复，定价不动）
+	var mRow struct{ Status, AutoAt int64 }
+	db.Raw("SELECT status AS status, auto_disabled_at AS auto_at FROM models WHERE name = 'm1'").Scan(&mRow)
+	if mRow.Status != 0 || mRow.AutoAt <= 0 {
+		t.Fatalf("删光 Key 后模型应自动停用（status=0, auto_disabled_at>0），得 %+v", mRow)
+	}
+	var priceRow int64
+	db.Raw("SELECT COUNT(*) FROM models WHERE name = 'm1' AND input_price = 0 AND output_price = 0").Scan(&priceRow)
+	if priceRow != 1 {
+		t.Fatalf("模型行与价格 0 应保留，得 %d", priceRow)
 	}
 }
 

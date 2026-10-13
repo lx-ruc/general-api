@@ -705,6 +705,8 @@ func (h *Handler) CreateChannel(c *gin.Context) {
 		httpx.Fail(c, http.StatusInternalServerError, "创建渠道失败: "+err.Error())
 		return
 	}
+	// 新渠道可能以停用态创建（status=0）：其模型没有可用上游，同样对齐启用态
+	service.SyncModelsAndNotify(h.DB, fmt.Sprintf("渠道「%s」（#%d）创建", req.Name, ch.ID))
 	httpx.OK(c, gin.H{"id": ch.ID, "message": "渠道已创建", "key_count": len(pool)})
 }
 
@@ -823,6 +825,9 @@ func (h *Handler) UpdateChannel(c *gin.Context) {
 		httpx.Fail(c, http.StatusInternalServerError, "更新渠道失败: "+err.Error())
 		return
 	}
+	// 密钥池/启停/能力/base_url 任一变化都可能改变模型可用上游 → 对齐模型启用态
+	//（换新 Key 的场景在这里自动恢复之前被停用的模型）
+	service.SyncModelsAndNotify(h.DB, fmt.Sprintf("渠道「%s」（#%d）配置更新", req.Name, id))
 	msg := "渠道已更新"
 	if replacePool {
 		msg = fmt.Sprintf("渠道已更新（Key 池替换为 %d 把）", len(pool))
@@ -860,6 +865,8 @@ func (h *Handler) UpdateChannelStatus(c *gin.Context) {
 		httpx.Fail(c, http.StatusNotFound, "渠道不存在")
 		return
 	}
+	// 手动启停渠道改变模型可用上游 → 对齐模型启用态（禁用可能停用模型，启用恢复模型）
+	service.SyncModelsAndNotify(h.DB, fmt.Sprintf("渠道 #%d 手动%s", id, map[int]string{0: "停用", 1: "启用"}[*req.Status]))
 	httpx.OK(c, gin.H{"message": "已更新"})
 }
 
@@ -887,6 +894,8 @@ func (h *Handler) DeleteChannel(c *gin.Context) {
 		httpx.Fail(c, http.StatusInternalServerError, "删除失败")
 		return
 	}
+	// 删掉的渠道可能是某些模型的最后一个可用上游 → 对齐模型启用态
+	service.SyncModelsAndNotify(h.DB, fmt.Sprintf("渠道 #%d 删除", id))
 	httpx.OK(c, gin.H{"message": "已删除"})
 }
 
@@ -959,6 +968,9 @@ func (h *Handler) UpdateChannelKeyStatus(c *gin.Context) {
 		httpx.Fail(c, http.StatusNotFound, "Key 不存在")
 		return
 	}
+	// Key 启停是「更换失效 Key」的主恢复路径：启用可能带回模型的可用上游，
+	// 禁用可能是最后一根稻草 → 两个方向都对齐模型启用态
+	service.SyncModelsAndNotify(h.DB, fmt.Sprintf("渠道 #%d 的 Key #%d %s", id, kid, map[int]string{0: "禁用", 1: "启用"}[*req.Status]))
 	httpx.OK(c, gin.H{"message": "已更新"})
 }
 
@@ -1040,6 +1052,8 @@ func (h *Handler) AddChannelKeys(c *gin.Context) {
 		httpx.Fail(c, http.StatusInternalServerError, "保存失败")
 		return
 	}
+	// 新 Key 入池可能带回模型的可用上游（给失效渠道换 Key 的常规动作）→ 对齐模型启用态
+	service.SyncModelsAndNotify(h.DB, fmt.Sprintf("渠道 #%d 追加 %d 把 Key", id, len(rows)))
 	httpx.OK(c, gin.H{"added": len(rows)})
 }
 
@@ -1068,6 +1082,8 @@ func (h *Handler) DeleteChannelKey(c *gin.Context) {
 			_ = h.DB.Where("channel_id = ?", id).Delete(&model.ChannelAbility{}).Error
 		}
 	}
+	// Key 删除同样可能带走模型的最后一个可用上游 → 对齐模型启用态
+	service.SyncModelsAndNotify(h.DB, fmt.Sprintf("渠道 #%d 删除 Key #%d", id, kid))
 	httpx.OK(c, gin.H{"message": "已删除"})
 }
 
@@ -1230,6 +1246,7 @@ func (h *Handler) ListModels(c *gin.Context) {
 			"cost_input_price":      m.CostInputPrice, "cost_output_price": m.CostOutputPrice,
 			"cost_input_cache_hit_price": m.CostInputCacheHitPrice,
 			"status":                     m.Status, "remark": m.Remark,
+			"auto_disabled_at":           m.AutoDisabledAt,
 			"channel_count":   counts[m.Name],
 			"channel_names":   chNames[m.Name],
 			"org_price_count": priceCnts[m.Name],

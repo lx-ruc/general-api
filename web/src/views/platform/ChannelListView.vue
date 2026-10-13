@@ -396,9 +396,17 @@ async function removeKey(row: ChannelKeyRow) {
       <el-table-column prop="vendor" label="厂商" width="90" />
       <el-table-column label="模型" min-width="200">
         <template #default="{ row }">
-          <code v-for="m in row.models" :key="m.model_name" class="model-chip" :title="m.model_name">
-            {{ m.model_name }}
-          </code>
+          <!-- 「没密钥就没有模型」：无可用 Key 的渠道不展示模型（能力仍在，
+               到「Key 池」换 Key 恢复后自动回来） -->
+          <el-tooltip v-if="(row.key_active_count ?? 0) === 0" placement="top"
+            content="该渠道没有可用密钥（Key 全部被禁用或缺失），模型已自动停用；到「Key 池」更换密钥后模型自动恢复">
+            <span class="key-miss">密钥不可用，模型已停用</span>
+          </el-tooltip>
+          <template v-else>
+            <code v-for="m in row.models" :key="m.model_name" class="model-chip" :title="m.model_name">
+              {{ m.model_name }}
+            </code>
+          </template>
         </template>
       </el-table-column>
       <el-table-column label="密钥" width="130" align="center">

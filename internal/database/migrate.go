@@ -63,6 +63,7 @@ func migrateAll(db *gorm.DB) error {
 		{"models", "cost_output_price", "INTEGER NOT NULL DEFAULT 0"},
 		{"models", "input_cache_hit_price", "INTEGER NOT NULL DEFAULT 0"},
 		{"models", "cost_input_cache_hit_price", "INTEGER NOT NULL DEFAULT 0"},
+		{"models", "auto_disabled_at", "INTEGER NOT NULL DEFAULT 0"},
 		{"usage_logs", "cached_tokens", "INTEGER NOT NULL DEFAULT 0"},
 		{"usage_logs", "input_cache_hit_price", "INTEGER NOT NULL DEFAULT 0"},
 		{"usage_logs", "cost_input_cache_hit_price", "INTEGER NOT NULL DEFAULT 0"},

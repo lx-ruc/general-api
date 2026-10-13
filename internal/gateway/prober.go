@@ -126,6 +126,8 @@ func ChannelTestOnce(h *Handler, failThreshold int, failures map[int64]int) (int
 			fmt.Sprintf("渠道「%s」体检连续失败已自动禁用", ch.Name),
 			fmt.Sprintf("启用中的渠道「%s」（#%d）连续 %d 次定时体检失败：%s\n渠道已自动禁用，探测成功后将自动恢复；也可到管理台手动处理。\n时间：%s\n—— %s",
 				ch.Name, ch.ID, failThreshold, truncateStr(errStr, 300), time.Now().Format("2006-01-02 15:04:05"), service.BrandName))
+		// 渠道停用可能带走模型的最后一个可用上游 → 同步对齐模型启用态
+		service.SyncModelsAndNotify(h.DB, fmt.Sprintf("渠道「%s」（#%d）体检失败自动禁用", ch.Name, ch.ID))
 	}
 	return disabled, nil
 }
@@ -160,6 +162,8 @@ func AutoProbeOnce(h *Handler) (int, error) {
 					fmt.Sprintf("渠道「%s」已自动恢复", ch.Name),
 					fmt.Sprintf("此前因连续失败被熔断禁用的渠道「%s」（#%d）探测成功（%d ms），已自动重新启用。\n时间：%s\n—— %s",
 						ch.Name, ch.ID, latency, time.Now().Format("2006-01-02 15:04:05"), service.BrandName))
+				// 渠道回来可能带回模型的可用上游 → 之前被自动停用的模型随之恢复
+				service.SyncModelsAndNotify(h.DB, fmt.Sprintf("渠道「%s」（#%d）探测成功自动恢复", ch.Name, ch.ID))
 			}
 			continue
 		}

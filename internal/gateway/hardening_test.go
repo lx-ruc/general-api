@@ -199,9 +199,15 @@ func TestStreamUpstreamResetCountsChannelFailure(t *testing.T) {
 	if status != 0 {
 		t.Fatalf("连续中途断流应触发熔断自动禁用（status=%d）", status)
 	}
-	// 禁用后的第 4 笔：无候选渠道 → 503，客户端不再收到截断流
-	if w := e.post(chatBody("rst-me", `,"stream":true`)); w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("渠道熔断后应 503，got %d: %s", w.Code, w.Body.String())
+	// 禁用后的第 4 笔：m1 失去唯一可用上游，随渠道熔断被联动自动停用 →
+	// 干净的 404（模型不可用），客户端不再收到截断流
+	if w := e.post(chatBody("rst-me", `,"stream":true`)); w.Code != http.StatusNotFound {
+		t.Fatalf("渠道熔断、模型自动停用后应 404，got %d: %s", w.Code, w.Body.String())
+	}
+	var mRow struct{ Status, AutoAt int64 }
+	_ = e.f.db.Raw("SELECT status AS status, auto_disabled_at AS auto_at FROM models WHERE name = 'm1'").Scan(&mRow)
+	if mRow.Status != 0 || mRow.AutoAt <= 0 {
+		t.Fatalf("唯一渠道熔断后模型应联动自动停用（status=0 且 auto_disabled_at>0），得 status=%d auto=%d", mRow.Status, mRow.AutoAt)
 	}
 }
 

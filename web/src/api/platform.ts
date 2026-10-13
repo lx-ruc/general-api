@@ -128,6 +128,8 @@ export interface MModel {
   cost_input_cache_hit_price: number
   status: number
   remark: string
+  /** >0 = 因上游密钥/渠道不可用自动停用的时间戳；0 = 手动停用或启用中 */
+  auto_disabled_at?: number
   /** 已接通（启用且有可用密钥）的渠道数，0=仅登记未接渠道 */
   channel_count?: number
   /** 已接通渠道的名称清单（与 channel_count 同口径，定价页点开可看） */

@@ -14,6 +14,7 @@ type Model struct {
 	CostInputCacheHitPrice int64 `json:"cost_input_cache_hit_price"` // 成本侧缓存命中价（0=同成本输入价）
 	Status      int    `json:"status"`
 	Remark      string `json:"remark"`
+	AutoDisabledAt int64 `json:"auto_disabled_at"` // >0=因上游密钥/渠道不可用自动停用（换 Key 自动恢复）；0=手动停用/启用中
 	CreatedAt   int64  `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt   int64  `gorm:"autoUpdateTime" json:"updated_at"`
 }

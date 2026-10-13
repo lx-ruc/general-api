@@ -21,6 +21,7 @@ import (
 	"token-gateway/internal/database"
 	"token-gateway/internal/metrics"
 	"token-gateway/internal/middleware"
+	"token-gateway/internal/service"
 )
 
 // ---------------- 共享测试底座 ----------------
@@ -1168,5 +1169,40 @@ func TestListModelsHidesDeadUpstream(t *testing.T) {
 	mustExec(t, e.f, `UPDATE channel_keys SET status = 1 WHERE channel_id = 2`)
 	if body := get(); !strings.Contains(body, `"dead"`) {
 		t.Fatalf("Key 恢复后模型应重新出现: %s", body)
+	}
+}
+
+// 生产主路径回归：上游 401 → DisablePoolKey 落库 → 该渠道独家承接的模型自动停用；
+// Key 池重新启用（换 Key）→ 模型自动恢复（DisablePoolKey 内联 service.SyncModelsAndNotify）
+func TestDisablePoolKeyAutoStopsSoleModel(t *testing.T) {
+	e := newTestEnv(t)
+	// m1 独家挂在带池 Key 的渠道 7 上（newTestEnv 只建模型与授权，不建渠道）
+	e.seedUpstreamChannel(t, 7, "sole", "http://up.example", []string{"k1"}, 0)
+
+	var keyID int64
+	if err := e.f.db.Raw(`SELECT id FROM channel_keys WHERE channel_id = 7`).Scan(&keyID).Error; err != nil || keyID == 0 {
+		t.Fatalf("读取池 Key id 失败: %v", err)
+	}
+	DisablePoolKey(e.f.db, 7, keyID, 401)
+
+	var row struct{ Status, AutoAt int64 }
+	if err := e.f.db.Raw(`SELECT status AS status, auto_disabled_at AS auto_at FROM models WHERE name = 'm1'`).Scan(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	if row.Status != 0 || row.AutoAt <= 0 {
+		t.Fatalf("独家渠道 Key 被 401 禁用后模型应自动停用: status=%d auto_disabled_at=%d", row.Status, row.AutoAt)
+	}
+
+	// Key 池换回可用 Key → 模型自动恢复，标记清零
+	mustExec(t, e.f, `UPDATE channel_keys SET status = 1 WHERE channel_id = 7`)
+	_, recovered, err := service.SyncModelRoutableStatus(e.f.db)
+	if err != nil || len(recovered) != 1 || recovered[0] != "m1" {
+		t.Fatalf("Key 恢复后 m1 应自动恢复: %v %v", recovered, err)
+	}
+	if err := e.f.db.Raw(`SELECT status AS status, auto_disabled_at AS auto_at FROM models WHERE name = 'm1'`).Scan(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	if row.Status != 1 || row.AutoAt != 0 {
+		t.Fatalf("恢复后应 status=1 且 auto_disabled_at=0: %+v", row)
 	}
 }

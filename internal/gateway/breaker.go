@@ -1,9 +1,12 @@
 package gateway
 
 import (
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
+
+	"token-gateway/internal/service"
 )
 
 // Breaker 渠道熔断：连续失败 N 次自动禁用渠道（改 DB status=0），
@@ -58,5 +61,7 @@ func (h *Handler) DisableChannel(channelID int64, name string) {
 		if h.Metrics != nil {
 			h.Metrics.ChannelDisabled.Inc()
 		}
+		// 渠道停用可能带走模型的最后一个可用上游 → 同步对齐模型启用态
+		service.SyncModelsAndNotify(h.DB, fmt.Sprintf("渠道「%s」（#%d）连续失败熔断禁用", name, channelID))
 	}
 }

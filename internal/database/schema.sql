@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS models (
   cost_input_cache_hit_price INTEGER NOT NULL DEFAULT 0, -- 成本侧缓存命中价（0=同成本输入价）
   status       INTEGER NOT NULL DEFAULT 1,
   remark       TEXT    NOT NULL DEFAULT '',
+  auto_disabled_at INTEGER NOT NULL DEFAULT 0,  -- >0=因上游密钥/渠道不可用自动停用的时间（换 Key 后自动恢复）；0=手动停用
   created_at   INTEGER NOT NULL,
   updated_at   INTEGER NOT NULL
 );

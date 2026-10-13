@@ -232,7 +232,11 @@ async function resetOrgPrice(row: OrgModelPriceRow) {
       <el-table-column label="调用状态" width="200" class-name="status-cell"
         title="「上游密钥不可用」= 已接启用渠道但密钥全部失效/未配置（如被上游 401 自动禁用），到「渠道管理」换密钥即恢复。未定价不拦截调用、按 0 元计费：设了客户价的客户按客户价计费，其余客户免费。给模型设默认价或给全部客户设价后转「可用」">
         <template #default="{ row }">
-          <el-tag v-if="row.status !== 1" type="info" effect="plain" size="small">已停用</el-tag>
+          <el-tooltip v-if="row.status !== 1 && (row.auto_disabled_at ?? 0) > 0" placement="top"
+            content="所有承接渠道的密钥均不可用（Key 失效/被上游吊销/渠道停用），已自动停用；到「渠道管理」更换密钥或恢复渠道后自动恢复启用，授权与定价不受影响">
+            <el-tag type="danger" effect="plain" size="small">自动停用（密钥失效）</el-tag>
+          </el-tooltip>
+          <el-tag v-else-if="row.status !== 1" type="info" effect="plain" size="small">已停用</el-tag>
           <el-tag v-else-if="!row.routable && row.has_enabled_channel" type="danger" effect="plain" size="small">上游密钥不可用</el-tag>
           <el-tag v-else-if="!row.routable" type="warning" effect="plain" size="small">未接渠道</el-tag>
           <el-tag v-else-if="row.input_price === 0 && row.output_price === 0 && (row.org_price_count ?? 0) > 0"

@@ -1091,7 +1091,8 @@ func (h *Handler) disableKey(cand Candidate, status int) {
 
 // DisablePoolKey 把池内一把 Key 置 status=0 并写中文备注（数据面转发与渠道探测共用入口）：
 // 渠道列表「启 N」计数、Key 池红色标行与备注列都来自这次落库——管理员能看到是哪把 Key、为何被禁。
-// 401/403 = Key 失效（过期/被吊销）；402 = 余额不足（DeepSeek 等厂商的欠费口径）
+// 401/403 = Key 失效（过期/被吊销）；402 = 余额不足（DeepSeek 等厂商的欠费口径）。
+// 落库后同步对齐模型启用态：该 Key 是某模型最后一个可用上游时，模型随之自动停用
 func DisablePoolKey(db *gorm.DB, channelID, keyID int64, status int) {
 	ts := time.Now().Format("2006-01-02 15:04:05")
 	reason := fmt.Sprintf("上游 %d：Key 已失效（过期/被吊销），%s 自动禁用", status, ts)
@@ -1105,6 +1106,7 @@ func DisablePoolKey(db *gorm.DB, channelID, keyID int64, status int) {
 		return
 	}
 	slog.Warn("已自动禁用渠道 Key", "channel_id", channelID, "key_id", keyID, "status", status)
+	service.SyncModelsAndNotify(db, fmt.Sprintf("渠道 #%d 的 Key 被上游 %d 拒绝后自动禁用", channelID, status))
 }
 
 // ListModels GET /v1/models：该 key 授权范围内、当前可路由的启用模型（OpenAI list 格式）。
