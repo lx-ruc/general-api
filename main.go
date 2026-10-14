@@ -95,6 +95,9 @@ func main() {
 		slog.Error("初始化加密器失败", "err", err)
 		os.Exit(1)
 	}
+	// 存量明文密钥原地加密：aes_key 从空改为配置后的首次启动自动收敛，
+	// 使「启用加密」与部署原子（否则存量渠道 Key 解密必失败、数据面全不可用）
+	service.ReencryptPlaintextKeys(db, cipher)
 
 	router := api.SetupRouter(cfg, db, cipher, webDistFS)
 
