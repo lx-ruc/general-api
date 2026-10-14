@@ -5,6 +5,7 @@ import './docs.css'
 import IntroDoc from './IntroDoc.vue'
 import QuickstartDoc from './QuickstartDoc.vue'
 import FeaturesDoc from './FeaturesDoc.vue'
+import AccountDoc from './AccountDoc.vue'
 import AgentHelperDoc from './AgentHelperDoc.vue'
 import ApiAuthDoc from './ApiAuthDoc.vue'
 import ApiChatDoc from './ApiChatDoc.vue'
@@ -29,6 +30,7 @@ const groups: { label: string; items: DocPage[] }[] = [
     label: '功能指南',
     items: [
       { key: 'features', title: '核心功能', component: markRaw(FeaturesDoc) },
+      { key: 'account', title: '账号与密码安全', component: markRaw(AccountDoc) },
       { key: 'agent-helper', title: 'Agent 一键接入', component: markRaw(AgentHelperDoc) },
     ],
   },
