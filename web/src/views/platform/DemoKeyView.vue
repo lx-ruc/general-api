@@ -4,11 +4,13 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiListModels } from '../../api/platform'
 import { apiConfigureDemoKey, apiGetDemoKey, apiRotateDemoKey, apiCopyDemoKey, type DemoKeyConfig } from '../../api/demoKey'
 import MaskedKey from '../../components/MaskedKey.vue'
-import { fmtQuota, fmtTime } from '../../utils/format'
+import { fmtYuan, yuanToPoints, pointsToYuan, fmtTime } from '../../utils/format'
+import { usePpy } from '../../composables/usePpy'
 import { copyText } from '../../utils/clipboard'
 
 // 对外演示体验密钥：给来访客户不建账号、直接按文档示例调 /v1 的真实 key。
 // 挂专用体验账号（个人不限额），总额度由体验客户额度承担，消耗照常计量。
+const ppy = usePpy()
 const cfg = ref<DemoKeyConfig | null>(null)
 const loading = ref(false)
 const saving = ref(false)
@@ -19,9 +21,8 @@ const modelOptions = ref<string[]>([])
 // 有效期表单：永久 / 30 天 / 90 天 / 自定义天数（保存时从当前时刻起算）
 const expiryMode = ref<'never' | '30' | '90' | 'custom'>('never')
 const customDays = ref(30)
-// 额度录入统一按 M tokens 填写（与其余入口一致），保存时换算回点数
-const M = 1_000_000
-const quotaM = ref(10) // 默认 10M token
+// 额度按元录入，保存时换算回点数
+const quotaYuan = ref(10)
 const selectedModels = ref<string[]>([])
 
 // 已加载配置导出的有效期签名：保存时仅当用户改动过才提交 expires_at
@@ -34,7 +35,7 @@ function expirySig(): string {
 
 function applyCfg(c: DemoKeyConfig) {
   cfg.value = c
-  quotaM.value = c.org.quota_limit > 0 ? c.org.quota_limit / M : 10
+  quotaYuan.value = c.org.quota_limit > 0 ? pointsToYuan(c.org.quota_limit, ppy.value) : 10
   selectedModels.value = [...c.models]
   if (!c.expires_at) {
     expiryMode.value = 'never'
@@ -120,7 +121,7 @@ async function save() {
   saving.value = true
   try {
     const body: Record<string, unknown> = {
-      quota_points: Math.round(quotaM.value * M),
+      quota_points: yuanToPoints(quotaYuan.value, ppy.value),
       models: selectedModels.value,
     }
     if (expirySig() !== loadedExpirySig) {
@@ -179,10 +180,9 @@ async function save() {
     <el-card shadow="never" style="margin-top: 16px">
       <template #header><span>体验配置</span></template>
       <el-form label-width="110px" style="max-width: 640px">
-        <el-form-item label="体验总额度（M tokens）">
-          <el-input-number v-model="quotaM" :min="0.1" :step="1" style="width: 220px" />
-          <span class="hint" style="margin-left: 8px">= {{ fmtQuota(Math.round(quotaM * M)) }}</span>
-          <div class="hint">当前 {{ fmtQuota(cfg?.org.quota_limit) }}，已耗 {{ fmtQuota(cfg?.org.quota_used) }}</div>
+        <el-form-item label="体验总额度（元）">
+          <el-input-number v-model="quotaYuan" :min="0.01" :precision="2" :step="100" style="width: 220px" />
+          <div class="hint">当前 {{ fmtYuan(cfg?.org.quota_limit || 0, ppy) }}，已耗 {{ fmtYuan(cfg?.org.quota_used || 0, ppy) }}</div>
         </el-form-item>
         <el-form-item v-if="cfg?.provisioned" label="用量水位">
           <el-progress :percentage="usagePct" :stroke-width="14"

@@ -6,8 +6,10 @@ import {
   apiOrgCostCenters, apiCreateCostCenter, apiUpdateCostCenter,
   apiCostCenterReport, type CostCenter, type CostReportRow,
 } from '../../api/org'
-import { fmtQuota } from '../../utils/format'
+import { fmtYuan } from '../../utils/format'
+import { usePpy } from '../../composables/usePpy'
 
+const ppy = usePpy()
 const list = ref<CostCenter[]>([])
 const tab = ref('centers')
 
@@ -111,8 +113,8 @@ function centerName(r: CostReportRow): string {
           <el-tag v-if="row.status === 0" type="info" size="small" style="margin-left: 6px">已归档</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="本月消耗" width="180">
-        <template #default="{ row }">{{ fmtQuota(row.month_cost) }}</template>
+      <el-table-column label="本月消耗（元）" width="180">
+        <template #default="{ row }">{{ fmtYuan(row.month_cost, ppy) }}</template>
       </el-table-column>
       <el-table-column label="挂靠密钥" width="100">
         <template #default="{ row }">{{ row.key_count }}</template>
@@ -149,7 +151,7 @@ function centerName(r: CostReportRow): string {
     </el-form>
 
     <el-alert v-if="summary.unallocated_cost > 0" type="warning" :closable="false" show-icon style="margin-bottom: 12px"
-      :title="`未归集消耗 ${fmtQuota(summary.unallocated_cost)}（${summary.unallocated_pct.toFixed(1)}%）——建议在密钥一览中补派中心`" />
+      :title="`未归集消耗 ${fmtYuan(summary.unallocated_cost, ppy)}（${summary.unallocated_pct.toFixed(1)}%）——建议在密钥一览中补派中心`" />
 
     <el-table :data="report">
       <el-table-column label="成本中心" min-width="150">
@@ -163,13 +165,13 @@ function centerName(r: CostReportRow): string {
       <el-table-column prop="cache_hits" label="缓存命中" width="90" />
       <el-table-column prop="prompt_tokens" label="输入 tokens" width="120" />
       <el-table-column prop="completion_tokens" label="输出 tokens" width="120" />
-      <el-table-column label="消耗" width="140">
-        <template #default="{ row }">{{ fmtQuota(row.cost) }}</template>
+      <el-table-column label="消耗（元）" width="140">
+        <template #default="{ row }">{{ fmtYuan(row.cost, ppy) }}</template>
       </el-table-column>
       <template #empty>暂无数据</template>
     </el-table>
     <div v-if="report.length" class="dim tip">
-      合计 {{ fmtQuota(summary.total_cost) }}；未归集恒置底
+      合计 {{ fmtYuan(summary.total_cost, ppy) }}；未归集恒置底
     </div>
   </el-card>
 

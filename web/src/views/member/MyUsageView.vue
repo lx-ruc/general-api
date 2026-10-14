@@ -4,8 +4,11 @@ import dayjs from 'dayjs'
 import { apiMyUsage, apiMyStats, apiMyUsageBreakdown } from '../../api/member'
 import StatRow from '../../components/StatRow.vue'
 import LineChart from '../../components/LineChart.vue'
-import { fmtNum, fmtQuota, fmtTime, fmtTokensM } from '../../utils/format'
+import { fmtNum, fmtYuan, fmtTime, fmtTokensM } from '../../utils/format'
 import { trendOptions } from '../../utils/chart'
+import { usePpy } from '../../composables/usePpy'
+
+const ppy = usePpy()
 
 interface RangeTotals {
   requests: number
@@ -122,7 +125,7 @@ const rangeCards = computed(() => {
   return [
     { label: '区间 tokens', value: fmtTokensM(r.tokens), tone: 'green' as const },
     { label: '区间请求', value: fmtNum(r.requests) },
-    { label: '区间扣减额度', value: fmtQuota(r.cost) },
+    { label: '区间扣减（元）', value: fmtYuan(r.cost, ppy.value) },
     { label: '区间成功率', value: succRate(r), tone: succTone(r) },
   ]
 })
@@ -180,9 +183,9 @@ const presetNames: Record<Preset, string> = {
             <el-table-column label="tokens" width="90" align="right">
               <template #default="{ row }">{{ fmtTokensM(row.tokens) }}</template>
             </el-table-column>
-            <el-table-column label="扣减额度" width="100" align="right">
+            <el-table-column label="扣减（元）" width="100" align="right">
               <template #default="{ row }">
-                <span class="num green">{{ fmtQuota(row.cost) }}</span>
+                <span class="num green">{{ fmtYuan(row.cost, ppy) }}</span>
               </template>
             </el-table-column>
             <el-table-column label="成功率" width="70" align="right">
@@ -200,9 +203,9 @@ const presetNames: Record<Preset, string> = {
             <el-table-column label="tokens" width="90" align="right">
               <template #default="{ row }">{{ fmtTokensM(row.tokens) }}</template>
             </el-table-column>
-            <el-table-column label="扣减额度" width="100" align="right">
+            <el-table-column label="扣减（元）" width="100" align="right">
               <template #default="{ row }">
-                <span class="num green">{{ fmtQuota(row.cost) }}</span>
+                <span class="num green">{{ fmtYuan(row.cost, ppy) }}</span>
               </template>
             </el-table-column>
             <el-table-column label="成功率" width="70" align="right">
@@ -241,10 +244,10 @@ const presetNames: Record<Preset, string> = {
             <span v-if="row.cached_tokens > 0" class="cache-mark">⚡{{ row.cached_tokens }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="扣减额度" width="110" align="right">
+        <el-table-column label="扣减（元）" width="110" align="right">
           <template #default="{ row }">
             <span v-if="row.no_usage" class="warn">未计量</span>
-            <span v-else class="num green">{{ fmtQuota(row.cost) }}</span>
+            <span v-else class="num green">{{ fmtYuan(row.cost, ppy) }}</span>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="80">

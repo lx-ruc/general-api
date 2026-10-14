@@ -4,7 +4,10 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   apiGetBankInfo, apiHandleRecharge, apiListRecharges, apiUpdateBankInfo, type RechargeRow,
 } from '../../api/platform'
-import { fmtQuota, fmtTime } from '../../utils/format'
+import { fmtYuan, fmtTime } from '../../utils/format'
+import { usePpy } from '../../composables/usePpy'
+
+const ppy = usePpy()
 
 // 充值审批：客户在对公转账后提交申请，平台在这里核对凭证并确认到账。
 // 批准走后端 AddOrgQuotaTx（额度+流水同事务）并自动邮件通知客户管理员；
@@ -46,7 +49,7 @@ async function saveBank() {
 
 async function approve(row: RechargeRow) {
   await ElMessageBox.confirm(
-    `确认「${row.org_name}」的充值 ${fmtQuota(row.amount)} 已到账？批准后额度自动入账并邮件通知客户管理员。`,
+    `确认「${row.org_name}」的充值 ${fmtYuan(row.amount, ppy.value)} 已到账？批准后额度自动入账并邮件通知客户管理员。`,
     '批准充值', { type: 'warning' },
   )
   const r = await apiHandleRecharge(row.id, 'approve')
@@ -101,8 +104,8 @@ onMounted(() => {
       <el-table :data="list" size="small" v-loading="loading" empty-text="暂无充值申请。客户在对公转账后会在这里提交。">
         <el-table-column prop="id" label="#" width="70" />
         <el-table-column prop="org_name" label="客户" min-width="120" show-overflow-tooltip />
-        <el-table-column label="金额" width="170" align="right">
-          <template #default="{ row }">{{ fmtQuota(row.amount) }}</template>
+        <el-table-column label="金额（元）" width="170" align="right">
+          <template #default="{ row }">{{ fmtYuan(row.amount, ppy) }}</template>
         </el-table-column>
         <el-table-column prop="voucher" label="转账凭证" min-width="180" show-overflow-tooltip />
         <el-table-column label="状态" width="90" align="center">

@@ -2,8 +2,10 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiOrgRequests, apiHandleRequest, type QuotaRequestRow } from '../../api/org'
-import { fmtTime, fmtQuota } from '../../utils/format'
+import { fmtTime, fmtYuan } from '../../utils/format'
+import { usePpy } from '../../composables/usePpy'
 
+const ppy = usePpy()
 const list = ref<QuotaRequestRow[]>([])
 const total = ref(0)
 const loading = ref(false)
@@ -71,7 +73,7 @@ const isModel = (r: QuotaRequestRow) => r.kind === 'model'
             申请开通的模型：
             <el-tag v-for="n in row.model_names.split(',')" :key="n" size="small" style="margin: 0 4px 4px 0">{{ n }}</el-tag>
           </div>
-          <div v-else style="padding: 4px 12px; color: #909399">额度申请：{{ fmtQuota(row.amount) }}</div>
+          <div v-else style="padding: 4px 12px; color: #909399">额度申请：{{ fmtYuan(row.amount, ppy) }}</div>
         </template>
       </el-table-column>
       <el-table-column prop="id" label="#" width="60" />
@@ -86,7 +88,7 @@ const isModel = (r: QuotaRequestRow) => r.kind === 'model'
           <template v-if="isModel(row)">
             <el-tag v-for="n in row.model_names.split(',')" :key="n" size="small" style="margin-right: 4px">{{ n }}</el-tag>
           </template>
-          <template v-else>{{ fmtQuota(row.amount) }}</template>
+          <template v-else>{{ fmtYuan(row.amount, ppy) }}</template>
         </template>
       </el-table-column>
       <el-table-column prop="reason" label="理由" min-width="150" show-overflow-tooltip />
@@ -120,7 +122,7 @@ const isModel = (r: QuotaRequestRow) => r.kind === 'model'
       <template v-if="isModel(current)">
         <el-tag v-for="n in current.model_names.split(',')" :key="n" size="small" style="margin: 0 4px 4px 0">{{ n }}</el-tag>
       </template>
-      <template v-else>{{ fmtQuota(current.amount) }}</template>
+      <template v-else>{{ fmtYuan(current.amount, ppy) }}</template>
       <br />
       <span style="color: #909399">{{ current.reason }}</span>
     </p>

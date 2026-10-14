@@ -2,7 +2,10 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiListMembers, apiAddMemberQuota, apiUpdateMember, apiOrgStats, apiOrgQuotaGrants, type Member } from '../../api/org'
-import { fmtTime, fmtQuota } from '../../utils/format'
+import { fmtTime, fmtYuan, yuanToPoints, pointsToYuan } from '../../utils/format'
+import { usePpy } from '../../composables/usePpy'
+
+const ppy = usePpy()
 
 // 客户额度池（下发的总闸：子账号消耗都在池内结算）
 const org = ref<any>(null)
@@ -30,16 +33,15 @@ onMounted(() => {
   loadGrants()
 })
 
-// 下发额度（按 M tokens 录入；负数为回收）+ 单月上限（0=不限）
-const M = 1_000_000
+// 下发额度（按元录入；负数为回收）+ 单月上限（0=不限，同样按元）
 const quotaVisible = ref(false)
-const quotaForm = reactive({ member: null as Member | null, amount: 1, remark: '', monthly: 0 })
+const quotaForm = reactive({ member: null as Member | null, amount: 0, remark: '', monthly: 0 })
 const unlimitedMode = ref(false)
 function openQuota(m: Member) {
   quotaForm.member = m
   quotaForm.amount = 0 // 默认 0=不追加：非零默认值会在点「确定」时被顺手提交
   quotaForm.remark = ''
-  quotaForm.monthly = (m.monthly_quota || 0) / M
+  quotaForm.monthly = pointsToYuan(m.monthly_quota || 0, ppy.value)
   unlimitedMode.value = m.quota_limit == null
   quotaVisible.value = true
 }
@@ -67,7 +69,7 @@ async function onUnlimitedChange(val: boolean | string | number) {
 const overGrant = computed(() => {
   const m = quotaForm.member
   if (!m || !org.value || !pool.value || pool.value.unlimited_count > 0 || unlimitedMode.value) return null
-  const amount = Math.round((quotaForm.amount || 0) * M)
+  const amount = yuanToPoints(quotaForm.amount || 0, ppy.value)
   if (amount <= 0) return null
   const sumAfter = pool.value.limits_sum + amount
   const avail = org.value.quota_limit - org.value.quota_used
@@ -80,13 +82,13 @@ async function submitQuota() {
   // input-number 清空后是 null（falsy）：追加 0 无意义跳过，但月限等后续步骤必须照常提交，
   // 否则「只改单月上限」点确定无任何反应。不限额账号跳过追加（后端同样拒绝：
   // NULL 基线上加额会把「不限」悄悄顶成「限额=追加额」）
-  const amount = Math.round((quotaForm.amount || 0) * M)
+  const amount = yuanToPoints(quotaForm.amount || 0, ppy.value)
   const applied = amount !== 0 && !unlimitedMode.value
   if (applied) {
     await apiAddMemberQuota(quotaForm.member.id, amount, quotaForm.remark)
   }
   // 单月上限走设值更新（0=不限；与追加额度独立，总是提交保持一致）
-  await apiUpdateMember(quotaForm.member.id, { monthly_quota: Math.round((quotaForm.monthly || 0) * M) || 0 })
+  await apiUpdateMember(quotaForm.member.id, { monthly_quota: yuanToPoints(quotaForm.monthly || 0, ppy.value) || 0 })
   ElMessage.success(applied ? '额度与月限已更新' : '单月上限已更新')
   quotaVisible.value = false
   load()
@@ -112,7 +114,7 @@ function userChanged() {
 }
 
 function fmtAmount(v: number): string {
-  return v > 0 ? `+${fmtQuota(v)}` : fmtQuota(v)
+  return v > 0 ? `+${fmtYuan(v, ppy.value)}` : fmtYuan(v, ppy.value)
 }
 </script>
 
@@ -125,16 +127,16 @@ function fmtAmount(v: number): string {
     </template>
     <div v-if="org" class="pool">
       <div class="pool-item">
-        <div class="pool-label">剩余（token）</div>
-        <div class="pool-value num green">{{ fmtQuota(org.quota_limit - org.quota_used) }}</div>
+        <div class="pool-label">剩余（元）</div>
+        <div class="pool-value num green">{{ fmtYuan(org.quota_limit - org.quota_used, ppy) }}</div>
       </div>
       <div class="pool-item">
         <div class="pool-label">额度上限</div>
-        <div class="pool-value num">{{ fmtQuota(org.quota_limit) }}</div>
+        <div class="pool-value num">{{ fmtYuan(org.quota_limit, ppy) }}</div>
       </div>
       <div class="pool-item">
         <div class="pool-label">已消耗</div>
-        <div class="pool-value num">{{ fmtQuota(org.quota_used) }}</div>
+        <div class="pool-value num">{{ fmtYuan(org.quota_used, ppy) }}</div>
       </div>
       <div class="pool-meter">
         <div class="pool-meter-bar">
@@ -165,12 +167,12 @@ function fmtAmount(v: number): string {
           <span v-if="row.display_name" class="dim">（{{ row.display_name }}）</span>
         </template>
       </el-table-column>
-      <el-table-column label="已用 / 上限（token）" min-width="190">
+      <el-table-column label="已用 / 上限（元）" min-width="190">
         <template #default="{ row }">
-          <span class="num">{{ fmtQuota(row.quota_used) }}</span>
+          <span class="num">{{ fmtYuan(row.quota_used, ppy) }}</span>
           <span class="dim"> /
             <span v-if="row.quota_limit == null" class="unlimited">不限</span>
-            <span v-else class="num">{{ fmtQuota(row.quota_limit) }}</span>
+            <span v-else class="num">{{ fmtYuan(row.quota_limit, ppy) }}</span>
           </span>
         </template>
       </el-table-column>
@@ -178,13 +180,13 @@ function fmtAmount(v: number): string {
         <template #default="{ row }">
           <span v-if="row.quota_limit == null" class="green">不限</span>
           <span v-else class="num" :class="row.quota_limit - row.quota_used > 0 ? 'green' : 'red'">
-            {{ fmtQuota(row.quota_limit - row.quota_used) }}
+            {{ fmtYuan(row.quota_limit - row.quota_used, ppy) }}
           </span>
         </template>
       </el-table-column>
       <el-table-column label="单月上限" min-width="110">
         <template #default="{ row }">
-          <span v-if="row.monthly_quota > 0" class="num">{{ fmtQuota(row.monthly_quota) }}</span>
+          <span v-if="row.monthly_quota > 0" class="num">{{ fmtYuan(row.monthly_quota, ppy) }}</span>
           <span v-else class="dim">不限</span>
         </template>
       </el-table-column>
@@ -219,7 +221,7 @@ function fmtAmount(v: number): string {
           <span v-if="row.display_name" class="dim">（{{ row.display_name }}）</span>
         </template>
       </el-table-column>
-      <el-table-column label="金额（token）" min-width="130">
+      <el-table-column label="金额（元）" min-width="130">
         <template #default="{ row }">
           <span class="num" :class="row.amount >= 0 ? 'green' : 'red'">{{ fmtAmount(row.amount) }}</span>
         </template>
@@ -234,13 +236,13 @@ function fmtAmount(v: number): string {
 
   <el-dialog v-model="quotaVisible" :title="`下发额度：${quotaForm.member?.username || ''}`" width="520px">
     <el-alert v-if="overGrant" type="warning" :closable="false" show-icon style="margin-bottom: 12px"
-      :title="`下发后子账号额度合计将达 ${fmtQuota(overGrant.sumAfter)}，超过客户额度池剩余 ${fmtQuota(overGrant.avail)}`"
+      :title="`下发后子账号额度合计将达 ${fmtYuan(overGrant.sumAfter, ppy)}，超过客户额度池剩余 ${fmtYuan(overGrant.avail, ppy)}`"
       description="仍可提交：子账号额度只是各自的上限，实际消耗以客户额度池为硬顶，池子耗尽后全部子账号的调用都会被拦截。" />
     <el-form label-width="130px">
       <el-form-item label="当前额度">
         <span v-if="quotaForm.member?.quota_limit == null" class="unlimited">不限（无需追加额度）</span>
         <span v-else>
-          已用 {{ fmtQuota(quotaForm.member.quota_used) }} / 上限 {{ fmtQuota(quotaForm.member.quota_limit) }}
+          已用 {{ fmtYuan(quotaForm.member.quota_used, ppy) }} / 上限 {{ fmtYuan(quotaForm.member.quota_limit, ppy) }}
           <span v-if="quotaForm.member.quota_limit - quotaForm.member.quota_used < 0" class="red">（已超限，调用会被拦截）</span>
         </span>
       </el-form-item>
@@ -248,12 +250,12 @@ function fmtAmount(v: number): string {
         <el-switch v-model="unlimitedMode" active-text="不限额" inactive-text="限额" @change="onUnlimitedChange" />
         <span class="tip">{{ unlimitedMode ? '关闭后以当前已用量为起点恢复上限' : '开启后归还全部上限，不再受该子账号上限约束' }}</span>
       </el-form-item>
-      <el-form-item label="追加（M tokens）">
-        <el-input-number v-model="quotaForm.amount" :disabled="unlimitedMode" :step="1" />
-        <span class="tip">{{ unlimitedMode ? '不限额账号无需追加' : `负数为回收；= ${fmtQuota(Math.round((quotaForm.amount || 0) * M))}` }}</span>
+      <el-form-item label="追加（元）">
+        <el-input-number v-model="quotaForm.amount" :disabled="unlimitedMode" :precision="2" :step="100" />
+        <span class="tip">{{ unlimitedMode ? '不限额账号无需追加' : '负数为回收' }}</span>
       </el-form-item>
-      <el-form-item label="单月上限（M）">
-        <el-input-number v-model="quotaForm.monthly" :min="0" :step="1" />
+      <el-form-item label="单月上限（元）">
+        <el-input-number v-model="quotaForm.monthly" :min="0" :precision="2" :step="1" />
         <span class="tip">0 = 不限；当月消耗达到上限后拦截，次月自动恢复</span>
       </el-form-item>
       <el-form-item label="事由备注"><el-input v-model="quotaForm.remark" /></el-form-item>

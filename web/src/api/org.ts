@@ -147,11 +147,19 @@ export const apiCreateRecharge = (amount: number, voucher: string) =>
 export const apiOrgBankInfo = () => http.get<any, any>('/api/org/bank-info')
 export const apiOrgBilling = (month: string) => http.get<any, any>('/api/org/billing', { params: { month } })
 
-// 额度预警：读取本客户阈值与状态
+// 额度预警：读取本客户双阈值与状态（threshold 百分比 / alert_balance 剩余额度金额，点）
 export const apiGetAlertLevels = () => http.get<any, any>('/api/org/alert-levels')
-// 额度预警：设置阈值（0 = 关闭）
-export const apiUpdateAlertLevels = (threshold: number) =>
-  http.put<any, any>('/api/org/alert-levels', { threshold })
+// 额度预警：设置双阈值（均 0 = 关闭，两项独立开关；alert_balance 传点数，前端按元录入后换算）
+export const apiUpdateAlertLevels = (threshold: number, alertBalancePoints?: number) =>
+  http.put<any, any>('/api/org/alert-levels',
+    alertBalancePoints === undefined ? { threshold } : { threshold, alert_balance: alertBalancePoints })
+
+// 子账号个人预警：读取/设置双阈值（org 隔离，仅本客户成员）
+export const apiGetMemberAlertLevels = (id: number) =>
+  http.get<any, any>(`/api/org/members/${id}/alert-levels`)
+export const apiUpdateMemberAlertLevels = (id: number, threshold: number, alertBalancePoints?: number) =>
+  http.put<any, any>(`/api/org/members/${id}/alert-levels`,
+    alertBalancePoints === undefined ? { threshold } : { threshold, alert_balance: alertBalancePoints })
 
 export interface BillGrantRow { id: number; amount: number; remark: string; created_at: number }
 export interface BillDetailRow {
@@ -160,6 +168,8 @@ export interface BillDetailRow {
 }
 export interface BillStatement {
   month: string; timezone: string; start_unix: number; end_unix: number
+  /** 账期口径快照（1 元 = N 点）；历史月无快照时后端回退当前值 */
+  points_per_yuan: number
   opening_limit: number | null; opening_used: number | null
   total_granted: number; total_revoked: number; consumption: number
   closing_limit: number; closing_used: number; closing_is_live: boolean

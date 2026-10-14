@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { apiListUsage, apiListModels } from '../../api/platform'
-import { fmtTime, fmtQuota } from '../../utils/format'
+import { fmtTime, fmtYuan } from '../../utils/format'
+import { usePpy } from '../../composables/usePpy'
 
+const ppy = usePpy()
 const list = ref<any[]>([])
 const total = ref(0)
 const models = ref<string[]>([])
@@ -87,11 +89,11 @@ function reset() {
           <span v-if="row.cached_tokens > 0" class="cache-mark">⚡{{ row.cached_tokens }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="扣减额度" width="130" align="right">
+      <el-table-column label="扣减额度（元）" width="130" align="right">
         <template #default="{ row }">
           <span v-if="row.cache_hit" class="num green">0 <el-tag size="small" type="success" effect="plain">缓存</el-tag></span>
           <span v-else-if="row.no_usage" class="warn">未计量</span>
-          <span v-else class="num green">{{ fmtQuota(row.cost) }}</span>
+          <span v-else class="num green">{{ fmtYuan(row.cost, ppy) }}</span>
         </template>
       </el-table-column>
       <el-table-column label="状态" width="80">

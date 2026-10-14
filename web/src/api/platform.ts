@@ -207,9 +207,11 @@ export const apiReadNotification = (id: number) =>
 export const apiReadAllNotifications = () =>
   http.put<any, { message: string }>('/api/me/notifications/read-all')
 
-// 额度预警：为某客户设置阈值（0 = 关闭）
-export const apiUpdateOrgAlertLevels = (id: number, threshold: number) =>
-  http.put<any, any>(`/api/platform/orgs/${id}/alert-levels`, { threshold })
+// 额度预警：为某客户设置双阈值（使用率百分比 / 剩余额度金额，均 0 = 关闭，两项独立开关；
+// alert_balance 传点数，前端按元录入后换算）
+export const apiUpdateOrgAlertLevels = (id: number, threshold: number, alertBalancePoints?: number) =>
+  http.put<any, any>(`/api/platform/orgs/${id}/alert-levels`,
+    alertBalancePoints === undefined ? { threshold } : { threshold, alert_balance: alertBalancePoints })
 
 // ---- 充值审批与收款信息 ----
 

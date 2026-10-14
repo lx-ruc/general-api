@@ -2,13 +2,14 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiMyRequests, apiCreateRequest, apiMyModels, apiAvailableModels, type AvailableModel } from '../../api/member'
-import { fmtQuota, fmtTime } from '../../utils/format'
+import { fmtYuan, yuanToPoints, fmtTime } from '../../utils/format'
+import { usePpy } from '../../composables/usePpy'
 
+const ppy = usePpy()
 const me = ref<any>(null)
 const list = ref<any[]>([])
-// 申请额度按 M tokens 录入（1M = 1,000,000 点），提交前换算成点
-const M = 1_000_000
-const form = reactive({ amount: 1, reason: '' })
+// 申请额度按元录入，提交前换算成点
+const form = reactive({ amount: 100, reason: '' })
 const submitting = ref(false)
 
 // ---- 模型申请 ----
@@ -28,14 +29,14 @@ onMounted(load)
 
 async function submit() {
   if (!form.amount || form.amount <= 0) {
-    ElMessage.warning('请填写申请额度（M tokens）')
+    ElMessage.warning('请填写申请额度（元）')
     return
   }
   submitting.value = true
   try {
-    await apiCreateRequest({ amount: Math.round(form.amount * M), reason: form.reason })
+    await apiCreateRequest({ amount: yuanToPoints(form.amount, ppy.value), reason: form.reason })
     ElMessage.success('申请已提交，等待客户管理员审批')
-    form.amount = 1
+    form.amount = 100
     form.reason = ''
     load()
   } finally {
@@ -70,14 +71,14 @@ const isModel = (row: any) => row.kind === 'model'
     <el-card shadow="never" style="margin-bottom: 16px">
       <template #header>我的额度</template>
       <el-descriptions :column="3" border>
-        <el-descriptions-item label="额度上限">
-          {{ me.quota_limit == null ? '不限额' : fmtQuota(me.quota_limit) }}
+        <el-descriptions-item label="额度上限（元）">
+          {{ me.quota_limit == null ? '不限额' : fmtYuan(me.quota_limit, ppy) }}
         </el-descriptions-item>
-        <el-descriptions-item label="已消耗">{{ fmtQuota(me.quota_used) }}</el-descriptions-item>
-        <el-descriptions-item label="剩余">
+        <el-descriptions-item label="已消耗（元）">{{ fmtYuan(me.quota_used, ppy) }}</el-descriptions-item>
+        <el-descriptions-item label="剩余（元）">
           <span v-if="me.quota_limit == null" style="color: #67c23a">不限</span>
           <span v-else :style="{ color: me.quota_limit - me.quota_used > 0 ? '#67c23a' : '#f56c6c', fontWeight: 600 }">
-            {{ fmtQuota(me.quota_limit - me.quota_used) }}
+            {{ fmtYuan(me.quota_limit - me.quota_used, ppy) }}
           </span>
         </el-descriptions-item>
       </el-descriptions>
@@ -86,9 +87,8 @@ const isModel = (row: any) => row.kind === 'model'
       <el-tabs v-model="activeTab">
         <el-tab-pane label="额度申请" name="quota">
           <el-form inline>
-            <el-form-item label="申请额度（M tokens）">
-              <el-input-number v-model="form.amount" :min="0.1" :step="1" />
-              <span class="hint">= {{ fmtQuota(Math.round(form.amount * M)) }}</span>
+            <el-form-item label="申请额度（元）">
+              <el-input-number v-model="form.amount" :min="0.01" :precision="2" :step="100" />
             </el-form-item>
             <el-form-item label="理由">
               <el-input v-model="form.reason" placeholder="如：XX 项目联调需要" style="width: 260px" />
@@ -144,7 +144,7 @@ const isModel = (row: any) => row.kind === 'model'
             <template v-if="isModel(row)">
               <el-tag v-for="n in row.model_names.split(',')" :key="n" size="small" style="margin-right: 4px">{{ n }}</el-tag>
             </template>
-            <template v-else>{{ fmtQuota(row.amount) }}</template>
+            <template v-else>{{ fmtYuan(row.amount, ppy) }}</template>
           </template>
         </el-table-column>
         <el-table-column prop="reason" label="理由" min-width="150" show-overflow-tooltip />

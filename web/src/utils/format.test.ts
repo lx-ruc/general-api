@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import dayjs from 'dayjs'
 import {
-  fmtQuota,
+  yuanToPoints,
+  pointsToYuan,
   fmtTokenCompact,
   fmtPrice1K,
   yuan1KToPoints,
@@ -13,27 +14,35 @@ import {
   roleNames,
 } from './format'
 
-describe('fmtQuota：额度以 token 口径展示', () => {
-  it('空值（null/undefined）返回 -', () => {
-    expect(fmtQuota(null)).toBe('-')
-    expect(fmtQuota(undefined)).toBe('-')
+describe('yuanToPoints / pointsToYuan：录入口元 ↔ 存储点数换算', () => {
+  it('默认 1 元 = 1,000,000 点', () => {
+    expect(yuanToPoints(100)).toBe(100_000_000)
+    expect(yuanToPoints(0.01)).toBe(10_000)
+    expect(yuanToPoints(0)).toBe(0)
+    expect(pointsToYuan(100_000_000)).toBe(100)
+    expect(pointsToYuan(2_500_000)).toBe(2.5)
+    expect(pointsToYuan(0)).toBe(0)
   })
 
-  it('百万以下原样带千分位', () => {
-    expect(fmtQuota(0)).toBe('0 token')
-    expect(fmtQuota(999_999)).toBe('999,999 token')
+  it('元 → 点四舍五入取整点', () => {
+    expect(yuanToPoints(0.000001)).toBe(1)
+    expect(yuanToPoints(0.0000004)).toBe(0)
   })
 
-  it('百万及以上折算 M token，去尾零', () => {
-    expect(fmtQuota(1_000_000)).toBe('1M token')
-    expect(fmtQuota(2_000_000)).toBe('2M token')
-    expect(fmtQuota(2_500_000)).toBe('2.5M token')
-    expect(fmtQuota(1_100_000)).toBe('1.1M token')
-    expect(fmtQuota(10_000_000)).toBe('10M token')
+  it('ppy 可调（points_per_yuan 配置）', () => {
+    expect(yuanToPoints(100, 500_000)).toBe(50_000_000)
+    expect(pointsToYuan(50_000_000, 500_000)).toBe(100)
   })
 
-  it('负额度同样折算（欠费/冲减场景）', () => {
-    expect(fmtQuota(-2_500_000)).toBe('-2.5M token')
+  it('负数（冲减/回收场景）对称换算', () => {
+    expect(yuanToPoints(-2.5)).toBe(-2_500_000)
+    expect(pointsToYuan(-2_500_000)).toBe(-2.5)
+  })
+
+  it('元 → 点 → 元往返一致（两位小数精度内）', () => {
+    for (const yuan of [0.01, 1.99, 100, 12345.67]) {
+      expect(pointsToYuan(yuanToPoints(yuan))).toBeCloseTo(yuan, 10)
+    }
   })
 })
 

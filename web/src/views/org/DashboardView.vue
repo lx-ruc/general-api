@@ -3,9 +3,11 @@ import { onMounted, ref, computed } from 'vue'
 import { apiOrgStats } from '../../api/org'
 import StatRow from '../../components/StatRow.vue'
 import LineChart from '../../components/LineChart.vue'
-import { fmtNum, fmtQuota, fmtTokenCompact, fmtTokensM } from '../../utils/format'
+import { fmtNum, fmtYuan, fmtTokenCompact, fmtTokensM } from '../../utils/format'
 import { trendOptions, barOption } from '../../utils/chart'
+import { usePpy } from '../../composables/usePpy'
 
+const ppy = usePpy()
 const data = ref<any>(null)
 const org = ref<any>(null)
 
@@ -74,16 +76,16 @@ const setupSteps = computed(() => {
     <el-card shadow="never" class="pool">
       <div class="pool-row">
         <div class="pool-item">
-          <div class="pool-label">客户池余额</div>
-          <div class="pool-value num green">{{ fmtQuota(org.quota_limit - org.quota_used) }}</div>
+          <div class="pool-label">客户池余额（元）</div>
+          <div class="pool-value num green">{{ fmtYuan(org.quota_limit - org.quota_used, ppy) }}</div>
         </div>
         <div class="pool-item">
-          <div class="pool-label">额度上限</div>
-          <div class="pool-value num">{{ fmtQuota(org.quota_limit) }}</div>
+          <div class="pool-label">额度上限（元）</div>
+          <div class="pool-value num">{{ fmtYuan(org.quota_limit, ppy) }}</div>
         </div>
         <div class="pool-item">
-          <div class="pool-label">已消耗</div>
-          <div class="pool-value num">{{ fmtQuota(org.quota_used) }}</div>
+          <div class="pool-label">已消耗（元）</div>
+          <div class="pool-value num">{{ fmtYuan(org.quota_used, ppy) }}</div>
         </div>
         <div class="pool-meter-wrap">
           <div class="pool-meter" aria-hidden="true">

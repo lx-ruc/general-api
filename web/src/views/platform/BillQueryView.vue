@@ -3,9 +3,11 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { apiBillingOverview } from '../../api/platform'
-import { fmtQuota, fmtYuan } from '../../utils/format'
+import { fmtYuan } from '../../utils/format'
+import { usePpy } from '../../composables/usePpy'
 
 const router = useRouter()
+const ppy = usePpy()
 
 const month = ref(dayjs().format('YYYY-MM'))
 const monthOptions = (() => {
@@ -29,11 +31,10 @@ onMounted(load)
 
 const rows = computed(() => ov.value?.rows || [])
 
-// 口径都用大白话：
-// 授权token = 本月给客户新增的额度（发放 − 回收）
-// 消耗token = 本月实际用量
-// token余额 = 还剩多少可用
-// 账单费用 = 本月消耗折算成钱（元）
+// 口径都用大白话（全站统一元口径，1 元 = points_per_yuan 点）：
+// 授权 = 本月给客户新增的额度（发放 − 回收）
+// 消耗 = 本月实际用量，即账单费用
+// 余额 = 还剩多少可用
 function granted(r: any): number {
   return (r.total_granted || 0) + (r.total_revoked || 0)
 }
@@ -65,20 +66,16 @@ const totals = computed(() => {
 
     <div v-if="ov" class="totals">
       <div class="total-item">
-        <div class="total-label">授权token（本月发放）</div>
-        <div class="total-value num green">+{{ fmtQuota(totals.granted) }}</div>
+        <div class="total-label">授权（元）（本月发放）</div>
+        <div class="total-value num green">+{{ fmtYuan(totals.granted, ppy) }}</div>
       </div>
       <div class="total-item">
-        <div class="total-label">消耗token（本月用量）</div>
-        <div class="total-value num">{{ fmtQuota(totals.consumption) }}</div>
+        <div class="total-label">消耗（元）（本月用量 · 即账单费用）</div>
+        <div class="total-value num">{{ fmtYuan(totals.consumption, ppy) }}</div>
       </div>
       <div class="total-item">
-        <div class="total-label">token余额（全部客户剩余）</div>
-        <div class="total-value num green">{{ fmtQuota(totals.balance) }}</div>
-      </div>
-      <div class="total-item">
-        <div class="total-label">账单费用（{{ month }} 合计）</div>
-        <div class="total-value num">{{ fmtYuan(totals.consumption) }}</div>
+        <div class="total-label">余额（元）（全部客户剩余）</div>
+        <div class="total-value num green">{{ fmtYuan(totals.balance, ppy) }}</div>
       </div>
     </div>
 
@@ -95,25 +92,20 @@ const totals = computed(() => {
           <el-tag v-else type="danger" size="small">停用</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="授权token" min-width="110">
+      <el-table-column label="授权（元）" min-width="110">
         <template #default="{ row }">
-          <span class="num green">{{ granted(row) > 0 ? `+${fmtQuota(granted(row))}` : fmtQuota(granted(row)) }}</span>
+          <span class="num green">{{ granted(row) > 0 ? `+${fmtYuan(granted(row), ppy)}` : fmtYuan(granted(row), ppy) }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="消耗token" min-width="110">
+      <el-table-column label="消耗（元）" min-width="110">
         <template #default="{ row }">
-          <span class="num">{{ fmtQuota(row.consumption) }}</span>
+          <span class="num">{{ fmtYuan(row.consumption, ppy) }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="token余额" min-width="110">
+      <el-table-column label="余额（元）" min-width="110">
         <template #default="{ row }">
-          <span class="num" :class="balance(row) > 0 ? 'green' : 'red'">{{ fmtQuota(balance(row)) }}</span>
+          <span class="num" :class="balance(row) > 0 ? 'green' : 'red'">{{ fmtYuan(balance(row), ppy) }}</span>
           <span v-if="row.closing_is_live" class="dim">（当前）</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="账单费用（元）" min-width="120">
-        <template #default="{ row }">
-          <span class="num">{{ fmtYuan(row.consumption) }}</span>
         </template>
       </el-table-column>
       <el-table-column label="操作" width="110" fixed="right">

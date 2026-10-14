@@ -3,9 +3,11 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
 import { apiListOrgs, apiAddOrgQuota, apiSetOrgQuota, apiListQuotaGrants, type Org } from '../../api/platform'
-import { fmtTime, fmtQuota } from '../../utils/format'
+import { fmtTime, fmtYuan, yuanToPoints, pointsToYuan } from '../../utils/format'
+import { usePpy } from '../../composables/usePpy'
 
 const router = useRouter()
+const ppy = usePpy()
 
 // ---- 客户额度表（读客户列表；调整走与客户管理同一组端点）----
 const list = ref<Org[]>([])
@@ -19,18 +21,17 @@ async function load() {
 }
 onMounted(load)
 
-// 调整额度（按 M tokens 录入）：追加=在上限上加减（负数为冲减回收）；
+// 调整额度（按元录入）：追加=在上限上加减（负数为冲减回收）；
 // 设为=quota_limit 直接置为目标值（0=零额度），差值自动入对账流水
-const M = 1_000_000
 const quotaVisible = ref(false)
 const quotaForm = reactive({
-  org: null as Org | null, mode: 'append' as 'append' | 'set', amount: 10, target: 0, remark: '',
+  org: null as Org | null, mode: 'append' as 'append' | 'set', amount: 100, target: 0, remark: '',
 })
 function openQuota(org: Org) {
   quotaForm.org = org
   quotaForm.mode = 'append'
-  quotaForm.amount = 10
-  quotaForm.target = Math.round(org.quota_limit / M)
+  quotaForm.amount = 100
+  quotaForm.target = pointsToYuan(org.quota_limit, ppy.value)
   quotaForm.remark = ''
   quotaVisible.value = true
 }
@@ -39,9 +40,9 @@ async function submitQuota() {
   let resp: any
   if (quotaForm.mode === 'set') {
     // input-number 清空后是 null（falsy），按 0 处理：设为 0 是合法的零额度语义
-    resp = await apiSetOrgQuota(quotaForm.org.id, Math.round((quotaForm.target || 0) * M), quotaForm.remark)
+    resp = await apiSetOrgQuota(quotaForm.org.id, yuanToPoints(quotaForm.target || 0, ppy.value), quotaForm.remark)
   } else {
-    const amount = Math.round((quotaForm.amount || 0) * M)
+    const amount = yuanToPoints(quotaForm.amount || 0, ppy.value)
     if (amount === 0) {
       ElMessage.warning('追加量不能为 0（要直接改上限请切到「设为」）')
       return
@@ -73,7 +74,7 @@ function orgChanged() {
 }
 
 function fmtAmount(v: number): string {
-  return v > 0 ? `+${fmtQuota(v)}` : fmtQuota(v)
+  return v > 0 ? `+${fmtYuan(v, ppy.value)}` : fmtYuan(v, ppy.value)
 }
 </script>
 
@@ -94,16 +95,16 @@ function fmtAmount(v: number): string {
         </template>
       </el-table-column>
       <el-table-column prop="member_count" label="成员" width="70" align="center" />
-      <el-table-column label="已用 / 上限（token）" min-width="200">
+      <el-table-column label="已用 / 上限（元）" min-width="200">
         <template #default="{ row }">
-          <span class="num">{{ fmtQuota(row.quota_used) }}</span>
-          <span class="dim"> / {{ fmtQuota(row.quota_limit) }}</span>
+          <span class="num">{{ fmtYuan(row.quota_used, ppy) }}</span>
+          <span class="dim"> / {{ fmtYuan(row.quota_limit, ppy) }}</span>
         </template>
       </el-table-column>
       <el-table-column label="剩余" min-width="120">
         <template #default="{ row }">
           <span class="num" :class="row.quota_limit - row.quota_used > 0 ? 'green' : 'red'">
-            {{ fmtQuota(row.quota_limit - row.quota_used) }}
+            {{ fmtYuan(row.quota_limit - row.quota_used, ppy) }}
           </span>
         </template>
       </el-table-column>
@@ -140,7 +141,7 @@ function fmtAmount(v: number): string {
         <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
       </el-table-column>
       <el-table-column prop="org_name" label="客户" min-width="140" />
-      <el-table-column label="金额（token）" min-width="140">
+      <el-table-column label="金额（元）" min-width="140">
         <template #default="{ row }">
           <span class="num" :class="row.amount >= 0 ? 'green' : 'red'">{{ fmtAmount(row.amount) }}</span>
         </template>
@@ -166,13 +167,13 @@ function fmtAmount(v: number): string {
           <el-radio value="set">设为</el-radio>
         </el-radio-group>
       </el-form-item>
-      <el-form-item v-if="quotaForm.mode === 'append'" label="追加（M tokens）">
-        <el-input-number v-model="quotaForm.amount" :step="10" />
-        <span class="tip">负数为冲减回收，入对账单冲减段；= {{ fmtQuota(Math.round((quotaForm.amount || 0) * M)) }}</span>
+      <el-form-item v-if="quotaForm.mode === 'append'" label="追加（元）">
+        <el-input-number v-model="quotaForm.amount" :precision="2" :step="100" />
+        <span class="tip">负数为冲减回收，入对账单回收段</span>
       </el-form-item>
-      <el-form-item v-else label="设为（M tokens）">
-        <el-input-number v-model="quotaForm.target" :min="0" :step="10" />
-        <span class="tip">当前上限 {{ fmtQuota(quotaForm.org?.quota_limit || 0) }} · 已用 {{ fmtQuota(quotaForm.org?.quota_used || 0) }}；= {{ fmtQuota(Math.round((quotaForm.target || 0) * M)) }}</span>
+      <el-form-item v-else label="设为（元）">
+        <el-input-number v-model="quotaForm.target" :min="0" :precision="2" :step="100" />
+        <span class="tip">当前上限 {{ fmtYuan(quotaForm.org?.quota_limit || 0, ppy) }} · 已用 {{ fmtYuan(quotaForm.org?.quota_used || 0, ppy) }}</span>
       </el-form-item>
       <el-form-item label="事由备注"><el-input v-model="quotaForm.remark" /></el-form-item>
     </el-form>

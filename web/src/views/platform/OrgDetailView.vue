@@ -9,10 +9,12 @@ import {
 } from '../../api/platform'
 import LineChart from '../../components/LineChart.vue'
 import { trendOptions, barOption } from '../../utils/chart'
-import { fmtTime, fmtQuota, fmtNum, fmtYuan, roleNames } from '../../utils/format'
+import { fmtTime, fmtNum, fmtYuan, yuanToPoints, pointsToYuan, roleNames } from '../../utils/format'
+import { usePpy } from '../../composables/usePpy'
 
 const route = useRoute()
 const router = useRouter()
+const ppy = usePpy()
 const org = ref<any>(null)
 const grants = ref<any[]>([])
 const users = ref<any[]>([])
@@ -58,8 +60,10 @@ const usedPct = computed(() =>
     ? (org.value.quota_used / org.value.quota_limit) * 100 : 0,
 )
 
-// 额度预警阈值（alert_levels JSON 取最高档；0 = 关闭）
+// 额度预警双阈值：使用率百分比（alert_levels JSON 取最高档；0=关）
+// + 剩余额度金额档（alert_balance 点数；0=关）。两档正交，任一命中即邮件提醒
 const threshold = ref(0)
+const alertBalanceYuan = ref(0)
 const thresholdSaving = ref(false)
 function parseThreshold(levels: string): number {
   try {
@@ -69,29 +73,37 @@ function parseThreshold(levels: string): number {
     return 0
   }
 }
-onMounted(() => { threshold.value = parseThreshold(org.value?.alert_levels) })
-watch(() => org.value?.alert_levels, (v) => { threshold.value = parseThreshold(v) })
+function syncAlertForm() {
+  threshold.value = parseThreshold(org.value?.alert_levels)
+  alertBalanceYuan.value = pointsToYuan(org.value?.alert_balance || 0, ppy.value)
+}
+onMounted(syncAlertForm)
+watch(() => [org.value?.alert_levels, org.value?.alert_balance], syncAlertForm)
 async function saveThreshold() {
   thresholdSaving.value = true
   try {
-    await apiUpdateOrgAlertLevels(Number(route.params.id), threshold.value || 0)
-    ElMessage.success('预警阈值已更新')
+    await apiUpdateOrgAlertLevels(Number(route.params.id), threshold.value || 0,
+      yuanToPoints(alertBalanceYuan.value || 0, ppy.value))
+    ElMessage.success('预警设置已更新')
   } finally {
     thresholdSaving.value = false
   }
 }
 
-// 单月消费上限（0=不限；当月达限拦截新请求，次月自动清零）
+// 单月消费上限（0=不限；当月达限拦截新请求，次月自动清零）——按元录入，入库换算点数
 const monthly = ref(0)
 const monthlyUsed = computed(() =>
   org.value && org.value.monthly_period === dayjs().format('YYYY-MM') ? (org.value.monthly_cost || 0) : 0,
 )
-onMounted(() => { monthly.value = org.value?.monthly_quota || 0 })
-watch(() => org.value?.monthly_quota, (v) => { monthly.value = v || 0 })
+function syncMonthly() {
+  monthly.value = pointsToYuan(org.value?.monthly_quota || 0, ppy.value)
+}
+onMounted(syncMonthly)
+watch(() => org.value?.monthly_quota, syncMonthly)
 async function saveMonthly() {
   monthlySaving.value = true
   try {
-    await apiUpdateOrg(Number(route.params.id), { monthly_quota: monthly.value || 0 })
+    await apiUpdateOrg(Number(route.params.id), { monthly_quota: yuanToPoints(monthly.value || 0, ppy.value) })
     ElMessage.success('单月上限已更新')
   } finally {
     monthlySaving.value = false
@@ -152,16 +164,16 @@ async function exportStatementCSV() {
         <div class="pool-item">
           <div class="pool-label">剩余额度</div>
           <div class="pool-value num green">
-            {{ fmtQuota(org.quota_limit - org.quota_used) }}
+            {{ fmtYuan(org.quota_limit - org.quota_used, ppy) }}
           </div>
         </div>
         <div class="pool-item">
           <div class="pool-label">额度上限</div>
-          <div class="pool-value num">{{ fmtQuota(org.quota_limit) }}</div>
+          <div class="pool-value num">{{ fmtYuan(org.quota_limit, ppy) }}</div>
         </div>
         <div class="pool-item">
           <div class="pool-label">已消耗</div>
-          <div class="pool-value num">{{ fmtQuota(org.quota_used) }}</div>
+          <div class="pool-value num">{{ fmtYuan(org.quota_used, ppy) }}</div>
         </div>
         <div class="pool-meter-wrap">
           <div class="pool-meter" aria-hidden="true">
@@ -170,21 +182,33 @@ async function exportStatementCSV() {
           <span class="pool-meter-label num">已用 {{ usedPct.toFixed(2) }}%</span>
         </div>
         <div class="pool-alert">
-          <el-tooltip content="客户额度达到阈值时邮件提醒其管理员；0 = 关闭。达 100% 会同时通知你（系统管理员）" placement="top">
-            <span class="pool-label">预警阈值</span>
+          <el-tooltip content="客户额度使用率超过该百分比时邮件提醒其管理员；0 = 关闭。达 100% 会同时通知你（系统管理员）" placement="top">
+            <span class="pool-label">使用率预警</span>
           </el-tooltip>
           <div class="pool-alert-input">
             <el-input-number v-model="threshold" :min="0" :max="100" :controls="false" size="small" style="width: 76px" />
             <span class="dim">%</span>
-            <el-button size="small" :loading="thresholdSaving" @click="saveThreshold">保存</el-button>
           </div>
         </div>
         <div class="pool-alert">
-          <el-tooltip content="单月消费上限（token 预算）；0 = 不限。当月达限拦截新请求，次月自动清零恢复" placement="top">
-            <span class="pool-label">单月上限<span v-if="monthly > 0" class="dim">（本月已用 {{ fmtQuota(monthlyUsed) }}）</span></span>
+          <el-tooltip content="客户剩余额度低于该金额（元）时邮件提醒其管理员；0 = 关闭。与使用率预警相互独立，任一命中即提醒" placement="top">
+            <span class="pool-label">余额预警</span>
           </el-tooltip>
           <div class="pool-alert-input">
-            <el-input-number v-model="monthly" :min="0" :step="10000000" size="small" style="width: 140px" />
+            <el-input-number v-model="alertBalanceYuan" :min="0" :precision="2" :controls="false" size="small" style="width: 110px" />
+            <span class="dim">元</span>
+          </div>
+        </div>
+        <div class="pool-alert">
+          <el-button size="small" :loading="thresholdSaving" @click="saveThreshold">保存预警</el-button>
+        </div>
+        <div class="pool-alert">
+          <el-tooltip content="单月消费上限（元）；0 = 不限。当月达限拦截新请求，次月自动清零恢复" placement="top">
+            <span class="pool-label">单月上限<span v-if="monthly > 0" class="dim">（本月已用 {{ fmtYuan(monthlyUsed, ppy) }}）</span></span>
+          </el-tooltip>
+          <div class="pool-alert-input">
+            <el-input-number v-model="monthly" :min="0" :precision="2" :step="100" size="small" style="width: 140px" />
+            <span class="dim">元</span>
             <el-button size="small" :loading="monthlySaving" @click="saveMonthly">保存</el-button>
           </div>
         </div>
@@ -201,7 +225,7 @@ async function exportStatementCSV() {
       </el-col>
       <el-col :xs="24" :md="12">
         <el-card shadow="never">
-          <template #header>近 7 日额度消耗<span class="unit">（token）</span></template>
+          <template #header>近 7 日额度消耗<span class="unit">（元）</span></template>
           <LineChart :option="trendOptions(stats.series).costOption" />
         </el-card>
       </el-col>
@@ -230,7 +254,7 @@ async function exportStatementCSV() {
             </el-table-column>
             <el-table-column label="消耗" min-width="150" align="right">
               <template #default="{ row }">
-                <span class="num green">{{ fmtQuota(row.cost) }}</span>
+                <span class="num green">{{ fmtYuan(row.cost, ppy) }}</span>
               </template>
             </el-table-column>
           </el-table>
@@ -252,7 +276,7 @@ async function exportStatementCSV() {
             </el-table-column>
             <el-table-column label="消耗" min-width="150" align="right">
               <template #default="{ row }">
-                <span class="num green">{{ fmtQuota(row.cost) }}</span>
+                <span class="num green">{{ fmtYuan(row.cost, ppy) }}</span>
               </template>
             </el-table-column>
           </el-table>
@@ -272,7 +296,7 @@ async function exportStatementCSV() {
             <el-table-column label="变更" width="130" align="right">
               <template #default="{ row }">
                 <span class="num" :class="row.amount >= 0 ? 'green' : 'red'">
-                  {{ row.amount >= 0 ? '+' : '' }}{{ fmtQuota(row.amount) }}
+                  {{ row.amount >= 0 ? '+' : '' }}{{ fmtYuan(row.amount, ppy) }}
                 </span>
               </template>
             </el-table-column>
@@ -296,10 +320,10 @@ async function exportStatementCSV() {
             </el-table-column>
             <el-table-column label="已用 / 上限" width="150" align="right">
               <template #default="{ row }">
-                <span class="num">{{ fmtQuota(row.quota_used) }}</span>
+                <span class="num">{{ fmtYuan(row.quota_used, ppy) }}</span>
                 <span class="dim"> / </span>
                 <span v-if="row.quota_limit == null" class="dim">不限</span>
-                <span v-else class="num">{{ fmtQuota(row.quota_limit) }}</span>
+                <span v-else class="num">{{ fmtYuan(row.quota_limit, ppy) }}</span>
               </template>
             </el-table-column>
             <el-table-column label="状态" width="70" align="center">
@@ -329,20 +353,20 @@ async function exportStatementCSV() {
       </template>
 
       <el-descriptions :column="3" border size="small">
-        <el-descriptions-item label="月初token余额">
-          <span class="num">{{ st.opening_limit == null ? '—' : fmtQuota(st.opening_limit - (st.opening_used || 0)) }}</span>
+        <el-descriptions-item label="月初余额（元）">
+          <span class="num">{{ st.opening_limit == null ? '—' : fmtYuan(st.opening_limit - (st.opening_used || 0), ppy) }}</span>
         </el-descriptions-item>
-        <el-descriptions-item label="授权token">
-          <span class="num green">+{{ fmtQuota(st.total_granted) }}</span>
+        <el-descriptions-item label="授权（元）">
+          <span class="num green">+{{ fmtYuan(st.total_granted, ppy) }}</span>
         </el-descriptions-item>
-        <el-descriptions-item label="回收token">
-          <span class="num red">{{ fmtQuota(st.total_revoked) }}</span>
+        <el-descriptions-item label="回收（元）">
+          <span class="num red">{{ fmtYuan(st.total_revoked, ppy) }}</span>
         </el-descriptions-item>
-        <el-descriptions-item label="消耗token">
-          <span class="num">{{ fmtQuota(st.consumption) }}</span>
+        <el-descriptions-item label="消耗（元）">
+          <span class="num">{{ fmtYuan(st.consumption, ppy) }}</span>
         </el-descriptions-item>
-        <el-descriptions-item label="月末token余额">
-          <span class="num">{{ fmtQuota(st.closing_limit - st.closing_used) }}
+        <el-descriptions-item label="月末余额（元）">
+          <span class="num">{{ fmtYuan(st.closing_limit - st.closing_used, ppy) }}
             <el-tag v-if="st.closing_is_live" type="warning" size="small" effect="plain">当前</el-tag>
           </span>
         </el-descriptions-item>
@@ -363,9 +387,9 @@ async function exportStatementCSV() {
         <el-table-column label="回收时间" width="160">
           <template #default="{ row }">{{ fmtTime(row.created_at) }}</template>
         </el-table-column>
-        <el-table-column label="回收token" width="180" align="right">
+        <el-table-column label="回收（元）" width="180" align="right">
           <template #default="{ row }">
-            <span class="num red">{{ fmtQuota(row.amount) }}</span>
+            <span class="num red">{{ fmtYuan(row.amount, ppy) }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="remark" label="事由" min-width="160" show-overflow-tooltip />
@@ -387,9 +411,9 @@ async function exportStatementCSV() {
             <span :class="{ green: row.cache_hits > 0 }">{{ row.cache_hits }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="消耗（token）" width="130" align="right">
+        <el-table-column label="消耗（元）" width="130" align="right">
           <template #default="{ row }">
-            <span class="num green">{{ fmtQuota(row.cost) }}</span>
+            <span class="num green">{{ fmtYuan(row.cost, ppy) }}</span>
           </template>
         </el-table-column>
       </el-table>

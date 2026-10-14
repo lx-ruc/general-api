@@ -2,13 +2,14 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiOrgRecharges, apiCreateRecharge, apiOrgBankInfo } from '../../api/org'
-import { fmtTime, fmtQuota } from '../../utils/format'
+import { fmtTime, fmtYuan, yuanToPoints } from '../../utils/format'
+import { usePpy } from '../../composables/usePpy'
 
+const ppy = usePpy()
 const bankInfo = ref('')
 const list = ref<any[]>([])
-// 额度录入统一按 M tokens 填写（与其余五个入口一致），提交时换算回点数
-const M = 1_000_000
-const form = reactive({ amount: 10, voucher: '' })
+// 充值金额按元填写（资金口径），提交时换算回点数
+const form = reactive({ amount: 100, voucher: '' })
 const submitting = ref(false)
 
 async function load() {
@@ -25,7 +26,7 @@ async function submit() {
   }
   submitting.value = true
   try {
-    const r = await apiCreateRecharge(Math.round(form.amount * M), form.voucher)
+    const r = await apiCreateRecharge(yuanToPoints(form.amount, ppy.value), form.voucher)
     ElMessage.success(r.message || '已提交')
     form.voucher = ''
     load()
@@ -48,9 +49,9 @@ const statusName = (s: string) => ({ pending: '待确认', approved: '已到账'
       </el-alert>
       <el-divider content-position="left">第二步：提交充值申请（平台确认后额度自动到账并邮件通知）</el-divider>
       <el-form inline>
-        <el-form-item label="充值金额（M tokens）">
-          <el-input-number v-model="form.amount" :min="1" :step="5" />
-          <span class="tip">= {{ fmtQuota(Math.round(form.amount * M)) }}</span>
+        <el-form-item label="充值金额（元）">
+          <el-input-number v-model="form.amount" :min="0.01" :max="1e9" :precision="2" :step="100" />
+          <span class="tip">= {{ fmtYuan(yuanToPoints(form.amount, ppy), ppy) }}</span>
         </el-form-item>
         <el-form-item label="转账凭证">
           <el-input v-model="form.voucher" placeholder="银行流水号 / 转账时间 / 户名" style="width: 260px" />
@@ -65,8 +66,8 @@ const statusName = (s: string) => ({ pending: '待确认', approved: '已到账'
       <template #header>充值记录</template>
       <el-table :data="list" empty-text="暂无充值记录">
         <el-table-column prop="id" label="#" width="60" />
-        <el-table-column label="金额" width="180">
-          <template #default="{ row }">{{ fmtQuota(row.amount) }}</template>
+        <el-table-column label="金额（元）" width="180">
+          <template #default="{ row }">{{ fmtYuan(row.amount, ppy) }}</template>
         </el-table-column>
         <el-table-column prop="voucher" label="凭证说明" min-width="160" show-overflow-tooltip />
         <el-table-column label="状态" width="90">

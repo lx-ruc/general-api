@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import dayjs from 'dayjs'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '../../stores/auth'
@@ -8,14 +8,18 @@ import {
   apiOrgBillingStatement, downloadOrgStatementCSV, type BillStatement,
 } from '../../api/org'
 import StatRow from '../../components/StatRow.vue'
-import { fmtNum, fmtQuota, fmtYuan } from '../../utils/format'
+import { fmtNum, fmtYuan, yuanToPoints, pointsToYuan } from '../../utils/format'
+import { usePpy } from '../../composables/usePpy'
 
 const auth = useAuthStore()
+const ppy = usePpy()
 
 const month = ref(dayjs().format('YYYY-MM'))
 const data = ref<any>(null)
 const st = ref<BillStatement | null>(null)
 const loading = ref(false)
+// 账单内的金额按账期快照口径折元（无快照的历史月回退当前口径）
+const stppy = computed(() => st.value?.points_per_yuan || ppy.value)
 
 const monthOptions = (() => {
   const out: string[] = []
@@ -52,41 +56,47 @@ async function exportStatementCSV() {
   }
 }
 
-// 额度预警阈值（0/空 = 关闭；升档邮件一次性提醒，拨备回落自动复位）
+// 额度预警双阈值：使用率百分比（0=关）+ 剩余额度金额（元，0=关），两档正交独立提醒
 const threshold = ref<number>(80)
+const alertBalanceYuan = ref(0)
 const thresholdLoading = ref(false)
 const monthly = ref<{ quota: number; used: number }>({ quota: 0, used: 0 })
 onMounted(async () => {
   try {
     const r = await apiGetAlertLevels()
     threshold.value = r.threshold
+    alertBalanceYuan.value = pointsToYuan(r.alert_balance || 0, ppy.value)
     monthly.value = { quota: r.monthly_quota || 0, used: r.monthly_used || 0 }
   } catch { /* 默认 80 */ }
 })
 async function saveThreshold() {
   thresholdLoading.value = true
   try {
-    await apiUpdateAlertLevels(threshold.value || 0)
-    ElMessageBox.alert('预警阈值已更新', '成功')
+    await apiUpdateAlertLevels(threshold.value || 0,
+      yuanToPoints(alertBalanceYuan.value || 0, ppy.value))
+    ElMessageBox.alert('预警设置已更新', '成功')
   } finally {
     thresholdLoading.value = false
   }
 }
+
+// CSV 单元格用裸数字（去 ¥ 前缀），便于 Excel 直接求和
+const yuan = (v: number) => fmtYuan(v, ppy.value).replace('¥', '')
 
 function exportCSV() {
   const d = data.value
   if (!d) return
   const lines = [
     `月份,${d.month}`,
-    '汇总,请求数,tokens,消耗',
-    `合计,${d.summary.requests},${d.summary.tokens},${d.summary.cost}`,
+    '汇总,请求数,tokens,消耗（元）',
+    `合计,${d.summary.requests},${d.summary.tokens},${yuan(d.summary.cost)}`,
     '',
-    '模型,请求数,tokens,消耗',
-    ...d.by_model.map((m: any) => `${m.name},${m.requests},${m.tokens},${m.cost}`),
+    '模型,请求数,tokens,消耗（元）',
+    ...d.by_model.map((m: any) => `${m.name},${m.requests},${m.tokens},${yuan(m.cost)}`),
     '',
-    '充值时间,金额（token）,状态,凭证说明',
+    '充值时间,金额（元）,状态,凭证说明',
     ...d.recharges.map((r: any) =>
-      `${dayjs.unix(r.created_at).format('YYYY-MM-DD HH:mm')},${r.amount},${r.status},${(r.voucher || '').replace(/[,\n]/g, ' ')}`),
+      `${dayjs.unix(r.created_at).format('YYYY-MM-DD HH:mm')},${yuan(r.amount)},${r.status},${(r.voucher || '').replace(/[,\n]/g, ' ')}`),
   ]
   const blob = new Blob(['﻿' + lines.join('\n')], { type: 'text/csv;charset=utf-8' })
   const a = document.createElement('a')
@@ -113,30 +123,33 @@ function exportCSV() {
       </template>
       <StatRow v-if="data" :items="[
         { label: '请求数（本月）', value: fmtNum(data.summary.requests) },
-        { label: '消耗token（本月）', value: fmtQuota(data.summary.cost) },
-        { label: '授权token（本月充值）', value: fmtQuota(data.recharged), tone: 'green' },
-        { label: '账单费用（元）', value: fmtYuan(data.summary.cost) },
+        { label: '消耗（元）', value: fmtYuan(data.summary.cost, ppy) },
+        { label: '授权（元）（本月充值）', value: fmtYuan(data.recharged, ppy), tone: 'green' },
+        { label: 'tokens（本月）', value: fmtNum(data.summary.tokens) },
       ]" />
     </el-card>
 
     <el-card v-if="data" shadow="never">
       <template #header>额度预警</template>
       <div v-if="monthly.quota > 0" class="monthly-line">
-        <span>单月消费上限：<b class="num">{{ fmtQuota(monthly.quota) }}</b>，
-          本月已用 <b class="num">{{ fmtQuota(monthly.used) }}</b><el-progress
+        <span>单月消费上限：<b class="num">{{ fmtYuan(monthly.quota, ppy) }}</b>，
+          本月已用 <b class="num">{{ fmtYuan(monthly.used, ppy) }}</b><el-progress
             :percentage="Math.min(100, monthly.quota ? (monthly.used / monthly.quota) * 100 : 0)"
             :stroke-width="8" :show-text="false" style="width: 180px; display: inline-block; margin-left: 10px; vertical-align: middle" />
         </span>
         <span class="dim tip-inline">达限后当月停用，次月自动清零恢复</span>
       </div>
       <div class="alert-cfg">
-        <span>客户额度使用率达到阈值时邮件提醒客户管理员（每档只提醒一次，追加额度后自动复位）</span>
+        <span>客户额度使用率达到阈值、或剩余额度低于设定金额时，邮件提醒客户管理员（每档只提醒一次，追加额度后自动复位）</span>
         <div class="alert-input">
+          <span>使用率达到</span>
           <el-input-number v-model="threshold" :min="0" :max="100" :controls="false" style="width: 90px" />
-          <span class="dim">%</span>
+          <span class="dim">% 或 剩余额度低于</span>
+          <el-input-number v-model="alertBalanceYuan" :min="0" :precision="2" :controls="false" style="width: 120px" />
+          <span class="dim">元</span>
           <el-button type="primary" size="small" :loading="thresholdLoading" @click="saveThreshold">保存</el-button>
         </div>
-        <span class="dim tip">0 = 关闭预警；达 100%（额度耗尽）时同时通知系统管理员跟进续费</span>
+        <span class="dim tip">两项独立开关（0 = 关闭该项）；达 100%（额度耗尽）时同时通知系统管理员跟进续费</span>
       </div>
     </el-card>
 
@@ -150,25 +163,25 @@ function exportCSV() {
 
       <!-- 余额对账：月初余额 + 授权 − 消耗 = 月末余额，校验数据自洽 -->
       <el-descriptions :column="3" border size="small" class="chain">
-        <el-descriptions-item label="月初token余额">
-          <span class="num">{{ st.opening_limit == null ? '—' : fmtQuota(st.opening_limit - (st.opening_used || 0)) }}</span>
+        <el-descriptions-item label="月初余额（元）">
+          <span class="num">{{ st.opening_limit == null ? '—' : fmtYuan(st.opening_limit - (st.opening_used || 0), stppy) }}</span>
         </el-descriptions-item>
-        <el-descriptions-item label="授权token">
-          <span class="num green">+{{ fmtQuota(st.total_granted) }}</span>
+        <el-descriptions-item label="授权（元）">
+          <span class="num green">+{{ fmtYuan(st.total_granted, stppy) }}</span>
         </el-descriptions-item>
-        <el-descriptions-item label="回收token">
-          <span class="num red">{{ fmtQuota(st.total_revoked) }}</span>
+        <el-descriptions-item label="回收（元）">
+          <span class="num red">{{ fmtYuan(st.total_revoked, stppy) }}</span>
         </el-descriptions-item>
-        <el-descriptions-item label="消耗token">
-          <span class="num">{{ fmtQuota(st.consumption) }}</span>
+        <el-descriptions-item label="消耗（元）">
+          <span class="num">{{ fmtYuan(st.consumption, stppy) }}</span>
         </el-descriptions-item>
-        <el-descriptions-item label="月末token余额">
-          <span class="num">{{ fmtQuota(st.closing_limit - st.closing_used) }}
+        <el-descriptions-item label="月末余额（元）">
+          <span class="num">{{ fmtYuan(st.closing_limit - st.closing_used, stppy) }}
             <el-tag v-if="st.closing_is_live" type="warning" size="small" effect="plain">当前</el-tag>
           </span>
         </el-descriptions-item>
         <el-descriptions-item label="账单费用（元）">
-          <span class="num">{{ fmtYuan(st.consumption) }}</span>
+          <span class="num">{{ fmtYuan(st.consumption, stppy) }}</span>
         </el-descriptions-item>
         <el-descriptions-item label="数据校验" :span="2">
           <el-tag v-if="st.chain_ok === true" type="success" size="small">✓ 月初余额 + 授权 − 消耗 == 月末余额</el-tag>
@@ -190,9 +203,9 @@ function exportCSV() {
         <el-table-column label="时间" width="150">
           <template #default="{ row }">{{ dayjs.unix(row.created_at).format('MM-DD HH:mm') }}</template>
         </el-table-column>
-        <el-table-column label="金额（token）" width="180" align="right">
+        <el-table-column label="金额（元）" width="180" align="right">
           <template #default="{ row }">
-            <span class="num red">{{ fmtQuota(row.amount) }}</span>
+            <span class="num red">{{ fmtYuan(row.amount, stppy) }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="remark" label="事由" min-width="160" show-overflow-tooltip />
@@ -220,9 +233,9 @@ function exportCSV() {
             <span class="dim">入 {{ fmtNum(row.prompt_tokens) }} / 出 {{ fmtNum(row.completion_tokens) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="消耗（token）" width="150" align="right">
+        <el-table-column label="消耗（元）" width="150" align="right">
           <template #default="{ row }">
-            <span class="num">{{ fmtQuota(row.cost) }}</span>
+            <span class="num">{{ fmtYuan(row.cost, stppy) }}</span>
           </template>
         </el-table-column>
       </el-table>
@@ -241,9 +254,9 @@ function exportCSV() {
             <el-table-column label="tokens" width="110" align="right">
               <template #default="{ row }"><span class="num">{{ fmtNum(row.tokens) }}</span></template>
             </el-table-column>
-            <el-table-column label="消耗" min-width="150" align="right">
+            <el-table-column label="消耗（元）" min-width="150" align="right">
               <template #default="{ row }">
-                <span class="num green">{{ fmtQuota(row.cost) }}</span>
+                <span class="num green">{{ fmtYuan(row.cost, ppy) }}</span>
               </template>
             </el-table-column>
           </el-table>
@@ -256,8 +269,8 @@ function exportCSV() {
             <el-table-column label="时间" width="150">
               <template #default="{ row }">{{ dayjs.unix(row.created_at).format('MM-DD HH:mm') }}</template>
             </el-table-column>
-            <el-table-column label="金额" width="150">
-              <template #default="{ row }">{{ fmtQuota(row.amount) }}</template>
+            <el-table-column label="金额（元）" width="150">
+              <template #default="{ row }">{{ fmtYuan(row.amount, ppy) }}</template>
             </el-table-column>
             <el-table-column label="状态" width="80">
               <template #default="{ row }">

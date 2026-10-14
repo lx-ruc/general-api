@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { apiMyModels } from '../../api/member'
-import { fmtQuota } from '../../utils/format'
+import { fmtYuan } from '../../utils/format'
+import { usePpy } from '../../composables/usePpy'
 
+const ppy = usePpy()
 const data = ref<any>(null)
 
 onMounted(async () => {
@@ -21,20 +23,20 @@ const usedPct = computed(() => {
     <el-card shadow="never" class="pool">
       <div class="pool-row">
         <div class="pool-item">
-          <div class="pool-label">可用额度</div>
+          <div class="pool-label">可用额度（元）</div>
           <div class="pool-value num" :class="data.quota_limit == null || data.quota_limit - data.quota_used > 0 ? 'green' : 'red'">
             {{ data.quota_limit == null ? '不限' : data.quota_limit - data.quota_used > 0
-              ? fmtQuota(data.quota_limit - data.quota_used) : '已超限 ' + fmtQuota(data.quota_used - data.quota_limit) }}
+              ? fmtYuan(data.quota_limit - data.quota_used, ppy) : '已超限 ' + fmtYuan(data.quota_used - data.quota_limit, ppy) }}
           </div>
         </div>
         <div class="pool-item">
-          <div class="pool-label">已消耗</div>
-          <div class="pool-value num">{{ fmtQuota(data.quota_used) }}</div>
+          <div class="pool-label">已消耗（元）</div>
+          <div class="pool-value num">{{ fmtYuan(data.quota_used, ppy) }}</div>
         </div>
         <div v-if="data.monthly_quota > 0" class="pool-item">
-          <div class="pool-label">本月上限</div>
+          <div class="pool-label">本月上限（元）</div>
           <div class="pool-value num" :class="data.monthly_used >= data.monthly_quota ? 'red' : ''">
-            {{ fmtQuota(data.monthly_used) }}<span class="pool-unit"> / {{ fmtQuota(data.monthly_quota) }}</span>
+            {{ fmtYuan(data.monthly_used, ppy) }}<span class="pool-unit"> / {{ fmtYuan(data.monthly_quota, ppy) }}</span>
           </div>
         </div>
         <div v-if="usedPct != null" class="pool-meter-wrap">

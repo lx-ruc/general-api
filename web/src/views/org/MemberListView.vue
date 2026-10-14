@@ -5,9 +5,13 @@ import dayjs from 'dayjs'
 import {
   apiListMembers, apiCreateMember, apiUpdateMember, apiDeleteMember,
   apiResetMemberPassword, apiGetMemberModels, apiSetMemberModels,
+  apiGetMemberAlertLevels, apiUpdateMemberAlertLevels,
   type Member,
 } from '../../api/org'
-import { fmtTime, fmtQuota } from '../../utils/format'
+import { fmtTime, fmtYuan, yuanToPoints, pointsToYuan } from '../../utils/format'
+import { usePpy } from '../../composables/usePpy'
+
+const ppy = usePpy()
 
 // 月累计仅在存储账期为当前月时有效（跨月惰性清零的读侧）
 function currentMonthUsed(m: Member): number {
@@ -31,8 +35,7 @@ async function load() {
 }
 onMounted(load)
 
-// 新建子账号。额度按 M tokens 录入（1M = 1,000,000 点），提交前换算成点
-const M = 1_000_000
+// 新建子账号。额度按元录入，提交前换算成点（0 = 不限额）
 const createVisible = ref(false)
 const createForm = reactive({ username: '', password: '', display_name: '', quota_amount: 0 })
 async function submitCreate() {
@@ -40,7 +43,10 @@ async function submitCreate() {
     ElMessage.warning('请填写用户名和密码')
     return
   }
-  await apiCreateMember({ ...createForm, quota_amount: Math.round(createForm.quota_amount * M) })
+  await apiCreateMember({
+    ...createForm,
+    quota_amount: yuanToPoints(createForm.quota_amount || 0, ppy.value),
+  })
   ElMessage.success('子账号已创建')
   createVisible.value = false
   Object.assign(createForm, { username: '', password: '', display_name: '', quota_amount: 0 })
@@ -79,6 +85,33 @@ async function submitGrant() {
   load()
 }
 
+// 子账号个人预警（双阈值：使用率 % / 剩余额度元，独立开关，0 = 关）。
+// 入口放「更多」下拉，不加操作列第 4 按钮——三按钮同行是 d2a752b 修过的换行坑
+const alertVisible = ref(false)
+const alertMember = ref<Member | null>(null)
+const alertThreshold = ref(0)
+const alertBalanceYuan = ref(0)
+const alertSaving = ref(false)
+async function openAlert(m: Member) {
+  alertMember.value = m
+  const resp = await apiGetMemberAlertLevels(m.id)
+  alertThreshold.value = resp.threshold || 0
+  alertBalanceYuan.value = pointsToYuan(resp.alert_balance || 0, ppy.value)
+  alertVisible.value = true
+}
+async function submitAlert() {
+  if (!alertMember.value) return
+  alertSaving.value = true
+  try {
+    await apiUpdateMemberAlertLevels(alertMember.value.id, alertThreshold.value || 0,
+      yuanToPoints(alertBalanceYuan.value || 0, ppy.value))
+    ElMessage.success('预警设置已更新')
+    alertVisible.value = false
+  } finally {
+    alertSaving.value = false
+  }
+}
+
 function toggleStatus(m: Member) {
   apiUpdateMember(m.id, { status: m.status === 1 ? 0 : 1 }).then(load)
 }
@@ -110,19 +143,19 @@ function remove(m: Member) {
       empty-text="还没有子账号。新建子账号并授权模型后，子账号即可创建密钥调用 API。">
       <el-table-column prop="username" label="用户名" width="120" />
       <el-table-column prop="display_name" label="姓名" width="100" />
-      <el-table-column label="已用 / 上限（token）" min-width="180">
+      <el-table-column label="已用 / 上限（元）" min-width="190">
         <template #default="{ row }">
-          <span class="num">{{ fmtQuota(row.quota_used) }}</span>
+          <span class="num">{{ fmtYuan(row.quota_used, ppy) }}</span>
           <span class="dim"> / </span>
           <span v-if="row.quota_limit == null" class="unlimited">不限</span>
-          <span v-else class="num">{{ fmtQuota(row.quota_limit) }}</span>
+          <span v-else class="num">{{ fmtYuan(row.quota_limit, ppy) }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="单月上限" width="130">
+      <el-table-column label="单月上限" width="170">
         <template #default="{ row }">
           <span v-if="row.monthly_quota > 0">
-            <span class="num">{{ fmtQuota(row.monthly_quota) }}</span>
-            <span class="dim"> · 已用 {{ fmtQuota(currentMonthUsed(row)) }}</span>
+            <span class="num">{{ fmtYuan(row.monthly_quota, ppy) }}</span>
+            <span class="dim"> · 已用 {{ fmtYuan(currentMonthUsed(row), ppy) }}</span>
           </span>
           <span v-else class="dim">—</span>
         </template>
@@ -131,7 +164,7 @@ function remove(m: Member) {
         <template #default="{ row }">
           <span v-if="row.quota_limit == null" class="green">不限</span>
           <span v-else class="num" :class="row.quota_limit - row.quota_used > 0 ? 'green' : 'red'">
-            {{ fmtQuota(row.quota_limit - row.quota_used) }}
+            {{ fmtYuan(row.quota_limit - row.quota_used, ppy) }}
           </span>
         </template>
       </el-table-column>
@@ -154,6 +187,7 @@ function remove(m: Member) {
             <el-button size="small" type="primary" plain @click="openGrant(row)">模型授权</el-button>
               <el-dropdown trigger="click" @command="(cmd: string) => {
               if (cmd === 'pwd') pwdForm.member = row, pwdVisible = true
+              else if (cmd === 'alert') openAlert(row)
               else if (cmd === 'toggle') toggleStatus(row)
               else if (cmd === 'delete') remove(row)
             }">
@@ -162,6 +196,7 @@ function remove(m: Member) {
               </el-button>
               <template #dropdown>
                 <el-dropdown-menu>
+                  <el-dropdown-item command="alert">预警设置</el-dropdown-item>
                   <el-dropdown-item command="pwd">重置密码</el-dropdown-item>
                   <el-dropdown-item command="toggle">{{ row.status === 1 ? '停用账号' : '启用账号' }}</el-dropdown-item>
                   <el-dropdown-item command="delete" class="danger-item" divided>删除子账号</el-dropdown-item>
@@ -182,9 +217,9 @@ function remove(m: Member) {
       <el-form-item label="用户名" required><el-input v-model="createForm.username" /></el-form-item>
       <el-form-item label="初始密码" required><el-input v-model="createForm.password" show-password placeholder="至少 6 位" /></el-form-item>
       <el-form-item label="姓名"><el-input v-model="createForm.display_name" /></el-form-item>
-      <el-form-item label="初始额度（M tokens）">
-        <el-input-number v-model="createForm.quota_amount" :min="0" :step="1" />
-        <span class="tip">0 = 不限额；= {{ fmtQuota(Math.round(createForm.quota_amount * M)) }}</span>
+      <el-form-item label="初始额度（元）">
+        <el-input-number v-model="createForm.quota_amount" :min="0" :precision="2" :step="100" />
+        <span class="tip">0 = 不限额</span>
       </el-form-item>
     </el-form>
     <template #footer>
@@ -201,6 +236,30 @@ function remove(m: Member) {
     <template #footer>
       <el-button @click="pwdVisible = false">取消</el-button>
       <el-button type="primary" @click="submitPwd">确定</el-button>
+    </template>
+  </el-dialog>
+
+  <el-dialog v-model="alertVisible" :title="`预警设置：${alertMember?.display_name || alertMember?.username || ''}`" width="480px">
+    <el-form label-width="120px">
+      <el-form-item label="当前额度">
+        <span v-if="alertMember?.quota_limit == null" class="unlimited">不限额（余额预警不生效）</span>
+        <span v-else>
+          已用 {{ fmtYuan(alertMember.quota_used, ppy) }} / 上限 {{ fmtYuan(alertMember.quota_limit, ppy) }}
+        </span>
+      </el-form-item>
+      <el-form-item label="使用率预警（%）">
+        <el-input-number v-model="alertThreshold" :min="0" :max="100" />
+        <span class="tip">0 = 关闭</span>
+      </el-form-item>
+      <el-form-item label="余额预警（元）">
+        <el-input-number v-model="alertBalanceYuan" :min="0" :precision="2" :step="100" />
+        <span class="tip">剩余额度低于该金额时提醒；0 = 关闭</span>
+      </el-form-item>
+    </el-form>
+    <p class="alert-hint">两档相互独立，任一命中即邮件提醒子账号本人与你；修改后静默重算，不补发历史告警</p>
+    <template #footer>
+      <el-button @click="alertVisible = false">取消</el-button>
+      <el-button type="primary" :loading="alertSaving" @click="submitAlert">保存</el-button>
     </template>
   </el-dialog>
 
@@ -232,6 +291,7 @@ function remove(m: Member) {
 .op-row { display: flex; align-items: center; flex-wrap: nowrap; }
 :deep(.danger-item) { color: var(--tg-red); }
 .grant-hint { margin: 0 0 14px; font-size: 13px; color: var(--tg-graphite); }
+.alert-hint { margin: 0 0 4px; font-size: 12px; color: var(--tg-muted); }
 .grant-item { width: 100%; margin-bottom: 6px; height: auto; }
 .grant-price { color: var(--tg-muted); font-size: 12px; margin-left: 6px; }
 </style>

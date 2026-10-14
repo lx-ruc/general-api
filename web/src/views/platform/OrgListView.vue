@@ -6,9 +6,11 @@ import {
   apiListOrgs, apiCreateOrg, apiUpdateOrg, apiDeleteOrg,
   apiResetOrgAdminPassword, type Org,
 } from '../../api/platform'
-import { fmtTime, fmtQuota } from '../../utils/format'
+import { fmtTime, fmtYuan, yuanToPoints } from '../../utils/format'
+import { usePpy } from '../../composables/usePpy'
 
 const router = useRouter()
+const ppy = usePpy()
 const list = ref<Org[]>([])
 const total = ref(0)
 const query = reactive({ page: 1, page_size: 20, query: '' })
@@ -20,8 +22,7 @@ async function load() {
 }
 onMounted(load)
 
-// 新建客户。额度统一按 M tokens 录入（1M = 1,000,000 点；1 元 = 1M 点），提交前换算成点
-const M = 1_000_000
+// 新建客户。额度按元录入，提交前换算成点
 const createVisible = ref(false)
 const createForm = reactive({
   name: '', remark: '', contact_name: '', contact_phone: '', quota_amount: 100,
@@ -32,7 +33,7 @@ async function submitCreate() {
     ElMessage.warning('请填写客户名称、管理员账号和密码')
     return
   }
-  await apiCreateOrg({ ...createForm, quota_amount: Math.round(createForm.quota_amount * M) })
+  await apiCreateOrg({ ...createForm, quota_amount: yuanToPoints(createForm.quota_amount || 0, ppy.value) })
   ElMessage.success('客户已创建')
   createVisible.value = false
   Object.assign(createForm, { name: '', remark: '', contact_name: '', contact_phone: '', quota_amount: 100, admin_username: '', admin_password: '', admin_display_name: '' })
@@ -100,10 +101,10 @@ async function removeOrg(org: Org) {
         </template>
       </el-table-column>
       <el-table-column prop="member_count" label="成员" width="70" align="center" />
-      <el-table-column label="已用 / 上限（token）" min-width="200">
+      <el-table-column label="已用 / 上限（元）" min-width="200">
         <template #default="{ row }">
-          <span class="num">{{ fmtQuota(row.quota_used) }}</span>
-          <span class="dim"> / {{ fmtQuota(row.quota_limit) }}</span>
+          <span class="num">{{ fmtYuan(row.quota_used, ppy) }}</span>
+          <span class="dim"> / {{ fmtYuan(row.quota_limit, ppy) }}</span>
         </template>
       </el-table-column>
       <el-table-column label="状态" width="100">
@@ -130,15 +131,15 @@ async function removeOrg(org: Org) {
   </el-card>
 
   <el-dialog v-model="createVisible" title="新建客户" width="520px">
-    <!-- label 列要放得下「初始额度（token）」：EP 的 label 高度固定 32px，列宽不够会折行且第二行被裁 -->
+    <!-- label 列宽留足：EP 的 label 高度固定 32px，列宽不够会折行且第二行被裁 -->
     <el-form label-width="140px">
       <el-form-item label="客户名称" required><el-input v-model="createForm.name" /></el-form-item>
       <el-form-item label="备注"><el-input v-model="createForm.remark" /></el-form-item>
       <el-form-item label="联系人"><el-input v-model="createForm.contact_name" placeholder="客户企业联系人" /></el-form-item>
       <el-form-item label="联系电话"><el-input v-model="createForm.contact_phone" /></el-form-item>
-      <el-form-item label="初始额度（M tokens）">
-        <el-input-number v-model="createForm.quota_amount" :min="0" :step="10" />
-        <span class="tip">= {{ fmtQuota(Math.round(createForm.quota_amount * M)) }}（高价模型按单价等比多扣）</span>
+      <el-form-item label="初始额度（元）">
+        <el-input-number v-model="createForm.quota_amount" :min="0" :precision="2" :step="100" />
+        <span class="tip">按模型定价从额度中扣减</span>
       </el-form-item>
       <el-divider content-position="left">首任客户管理员</el-divider>
       <el-form-item label="管理员用户名" required><el-input v-model="createForm.admin_username" /></el-form-item>
