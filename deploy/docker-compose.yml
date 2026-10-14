@@ -48,6 +48,9 @@ services:
       TG_REDIS_ADDR: "redis:6379"
       TG_JWT_SECRET: ${TG_JWT_SECRET:-change-me-random-string}
       TG_BOOTSTRAP_ADMIN_PASSWORD: ${TG_ADMIN_PASSWORD:-change-me-too}
+      # 密钥静态加密（AES-256-GCM）。一经启用不可更换；留空 = 明文透传。
+      # 首次启用时启动自举会把存量明文密钥原地加密（service.ReencryptPlaintextKeys）
+      TG_AES_KEY: ${TG_AES_KEY:-}
     expose:
       - "8080"
 
