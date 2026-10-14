@@ -435,8 +435,8 @@ func (h *Handler) CreateRequest(c *gin.Context) {
 			who = u.Username
 		}
 		title, body := fmt.Sprintf("额度申请待审批：%s", who), fmt.Sprintf(
-			"子账号「%s」(%s) 提交了额度申请 +%d token。事由：%s。\n到【申请审批】处理。",
-			who, u.Username, qr.Amount, qr.Reason)
+			"子账号「%s」(%s) 提交了额度申请 +%s。事由：%s。\n到【申请审批】处理。",
+			who, u.Username, service.FormatYuan(h.DB, qr.Amount), qr.Reason)
 		if qr.Kind == "model" {
 			title, body = fmt.Sprintf("模型申请待审批：%s", who), fmt.Sprintf(
 				"子账号「%s」(%s) 申请使用模型：%s。\n到【申请审批】处理。",

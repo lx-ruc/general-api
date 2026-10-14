@@ -8,6 +8,7 @@ type PeriodBalance struct {
 	Period     string `json:"period"`
 	QuotaLimit int64  `json:"quota_limit"`
 	QuotaUsed  int64  `json:"quota_used"`
+	PointsPerYuan int64 `json:"points_per_yuan"` // 快照时点的点/元汇率（0=未记录，读侧回退当前值）
 	SnapshotAt int64  `json:"snapshot_at"`
 	CreatedAt  int64  `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt  int64  `gorm:"autoUpdateTime" json:"updated_at"`

@@ -17,6 +17,8 @@ type Org struct {
 	AlertLevels       string `json:"alert_levels" gorm:"default:'[80]'"` // 预警阈值升序 JSON（[] = 关闭）；零值省略走列默认 [80]，否则 GORM 会写入空串压掉默认
 	AlertLevel        int    `json:"alert_level"`         // 当前已达档位（边沿状态机）
 	AlertSince        int64  `json:"alert_since"`         // 进入当前档位的时间
+	AlertBalance      int64  `json:"alert_balance"`       // 剩余额度预警阈值（点；0=关闭。与百分比档正交）
+	AlertBalanceHit   int64  `json:"alert_balance_hit"`   // 金额档命中时刻（0=未命中；边沿状态机）
 	CreatedAt         int64  `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt         int64  `gorm:"autoUpdateTime" json:"updated_at"`
 }

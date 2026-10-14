@@ -79,16 +79,16 @@ func sendToAll(emails []string, subject, body string) {
 	}
 }
 
-// QuotaGrantEmailBody 生成额度授权通知邮件正文
-func QuotaGrantEmailBody(orgName, adminName string, amount, newLimit, used int64, remark string) string {
+// QuotaGrantEmailBody 生成额度授权通知邮件正文（元口径；ppy 由调用方取库内 settings 传入，
+// 不在函数内再查一次库——同一通知里 amount/limit/used 必须用同一汇率折算）
+func QuotaGrantEmailBody(orgName, adminName string, amount, newLimit, used int64, remark string, ppy int64) string {
 	sign := "+"
 	if amount < 0 {
 		sign = ""
 	}
-	yuan := fmt.Sprintf("%.4f", float64(amount)/1e6)
-	limitStr := formatToken(newLimit) + " token"
+	limitStr := YuanString(newLimit, ppy)
 	if newLimit <= 0 {
-		limitStr = "0（不限额关闭）"
+		limitStr = "¥0（不限额关闭）"
 	}
 	remarkLine := ""
 	if remark != "" {
@@ -98,32 +98,13 @@ func QuotaGrantEmailBody(orgName, adminName string, amount, newLimit, used int64
 
 你的客户「%s」额度已由系统管理员更新。
 
-%s%s token（折合 ¥%s）
+%s%s
 %s当前额度上限：%s
-已消耗：%s token
+已消耗：%s
 操作时间：%s
 
 请登录管理台查看详情。如非预期，请尽快联系系统管理员。
 —— %s`,
-		adminName, orgName, sign, formatToken(amount), yuan, remarkLine, limitStr, formatToken(used),
+		adminName, orgName, sign, YuanString(amount, ppy), remarkLine, limitStr, YuanString(used, ppy),
 		time.Now().Format("2006-01-02 15:04:05"), BrandName)
-}
-
-func formatToken(n int64) string {
-	if n < 0 {
-		n = -n
-	}
-	s := fmt.Sprintf("%d", n)
-	// 千分位
-	if len(s) > 3 {
-		var out []byte
-		for i, c := range []byte(s) {
-			if i > 0 && (len(s)-i)%3 == 0 {
-				out = append(out, ',')
-			}
-			out = append(out, c)
-		}
-		return string(out)
-	}
-	return s
 }

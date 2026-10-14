@@ -547,8 +547,8 @@ func TestCreateRequestNotifiesOrgAdmin(t *testing.T) {
 		Body  string
 	}
 	_ = e.db.Raw("SELECT title, body FROM notifications WHERE user_id = 2 AND type = 'request_pending'").Scan(&row).Error
-	if !strings.Contains(row.Title, "待审批") || !strings.Contains(row.Body, "3000") || !strings.Contains(row.Body, "项目攻坚") {
-		t.Fatalf("通知内容应含申请人与事由：title=%q body=%q", row.Title, row.Body)
+	if !strings.Contains(row.Title, "待审批") || !strings.Contains(row.Body, "¥0.003") || !strings.Contains(row.Body, "项目攻坚") {
+		t.Fatalf("通知内容应含申请人金额与事由（元口径）：title=%q body=%q", row.Title, row.Body)
 	}
 	var selfCnt int64
 	_ = e.db.Raw("SELECT COUNT(*) FROM notifications WHERE user_id = 1").Scan(&selfCnt).Error

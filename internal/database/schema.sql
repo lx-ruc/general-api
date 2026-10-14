@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS orgs (
   alert_levels        TEXT    NOT NULL DEFAULT '[80]', -- 预警阈值（升序百分比 JSON 数组；[] = 关闭）
   alert_level         INTEGER NOT NULL DEFAULT 0,  -- 当前已达档位（0=未达任何档；边沿状态机）
   alert_since         INTEGER NOT NULL DEFAULT 0,  -- 进入当前档位的时间
+  alert_balance       INTEGER NOT NULL DEFAULT 0,  -- 剩余额度预警阈值（点；0=关闭。与百分比档正交：任一命中即告警）
+  alert_balance_hit   INTEGER NOT NULL DEFAULT 0,  -- 金额档命中时刻（0=未命中；边沿状态机，拨备回落惰性复位）
   created_at          INTEGER NOT NULL,
   updated_at          INTEGER NOT NULL
 );
@@ -39,6 +41,8 @@ CREATE TABLE IF NOT EXISTS users (
   alert_levels   TEXT    NOT NULL DEFAULT '[80]', -- 个人预警阈值（[] = 关闭；不限额者不参与）
   alert_level    INTEGER NOT NULL DEFAULT 0,
   alert_since    INTEGER NOT NULL DEFAULT 0,
+  alert_balance     INTEGER NOT NULL DEFAULT 0, -- 个人剩余额度预警阈值（点；0=关闭）
+  alert_balance_hit INTEGER NOT NULL DEFAULT 0, -- 金额档命中时刻（0=未命中）
   status         INTEGER NOT NULL DEFAULT 1,
   last_login_at  INTEGER,
   created_at     INTEGER NOT NULL,
@@ -195,6 +199,7 @@ CREATE TABLE IF NOT EXISTS period_balances (
   period      TEXT    NOT NULL,               -- 'YYYY-MM'（该月末时点）
   quota_limit INTEGER NOT NULL DEFAULT 0,
   quota_used  INTEGER NOT NULL DEFAULT 0,
+  points_per_yuan INTEGER NOT NULL DEFAULT 0, -- 快照时点的点/元汇率（0=未记录，账单折元回退当前值）
   snapshot_at INTEGER NOT NULL,               -- 实际写入时刻（月末 00:05 或补跑时刻）
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL,

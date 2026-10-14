@@ -409,3 +409,88 @@ func TestBuildBillOverview(t *testing.T) {
 		t.Fatalf("月/时区应回显，得 %s %s", ov2.Month, ov2.Timezone)
 	}
 }
+
+// ---------- 元口径：汇率快照与 CSV 元列 ----------
+
+// 快照落库当时汇率；账单折元优先期末快照值，升级前快照（0）回退当前配置
+func TestStatementPpySnapshotAndFallback(t *testing.T) {
+	f := newBillingDB(t)
+	sh := BillingLocation("Asia/Shanghai")
+	oid := int64(4)
+	f.insertOrg(oid, 1_000_000, 0)
+	augS, _, _ := PeriodBounds(sh, "2026-08")
+
+	// 汇率改为 200 万点/元
+	if err := f.db.Exec("INSERT INTO settings (key, value) VALUES ('points_per_yuan', '2000000')").Error; err != nil {
+		t.Fatal(err)
+	}
+	f.insertUsage(oid, augS+100, 200_000, 0, 0, nil)
+
+	// 7 月末快照：应记录当时汇率 2M
+	if err := SnapshotBalances(f.db, "2026-07"); err != nil {
+		t.Fatal(err)
+	}
+	var snapPpy int64
+	_ = f.db.Raw("SELECT points_per_yuan FROM period_balances WHERE org_id = ? AND period = '2026-07'", oid).Scan(&snapPpy).Error
+	if snapPpy != 2_000_000 {
+		t.Fatalf("快照应记录当时汇率 2M，得 %d", snapPpy)
+	}
+
+	// 8 月账单（期末无快照=实时）：回退当前值 2M
+	st, err := BuildBillStatement(f.db, sh, oid, "2026-08", false, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.PointsPerYuan != 2_000_000 {
+		t.Fatalf("无快照月份应回退当前汇率，得 %d", st.PointsPerYuan)
+	}
+
+	// 手工补 8 月末快照且汇率列为 0（升级前已出的快照行）→ 仍回退当前 2M
+	if err := f.db.Exec(`INSERT INTO period_balances (org_id, period, quota_limit, quota_used, points_per_yuan, snapshot_at, created_at, updated_at)
+		VALUES (?, '2026-08', 1000000, 200000, 0, 0, 0, 0)`, oid).Error; err != nil {
+		t.Fatal(err)
+	}
+	if st2, _ := BuildBillStatement(f.db, sh, oid, "2026-08", false, 100); st2.PointsPerYuan != 2_000_000 {
+		t.Fatalf("升级前快照（0）应回退当前汇率，得 %d", st2.PointsPerYuan)
+	}
+
+	// 快照汇率有据（1M）→ 以快照为准，历史月不随配置漂移
+	if err := f.db.Exec("UPDATE period_balances SET points_per_yuan = 1000000 WHERE org_id = ? AND period = '2026-08'", oid).Error; err != nil {
+		t.Fatal(err)
+	}
+	if st3, _ := BuildBillStatement(f.db, sh, oid, "2026-08", false, 100); st3.PointsPerYuan != 1_000_000 {
+		t.Fatalf("有快照汇率应优先快照值，得 %d", st3.PointsPerYuan)
+	}
+}
+
+// CSV 元列：口径行注明汇率；余额对账与明细均为「元主列 + 点数辅助列」
+func TestStatementCSVYuanColumns(t *testing.T) {
+	f := newBillingDB(t)
+	sh := BillingLocation("Asia/Shanghai")
+	oid := int64(5)
+	f.insertOrg(oid, 2_000_000, 0)
+	augS, _, _ := PeriodBounds(sh, "2026-08")
+	f.insertGrant(oid, 1_000_000, augS+100, "充值")
+	f.insertUsage(oid, augS+200, 250_000, 0, 0, nil)
+
+	st, err := BuildBillStatement(f.db, sh, oid, "2026-08", false, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := string(WriteStatementCSV(st, "元口径客户", false))
+	for _, want := range []string{
+		"1 元 = 1000000 点",    // 口径行
+		"项目,金额（元）,点数",     // 对账表头
+		"月初余额,—,—",          // 无期初快照显 —
+		"授权,1.00,1000000",   // 元值（≥1 元两位小数）+ 点数
+		"消耗,0.25,250000",    // <1 元保留至多 4 位剥尾零
+		"金额（元）,金额（点数）",      // 明细双列
+	} {
+		if !strings.Contains(b, want) {
+			t.Fatalf("CSV 应含 %q，got:\n%s", want, b)
+		}
+	}
+	if strings.Contains(b, "金额（点）") {
+		t.Fatal("明细列头应改为「金额（元）」主列，不得残留旧口径列头")
+	}
+}

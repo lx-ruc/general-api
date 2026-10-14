@@ -29,7 +29,7 @@ func newAlertTestDB(t *testing.T) (*dbFixture, *metrics.Metrics, *int64) {
 	m := metrics.New()
 	var sent int64
 	sentinel := &sent
-	sendAlertMailFn = func(db *gorm.DB, kind string, id, used, limit, threshold int64) {
+	sendAlertMailFn = func(db *gorm.DB, ctx alertMailCtx) {
 		atomic.AddInt64(sentinel, 1)
 	}
 	t.Cleanup(func() { sendAlertMailFn = sendAlertMail })
@@ -85,6 +85,34 @@ func (f *dbFixture) setOrg(id, limit, used int64, levels string) {
 		limit, used, levels, id).Error; err != nil {
 		f.t.Fatal(err)
 	}
+}
+
+func (f *dbFixture) setOrgBalance(id, alertBalance int64) {
+	f.t.Helper()
+	if err := f.db.Exec("UPDATE orgs SET alert_balance = ? WHERE id = ?", alertBalance, id).Error; err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *dbFixture) orgBalHit(id int64) int64 {
+	f.t.Helper()
+	var v int64
+	_ = f.db.Raw("SELECT alert_balance_hit FROM orgs WHERE id = ?", id).Scan(&v).Error
+	return v
+}
+
+func (f *dbFixture) setUserBalance(id, alertBalance int64) {
+	f.t.Helper()
+	if err := f.db.Exec("UPDATE users SET alert_balance = ? WHERE id = ?", alertBalance, id).Error; err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *dbFixture) userBalHit(id int64) int64 {
+	f.t.Helper()
+	var v int64
+	_ = f.db.Raw("SELECT alert_balance_hit FROM users WHERE id = ?", id).Scan(&v).Error
+	return v
 }
 
 // ---------- 纯函数 ----------
@@ -372,6 +400,118 @@ func TestAlertBracketOverflow(t *testing.T) {
 	}
 	if lv := bracket(limit, limit, levels); lv != 3 {
 		t.Fatalf("100%% 应达最高档，got %d", lv)
+	}
+}
+
+// ---------- 金额档（正交状态机）：剩余额度低于阈值 ----------
+
+// 命中单发 / 维持不重发 / 拨备回落惰性复位 / 再跌破再发；
+// 纯金额配置（百分比关）不得被「空数组=关闭」早退吞掉
+func TestAlertBalanceThreshold(t *testing.T) {
+	f, m, sent := newAlertTestDB(t)
+	const oid = int64(11)
+	f.insertOrg(oid, 1000, 800, "[]") // 剩余 200；百分比关，纯金额配置
+	f.setOrgBalance(oid, 300)
+
+	f.resetThrottle()
+	checkAlert(f.db, m, "org", oid) // 剩余 200 < 300 → 命中发一封
+	if got := atomic.LoadInt64(sent); got != 1 {
+		t.Fatalf("跌破阈值应发 1 封，得 %d", got)
+	}
+	if f.orgBalHit(oid) == 0 {
+		t.Fatal("命中应写 alert_balance_hit")
+	}
+
+	f.resetThrottle()
+	checkAlert(f.db, m, "org", oid) // 维持低位：边沿状态机不重发
+	if got := atomic.LoadInt64(sent); got != 1 {
+		t.Fatalf("维持低位不应重发，得 %d", got)
+	}
+
+	f.setOrg(oid, 5000, 800, "[]") // 拨备：剩余 4200 ≥ 300 → 惰性静默复位
+	f.resetThrottle()
+	checkAlert(f.db, m, "org", oid)
+	if got := atomic.LoadInt64(sent); got != 1 {
+		t.Fatalf("回落复位不发信，得 %d", got)
+	}
+	if f.orgBalHit(oid) != 0 {
+		t.Fatal("回落应复位 alert_balance_hit=0")
+	}
+
+	f.setOrg(oid, 1000, 800, "[]") // 再跌破 → 再发
+	f.resetThrottle()
+	checkAlert(f.db, m, "org", oid)
+	if got := atomic.LoadInt64(sent); got != 2 {
+		t.Fatalf("再跌破应再发，得 %d", got)
+	}
+
+	// 金额档关闭（阈值 0）：即使超扣（剩余为负）也不发
+	f.setOrgBalance(oid, 0)
+	f.setOrg(oid, 1000, 1200, "[]")
+	f.resetThrottle()
+	checkAlert(f.db, m, "org", oid)
+	if got := atomic.LoadInt64(sent); got != 2 {
+		t.Fatalf("金额档关闭不应发信，得 %d", got)
+	}
+}
+
+// 双维正交：同一次检查百分比档与金额档同时命中 → 各发一封（共 2），两维状态位独立就位
+func TestAlertBalanceOrthogonalWithPct(t *testing.T) {
+	f, m, sent := newAlertTestDB(t)
+	const oid = int64(12)
+	f.insertOrg(oid, 1000, 850, "[80]") // 85% 达百分比档
+	f.setOrgBalance(oid, 300)           // 剩余 150 < 300 同时达金额档
+	f.resetThrottle()
+	checkAlert(f.db, m, "org", oid)
+	if got := atomic.LoadInt64(sent); got != 2 {
+		t.Fatalf("双维同时命中应各发 1 封（共 2），得 %d", got)
+	}
+	if f.orgLevel(oid) != 1 || f.orgBalHit(oid) == 0 {
+		t.Fatalf("两维状态位应同时就位，level=%d balHit=%d", f.orgLevel(oid), f.orgBalHit(oid))
+	}
+}
+
+// 并发 CAS：N 个检查同时命中金额档，仅一个胜者发信
+func TestAlertBalanceConcurrentSingleWinner(t *testing.T) {
+	f, m, sent := newAlertTestDB(t)
+	const oid = int64(13)
+	f.insertOrg(oid, 1000, 800, "[]")
+	f.setOrgBalance(oid, 300)
+	f.resetThrottle()
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			checkAlert(f.db, m, "org", oid)
+		}()
+	}
+	wg.Wait()
+	if got := atomic.LoadInt64(sent); got != 1 {
+		t.Fatalf("并发 20 检查应只发 1 封，得 %d", got)
+	}
+}
+
+// user 主体金额档：限额正常命中；不限额（NULL limit）不参与
+func TestAlertBalanceUserSubject(t *testing.T) {
+	f, m, sent := newAlertTestDB(t)
+	f.insertOrg(14, 100000, 0, "[]")
+	var lim int64 = 1000
+	f.insertUser(14, 14, &lim, 800, "[]") // 剩余 200 < 300
+	f.insertUser(15, 14, nil, 900, "[]")  // 不限额：跳过
+	f.setUserBalance(14, 300)
+	f.setUserBalance(15, 300)
+	f.resetThrottle()
+	checkAlert(f.db, m, "user", 14)
+	checkAlert(f.db, m, "user", 15)
+	if got := atomic.LoadInt64(sent); got != 1 {
+		t.Fatalf("user 应发 1 封，得 %d", got)
+	}
+	if f.userBalHit(14) == 0 {
+		t.Fatal("user 命中应写 alert_balance_hit")
+	}
+	if f.userBalHit(15) != 0 {
+		t.Fatal("不限额 user 不应命中金额档")
 	}
 }
 

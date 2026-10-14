@@ -558,8 +558,8 @@ func TestHandleRequestNotifiesMember(t *testing.T) {
 		Body  string
 	}
 	_ = e.db.Raw("SELECT title, body FROM notifications WHERE user_id = 10 AND type = 'request_handled'").Scan(&row).Error
-	if !strings.Contains(row.Title, "额度申请已通过") || !strings.Contains(row.Body, "5000") {
-		t.Fatalf("通知内容应含到账额度：title=%q body=%q", row.Title, row.Body)
+	if !strings.Contains(row.Title, "额度申请已通过") || !strings.Contains(row.Body, "¥0.005") {
+		t.Fatalf("通知内容应含到账额度（元口径）：title=%q body=%q", row.Title, row.Body)
 	}
 	// 管理员自己不应收到审批结果（扇出只给申请人）
 	var adminCnt int64

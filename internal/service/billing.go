@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -79,6 +80,8 @@ func SnapshotBalances(db *gorm.DB, period string) error {
 		return err
 	}
 	now := time.Now().Unix()
+	// 汇率随快照落库：历史账单按快照时点折元，之后改 points_per_yuan 不追溯已出的账
+	ppy := PointsPerYuan(db)
 	var rows []struct {
 		ID        int64
 		QuotaLimit int64
@@ -95,12 +98,13 @@ func SnapshotBalances(db *gorm.DB, period string) error {
 	}
 	return db.Transaction(func(tx *gorm.DB) error {
 		for _, o := range rows {
-			if err := tx.Exec(`INSERT INTO period_balances (org_id, period, quota_limit, quota_used, snapshot_at, created_at, updated_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?)
+			if err := tx.Exec(`INSERT INTO period_balances (org_id, period, quota_limit, quota_used, points_per_yuan, snapshot_at, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 				ON CONFLICT(org_id, period) DO UPDATE SET
 					quota_limit = excluded.quota_limit, quota_used = excluded.quota_used,
+					points_per_yuan = excluded.points_per_yuan,
 					snapshot_at = excluded.snapshot_at, updated_at = excluded.updated_at`,
-				o.ID, period, o.QuotaLimit, o.EndUsed, now, now, now).Error; err != nil {
+				o.ID, period, o.QuotaLimit, o.EndUsed, ppy, now, now, now).Error; err != nil {
 				return err
 			}
 		}
@@ -182,6 +186,9 @@ type BillStatement struct {
 	StartUnix int64  `json:"start_unix"`
 	EndUnix   int64  `json:"end_unix"`
 
+	// 折元汇率：期末快照值（历史月不随配置漂移）；无快照或升级前快照（0）回退当前配置
+	PointsPerYuan int64 `json:"points_per_yuan"`
+
 	// 勾稽段
 	OpeningLimit   *int64 `json:"opening_limit"`   // 期初限额（snapshot[M-1]；nil=无快照显示"—"）
 	OpeningUsed    *int64 `json:"opening_used"`    // 期初已用
@@ -225,6 +232,10 @@ func BuildBillStatement(db *gorm.DB, loc *time.Location, orgID int64, period str
 	hasOpen := db.Where("org_id = ? AND period = ?", orgID, prev).First(&open).Error == nil
 	var close model.PeriodBalance
 	hasClose := db.Where("org_id = ? AND period = ?", orgID, period).First(&close).Error == nil
+	st.PointsPerYuan = PointsPerYuan(db)
+	if hasClose && close.PointsPerYuan > 0 {
+		st.PointsPerYuan = close.PointsPerYuan // 账期汇率快照优先
+	}
 
 	var org model.Org
 	if err := db.Where("id = ?", orgID).First(&org).Error; err != nil {
@@ -348,9 +359,11 @@ type BillOverviewRow struct {
 
 // BillOverview 跨客户账单查询总览：全部客户 × 单月 + 合计
 type BillOverview struct {
-	Month     string            `json:"month"`
-	Timezone  string            `json:"timezone"`
-	Rows      []BillOverviewRow `json:"rows"`
+	Month     string `json:"month"`
+	Timezone  string `json:"timezone"`
+	// 折元汇率（总览为当前即时值；单客户账单 CSV 以各自期末快照为准）
+	PointsPerYuan int64            `json:"points_per_yuan"`
+	Rows          []BillOverviewRow `json:"rows"`
 	TotalRequests    int64 `json:"total_requests"`
 	TotalConsumption int64 `json:"total_consumption"`
 	TotalGranted     int64 `json:"total_granted"`
@@ -411,7 +424,7 @@ func BuildBillOverview(db *gorm.DB, loc *time.Location, period string) (*BillOve
 		um[u.OrgID] = u
 	}
 
-	ov := &BillOverview{Month: period, Timezone: loc.String(), Rows: []BillOverviewRow{}}
+	ov := &BillOverview{Month: period, Timezone: loc.String(), PointsPerYuan: PointsPerYuan(db), Rows: []BillOverviewRow{}}
 	for _, o := range orgs {
 		r := BillOverviewRow{OrgID: o.ID, OrgName: o.Name, Status: o.Status,
 			ClosingLimit: o.QuotaLimit, ClosingUsed: o.QuotaUsed, ClosingIsLive: true}
@@ -448,7 +461,9 @@ func BuildBillOverview(db *gorm.DB, loc *time.Location, period string) (*BillOve
 	return ov, nil
 }
 
-// WriteStatementCSV 把账单序列化为 CSV（UTF-8 BOM；org 视角无厂商列）。
+// WriteStatementCSV 把账单序列化为 CSV（UTF-8 BOM；金额主口径为元、点数为整数辅助列；
+// org 视角无厂商列）。元列去 ¥ 前缀出纯数字，Excel 可直接求和；整数勾稽以点数列为准
+// （元列两位小数四舍五入，逐行相加可能出现分级误差）。
 func WriteStatementCSV(st *BillStatement, orgName string, includeVendor bool) []byte {
 	var b []byte
 	b = append(b, []byte("\xEF\xBB\xBF")...) // BOM：Excel 中文第一坑
@@ -469,43 +484,53 @@ func WriteStatementCSV(st *BillStatement, orgName string, includeVendor bool) []
 		b = append(b, '\n')
 	}
 	i64 := func(v int64) string { return fmt.Sprintf("%d", v) }
-	p := func(v *int64) string {
-		if v == nil {
-			return "—"
-		}
-		return i64(*v)
-	}
-	chain := "—"
-	if st.ChainOK != nil && *st.ChainOK {
-		chain = "✓"
-	} else if st.ChainOK != nil {
-		chain = "✗"
-	}
+	yuan := func(v int64) string { return strings.TrimPrefix(YuanString(v, st.PointsPerYuan), "¥") }
 
 	line("客户", orgName)
 	line("账期", st.Month, "（时区 "+st.Timezone+"）")
-	line("口径", "归期=结算完成时刻；月边界按账期时区；计价=整数点数（结算快照价）")
+	line("口径", fmt.Sprintf("归期=结算完成时刻；月边界按账期时区；金额以元计（1 元 = %d 点）；点数为整数辅助口径（价格取结算快照）", st.PointsPerYuan))
 	line("")
-	line("—— 勾稽段 ——")
-	line("期初限额", p(st.OpeningLimit), "期初已用", p(st.OpeningUsed))
-	line("期内授权", i64(st.TotalGranted), "期内冲减", i64(st.TotalRevoked), "期内消耗", i64(st.Consumption))
-	line("期末限额", i64(st.ClosingLimit), "期末已用", i64(st.ClosingUsed),
-		map[bool]string{true: "（实时）", false: ""}[st.ClosingIsLive])
-	line("链式校验（期末−期初==消耗）", chain, "不计量笔数", i64(st.NoUsageCount))
+
+	// ---- 余额对账段：与前端口径一致的白话恒等式（余额 = 限额 − 已用） ----
+	openY, openP := "—", "—"
+	if st.OpeningLimit != nil {
+		openY, openP = yuan(*st.OpeningLimit-*st.OpeningUsed), i64(*st.OpeningLimit-*st.OpeningUsed)
+	}
+	closingLabel := "月末余额"
+	if st.ClosingIsLive {
+		closingLabel = "月末余额（当前实时）"
+	}
+	chain := "— 无月初数据，暂无法校验"
+	if st.ChainOK != nil && *st.ChainOK {
+		chain = "✓ 月初余额 + 授权 − 消耗 == 月末余额"
+	} else if st.ChainOK != nil {
+		chain = "✗ 数据不一致，请联系平台"
+	}
+	line("—— 余额对账：月初余额 + 授权 − 消耗 == 月末余额 ——")
+	line("项目", "金额（元）", "点数")
+	line("月初余额", openY, openP)
+	line("授权", yuan(st.TotalGranted), i64(st.TotalGranted))
+	line("回收", yuan(st.TotalRevoked), i64(st.TotalRevoked))
+	line("消耗", yuan(st.Consumption), i64(st.Consumption))
+	line(closingLabel, yuan(st.ClosingLimit-st.ClosingUsed), i64(st.ClosingLimit-st.ClosingUsed))
+	line("数据校验", chain)
+	line("未计费请求（笔数）", i64(st.NoUsageCount))
 	line("")
 	if len(st.Revokes) > 0 {
-		line("—— 冲减段 ——")
-		line("时间", "金额", "事由")
+		line("—— 回收记录（负数授权，从额度扣回）——")
+		line("时间", "金额（元）", "金额（点数）", "事由")
 		for _, r := range st.Revokes {
-			line(time.Unix(r.CreatedAt, 0).Format("2006-01-02 15:04"), i64(r.Amount), r.Remark)
+			line(time.Unix(r.CreatedAt, 0).Format("2006-01-02 15:04"), yuan(r.Amount), i64(r.Amount), r.Remark)
 		}
 		line("")
 	}
-	line("—— 明细段（模型 × 成本中心 × 日）——")
+	line("—— 消耗明细（模型 × 成本中心 × 日）——")
 	if includeVendor {
-		line("日期", "模型", "成本中心", "请求数", "缓存命中", "输入tokens", "输出tokens", "金额（点）", "厂商成本", "毛利")
+		line("日期", "模型", "成本中心", "请求数", "缓存命中", "输入tokens", "输出tokens",
+			"金额（元）", "金额（点数）", "厂商成本（元）", "厂商成本（点数）", "毛利（元）", "毛利（点数）")
 	} else {
-		line("日期", "模型", "成本中心", "请求数", "缓存命中", "输入tokens", "输出tokens", "金额（点）")
+		line("日期", "模型", "成本中心", "请求数", "缓存命中", "输入tokens", "输出tokens",
+			"金额（元）", "金额（点数）")
 	}
 	for _, r := range st.Rows {
 		center := r.CostCenterName
@@ -514,14 +539,21 @@ func WriteStatementCSV(st *BillStatement, orgName string, includeVendor bool) []
 		}
 		if includeVendor {
 			line(r.Day, r.ModelName, center, i64(r.Requests), i64(r.CacheHits),
-				i64(r.PromptTokens), i64(r.CompletionTokens), i64(r.Cost),
-				i64(r.VendorCost), i64(r.Margin))
+				i64(r.PromptTokens), i64(r.CompletionTokens),
+				yuan(r.Cost), i64(r.Cost),
+				yuan(r.VendorCost), i64(r.VendorCost),
+				yuan(r.Margin), i64(r.Margin))
 		} else {
 			line(r.Day, r.ModelName, center, i64(r.Requests), i64(r.CacheHits),
-				i64(r.PromptTokens), i64(r.CompletionTokens), i64(r.Cost))
+				i64(r.PromptTokens), i64(r.CompletionTokens),
+				yuan(r.Cost), i64(r.Cost))
 		}
 	}
-	line("合计", "", "", "", "", "", "", i64(st.TotalCostSum))
+	if includeVendor {
+		line("合计", "", "", "", "", "", "", yuan(st.TotalCostSum), i64(st.TotalCostSum), "", "", "", "")
+	} else {
+		line("合计", "", "", "", "", "", "", yuan(st.TotalCostSum), i64(st.TotalCostSum))
+	}
 	return b
 }
 

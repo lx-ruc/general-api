@@ -23,6 +23,8 @@ type User struct {
 	AlertLevels   string `json:"alert_levels" gorm:"default:'[80]'"` // 个人预警阈值 JSON（[] = 关闭；不限额者不参与）；零值省略走列默认 [80]
 	AlertLevel   int    `json:"alert_level"`  // 当前已达档位（边沿状态机）
 	AlertSince   int64  `json:"alert_since"`
+	AlertBalance   int64 `json:"alert_balance"`   // 个人剩余额度预警阈值（点；0=关闭）
+	AlertBalanceHit int64 `json:"alert_balance_hit"` // 金额档命中时刻（0=未命中）
 	Status       int    `json:"status"`
 	LastLoginAt  *int64 `json:"last_login_at"`
 	CreatedAt    int64  `gorm:"autoCreateTime" json:"created_at"`

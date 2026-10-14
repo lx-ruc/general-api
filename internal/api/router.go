@@ -265,6 +265,8 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		og.GET("/quota-grants", oh.ListQuotaGrants)
 		og.GET("/alert-levels", oh.GetAlertLevels)
 		og.PUT("/alert-levels", oh.UpdateAlertLevels)
+		og.GET("/members/:id/alert-levels", oh.GetMemberAlertLevels)
+		og.PUT("/members/:id/alert-levels", oh.UpdateMemberAlertLevels)
 	}
 
 	// 子账号

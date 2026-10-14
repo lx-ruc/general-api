@@ -321,7 +321,7 @@ func (h *Handler) AddMemberQuota(c *gin.Context) {
 		httpx.Fail(c, http.StatusInternalServerError, "追加额度失败")
 		return
 	}
-	httpx.OK(c, gin.H{"message": fmt.Sprintf("已追加 %d token", req.Amount)})
+	httpx.OK(c, gin.H{"message": fmt.Sprintf("已追加 %s", service.FormatYuan(h.DB, req.Amount))})
 }
 
 // ---------------- 模型授权 ----------------
@@ -839,7 +839,7 @@ func (h *Handler) HandleRequest(c *gin.Context) {
 				body = fmt.Sprintf("管理员已为你开通模型：%s。", qr.ModelNames)
 			default:
 				title = "额度申请已通过"
-				body = fmt.Sprintf("额度 +%d token 已到账生效。", qr.Amount)
+				body = fmt.Sprintf("额度 +%s 已到账生效。", service.FormatYuan(h.DB, qr.Amount))
 			}
 		} else {
 			title = "申请已被拒绝"
@@ -918,8 +918,8 @@ func (h *Handler) CreateRecharge(c *gin.Context) {
 		_ = h.DB.Raw("SELECT name FROM orgs WHERE id = ?", oid).Scan(&orgName).Error
 		service.NotifyPlatformAdminsInsite(h.DB, service.NotifyTypeRecharge,
 			fmt.Sprintf("充值申请待审批：%s", orgName),
-			fmt.Sprintf("客户「%s」提交了充值申请 #%d：+%d token（凭证已上传）。到【客户管理 → 充值审批】处理。",
-				orgName, r.ID, req.Amount))
+			fmt.Sprintf("客户「%s」提交了充值申请 #%d：+%s（凭证已上传）。到【客户管理 → 充值审批】处理。",
+				orgName, r.ID, service.FormatYuan(h.DB, req.Amount)))
 	}()
 	httpx.OK(c, gin.H{"id": r.ID, "message": "充值申请已提交，平台确认到账后额度自动增加并邮件通知你"})
 }

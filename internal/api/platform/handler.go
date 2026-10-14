@@ -303,7 +303,7 @@ func (h *Handler) AddOrgQuota(c *gin.Context) {
 	}
 	// 邮件通知客户管理员具体的授权信息（异步；未配置 SMTP 走日志）
 	notifyNote := notifyOrgQuota(h.DB, id, req.Amount, req.Remark)
-	httpx.OK(c, gin.H{"message": fmt.Sprintf("已追加 %d token%s", req.Amount, notifyNote)})
+	httpx.OK(c, gin.H{"message": fmt.Sprintf("已追加 %s%s", service.FormatYuan(h.DB, req.Amount), notifyNote)})
 }
 
 // SetOrgQuota PUT /api/platform/orgs/:id/quota —— 限额"设值"调整（区别于 POST 的追加/冲减）：
@@ -338,7 +338,7 @@ func (h *Handler) SetOrgQuota(c *gin.Context) {
 		return
 	}
 	notifyNote := notifyOrgQuota(h.DB, id, delta, req.Remark)
-	httpx.OK(c, gin.H{"message": fmt.Sprintf("额度上限已调整为 %d token%s", req.Limit, notifyNote)})
+	httpx.OK(c, gin.H{"message": fmt.Sprintf("额度上限已调整为 %s%s", service.FormatYuan(h.DB, req.Limit), notifyNote)})
 }
 
 // notifyOrgQuota 组装授权详情并通知；返回附在响应里的通知状态说明
@@ -349,7 +349,7 @@ func notifyOrgQuota(db *gorm.DB, orgID, amount int64, remark string) string {
 	}
 	subject := fmt.Sprintf("「%s」你的客户额度已更新", service.BrandName)
 	body := service.QuotaGrantEmailBody(org.Name, org.Name+" 管理员",
-		amount, org.QuotaLimit, org.QuotaUsed, remark)
+		amount, org.QuotaLimit, org.QuotaUsed, remark, service.PointsPerYuan(db))
 	service.NotifyOrgAdminsInsite(db, orgID, service.NotifyTypeRecharge,
 		fmt.Sprintf("客户额度已更新：%s", org.Name), body) // 顶栏铃铛（充值到账/平台调额）
 	sent := service.NotifyOrgAdmins(db, orgID, subject, body)
