@@ -90,6 +90,7 @@ func (h *Handler) CreateMember(c *gin.Context) {
 		Username    string `json:"username" binding:"required,min=3"`
 		Password    string `json:"password" binding:"required,min=6"`
 		DisplayName string `json:"display_name"`
+		Email       string `json:"email"`     // 邮箱（选填）：绑定后子账号可自助找回密码
 		QuotaAmount int64  `json:"quota_amount"`
 	}
 	if !httpx.BindJSON(c, &req) {
@@ -101,11 +102,24 @@ func (h *Handler) CreateMember(c *gin.Context) {
 		httpx.Fail(c, http.StatusBadRequest, "初始额度不能为负（0=不限）")
 		return
 	}
+	// 邮箱（选填）：归一 + 格式校验 + 占用预检查（找回邮件按 users.email 发，一号一邮箱）
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if email != "" && !service.ValidEmail(email) {
+		httpx.Fail(c, http.StatusBadRequest, "邮箱格式不正确")
+		return
+	}
 	var cnt int64
 	_ = h.DB.Model(&model.User{}).Where("username = ?", req.Username).Count(&cnt).Error
 	if cnt > 0 {
 		httpx.Fail(c, http.StatusBadRequest, "用户名已存在")
 		return
+	}
+	if email != "" {
+		_ = h.DB.Model(&model.User{}).Where("email != '' AND email = ?", email).Count(&cnt).Error
+		if cnt > 0 {
+			httpx.Fail(c, http.StatusBadRequest, "用户名或邮箱已存在")
+			return
+		}
 	}
 	hash, err := auth.HashPassword(req.Password)
 	if err != nil {
@@ -115,7 +129,7 @@ func (h *Handler) CreateMember(c *gin.Context) {
 	now := time.Now().Unix()
 	m := model.User{
 		OrgID: &oid, Username: req.Username, PasswordHash: hash,
-		DisplayName: req.DisplayName, Role: model.RoleMember, Status: 1,
+		DisplayName: req.DisplayName, Email: email, Role: model.RoleMember, Status: 1,
 	}
 	err = h.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&m).Error; err != nil {
@@ -133,9 +147,9 @@ func (h *Handler) CreateMember(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
-		// 并发同用户名建号：预检查拦不住，映射回同款文案（原缺陷：500 + 驱动错误原文泄漏）
+		// 并发同用户名/同邮箱建号：预检查拦不住，映射回同款文案（原缺陷：500 + 驱动错误原文泄漏）
 		if database.IsDuplicateKey(err) {
-			httpx.Fail(c, http.StatusBadRequest, "用户名已存在")
+			httpx.Fail(c, http.StatusBadRequest, "用户名或邮箱已存在")
 			return
 		}
 		httpx.Fail(c, http.StatusInternalServerError, "创建子账号失败: "+err.Error())

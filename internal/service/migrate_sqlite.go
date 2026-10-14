@@ -26,7 +26,7 @@ var migrateTables = []string{
 
 // 刻意不迁的瞬态表：分钟级时效（验证码/重置令牌），迁移停机窗口内必然过期，
 // 搬过去只剩误导。新增瞬态表放这里，业务表一律进 migrateTables。
-var migrateTransientTables = []string{"verification_codes", "password_reset_tokens"}
+var migrateTransientTables = []string{"verification_codes", "password_reset_tokens", "email_bind_codes"}
 
 // MigrateFromSQLite 把一个 SQLite 库的全部业务数据搬到当前库（通常为 postgres）。
 // 目标表非空时跳过该表（防重复导入）；迁移后打印逐表行数核对。

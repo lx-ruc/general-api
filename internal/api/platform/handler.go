@@ -78,6 +78,7 @@ type createOrgReq struct {
 	AdminUsername    string `json:"admin_username" binding:"required,min=3"`
 	AdminPassword    string `json:"admin_password" binding:"required,min=6"`
 	AdminDisplayName string `json:"admin_display_name"`
+	AdminEmail       string `json:"admin_email"` // 管理员邮箱（选填）：绑定后可自助找回密码
 }
 
 // CreateOrg POST /api/platform/orgs：创建客户 + 首任客户管理员
@@ -102,6 +103,20 @@ func (h *Handler) CreateOrg(c *gin.Context) {
 	if cnt > 0 {
 		httpx.Fail(c, http.StatusBadRequest, "管理员用户名已存在")
 		return
+	}
+	// 管理员邮箱（选填）：归一 + 格式校验 + 占用预检查（管理员录入可信，直接写库不验证；
+	// 占用检查防一个邮箱绑两号导致找回邮件发错人）
+	adminEmail := strings.ToLower(strings.TrimSpace(req.AdminEmail))
+	if adminEmail != "" {
+		if !service.ValidEmail(adminEmail) {
+			httpx.Fail(c, http.StatusBadRequest, "管理员邮箱格式不正确")
+			return
+		}
+		_ = h.DB.Model(&model.User{}).Where("email != '' AND email = ?", adminEmail).Count(&cnt).Error
+		if cnt > 0 {
+			httpx.Fail(c, http.StatusBadRequest, "该邮箱已被其他账号绑定")
+			return
+		}
 	}
 	hash, err := auth.HashPassword(req.AdminPassword)
 	if err != nil {
@@ -129,13 +144,13 @@ func (h *Handler) CreateOrg(c *gin.Context) {
 		}
 		return tx.Create(&model.User{
 			OrgID: &org.ID, Username: req.AdminUsername, PasswordHash: hash,
-			DisplayName: req.AdminDisplayName, Role: model.RoleOrgAdmin, Status: 1,
+			DisplayName: req.AdminDisplayName, Email: adminEmail, Role: model.RoleOrgAdmin, Status: 1,
 		}).Error
 	})
 	if err != nil {
-		// 并发同客户名/同管理员用户名：预检查拦不住，映射回同款文案（防驱动错误原文泄漏）
+		// 并发同客户名/同管理员用户名/同邮箱：预检查拦不住，映射回同款文案（防驱动错误原文泄漏）
 		if database.IsDuplicateKey(err) {
-			httpx.Fail(c, http.StatusBadRequest, "客户名或管理员用户名已存在")
+			httpx.Fail(c, http.StatusBadRequest, "客户名、管理员用户名或邮箱已存在")
 			return
 		}
 		httpx.Fail(c, http.StatusInternalServerError, "创建客户失败: "+err.Error())

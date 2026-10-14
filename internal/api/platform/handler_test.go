@@ -996,3 +996,40 @@ func TestOrgModelPrices(t *testing.T) {
 		t.Fatalf("负价应 400，得 %d", w.Code)
 	}
 }
+
+// 建客户带管理员邮箱（选填）：落库、占用拒绝、格式拒绝
+func TestCreateOrgAdminEmail(t *testing.T) {
+	engine, db, token := newPlatformEnv(t)
+	post := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/platform/orgs", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+		return w
+	}
+
+	// 选填邮箱落库（大写归一）
+	if w := post(`{"name":"acme","admin_username":"boss","admin_password":"pass123","admin_email":"Boss@X.com"}`); w.Code != http.StatusOK {
+		t.Fatalf("带邮箱建客户应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	var email string
+	_ = db.Raw("SELECT email FROM users WHERE username = 'boss'").Scan(&email).Error
+	if email != "boss@x.com" {
+		t.Fatalf("管理员邮箱未落库/未归一: %q", email)
+	}
+
+	// 不填兼容：空邮箱不受唯一索引限制
+	if w := post(`{"name":"acme2","admin_username":"boss2","admin_password":"pass123"}`); w.Code != http.StatusOK {
+		t.Fatalf("不带邮箱建客户应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+
+	// 邮箱占用：400
+	if w := post(`{"name":"acme3","admin_username":"boss3","admin_password":"pass123","admin_email":"boss@x.com"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("占用邮箱应 400，得 %d", w.Code)
+	}
+	// 格式非法：400
+	if w := post(`{"name":"acme4","admin_username":"boss4","admin_password":"pass123","admin_email":"not-an-email"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("非法邮箱应 400，得 %d", w.Code)
+	}
+}

@@ -211,12 +211,55 @@ func (h *AuthHandler) ChangePassword(c *gin.Context) {
 	httpx.OK(c, gin.H{"message": "密码已更新"})
 }
 
+// SendEmailCode POST /api/me/email/code：向待绑定邮箱发验证码（三角色通用，
+// 绑定后即可走邮件自助找回密码）。响应形态与注册验证码 SendCode 一致
+func (h *AuthHandler) SendEmailCode(c *gin.Context) {
+	var req struct {
+		Email string `json:"email" binding:"required"`
+	}
+	if !httpx.BindJSON(c, &req) {
+		return
+	}
+	devCode, retryAfter, err := service.SendBindCode(h.DB, middleware.GetUID(c), req.Email)
+	if err != nil {
+		status := http.StatusBadRequest
+		if retryAfter > 0 {
+			status = http.StatusTooManyRequests
+		}
+		c.JSON(status, gin.H{"error": gin.H{"message": err.Error(), "retry_after": retryAfter}})
+		return
+	}
+	resp := gin.H{"message": "验证码已发送，请查收邮箱（注意垃圾邮件箱）"}
+	if devCode != "" {
+		// SMTP 未配置（开发模式）：直接返回验证码，方便本地联调
+		resp["dev_code"] = devCode
+		resp["message"] = "SMTP 未配置：验证码以开发模式返回"
+	}
+	httpx.OK(c, resp)
+}
+
+// BindEmail PUT /api/me/email：验证码确认绑定/换绑邮箱
+func (h *AuthHandler) BindEmail(c *gin.Context) {
+	var req struct {
+		Email string `json:"email" binding:"required"`
+		Code  string `json:"code" binding:"required"`
+	}
+	if !httpx.BindJSON(c, &req) {
+		return
+	}
+	if err := service.BindEmail(h.DB, middleware.GetUID(c), req.Email, req.Code); err != nil {
+		httpx.Fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	httpx.OK(c, gin.H{"message": "邮箱绑定成功，此后可通过「忘记密码」自助重置密码"})
+}
+
 func userInfo(db *gorm.DB, u *model.User) gin.H {
 	resp := gin.H{
 		"id": u.ID, "username": u.Username, "display_name": u.DisplayName,
 		"role": u.Role, "org_id": u.OrgID, "status": u.Status,
 		"quota_limit": u.QuotaLimit, "quota_used": u.QuotaUsed,
-		"last_login_at": u.LastLoginAt,
+		"last_login_at": u.LastLoginAt, "email": u.Email,
 	}
 	if u.OrgID != nil {
 		var name string

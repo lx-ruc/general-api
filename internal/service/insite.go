@@ -24,6 +24,7 @@ const (
 	NotifyTypeQuotaAlert      = "quota_alert"     // 额度水位/耗尽 → 客户管理员、子账号
 	NotifyTypeRecharge        = "recharge"        // 充值到账 → 客户管理员；充值申请 → 平台管理员
 	NotifyTypeModelRequest    = "model_request"   // 模型开通申请 → 平台管理员；审批/开通/回收结果 → 客户管理员
+	NotifyTypeEmailBind       = "email_bind"      // 邮箱绑定成功 → 本人（安全痕迹，会话被盗换绑有据可查）
 )
 
 // insertNotifications 批量落库（扇出公共内核）

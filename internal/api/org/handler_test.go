@@ -341,7 +341,7 @@ func TestCreateMemberConcurrentDuplicateFriendly(t *testing.T) {
 		if codes[i] == http.StatusOK {
 			continue
 		}
-		if codes[i] != http.StatusBadRequest || !strings.Contains(bodies[i], "用户名已存在") {
+		if codes[i] != http.StatusBadRequest || !strings.Contains(bodies[i], "用户名或邮箱已存在") {
 			t.Fatalf("败者应 400 + 友好文案，得 %d: %s", codes[i], bodies[i])
 		}
 		if strings.Contains(bodies[i], "constraint") {
@@ -569,5 +569,35 @@ func TestHandleRequestNotifiesMember(t *testing.T) {
 	_ = e.db.Raw("SELECT COUNT(*) FROM notifications WHERE user_id = 2 AND type = 'request_handled'").Scan(&adminCnt).Error
 	if adminCnt != 0 {
 		t.Fatalf("审批人不应收到 request_handled，实际 %d 条", adminCnt)
+	}
+}
+
+// 建子账号带邮箱（选填）：落库、占用拒绝、不填兼容
+func TestCreateMemberEmail(t *testing.T) {
+	e := newOrgEnv(t)
+
+	if w := e.do(http.MethodPost, "/api/org/members",
+		`{"username":"mem1","password":"pass123","display_name":"一号","email":"M1@X.com"}`); w.Code != http.StatusOK {
+		t.Fatalf("带邮箱建子账号应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	var email string
+	_ = e.db.Raw("SELECT email FROM users WHERE username = 'mem1'").Scan(&email).Error
+	if email != "m1@x.com" {
+		t.Fatalf("子账号邮箱未落库/未归一: %q", email)
+	}
+
+	// 不填兼容
+	if w := e.do(http.MethodPost, "/api/org/members", `{"username":"mem2","password":"pass123"}`); w.Code != http.StatusOK {
+		t.Fatalf("不带邮箱建子账号应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+
+	// 占用 / 格式非法
+	if w := e.do(http.MethodPost, "/api/org/members",
+		`{"username":"mem3","password":"pass123","email":"m1@x.com"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("占用邮箱应 400，得 %d", w.Code)
+	}
+	if w := e.do(http.MethodPost, "/api/org/members",
+		`{"username":"mem4","password":"pass123","email":"bad"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("非法邮箱应 400，得 %d", w.Code)
 	}
 }

@@ -302,6 +302,21 @@ CREATE TABLE IF NOT EXISTS password_reset_tokens (
   created_at INTEGER NOT NULL
 );
 
+-- 邮箱绑定/换绑验证码：与注册验证码(verification_codes)分表——后者以 email 为 PK、
+-- 无 purpose 维度（改 PK 需存量迁移）。绑定验证以 user 为主体：同一邮箱可能同时被
+-- 多个账号发起绑定，各验各的；每次发码先作废该用户旧码（以最新邮件为准）
+CREATE TABLE IF NOT EXISTS email_bind_codes (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  email      TEXT    NOT NULL,
+  code       TEXT    NOT NULL,
+  expire_at  INTEGER NOT NULL,
+  sent_at    INTEGER NOT NULL,
+  attempts   INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_email_bind_user ON email_bind_codes(user_id);
+
 CREATE TABLE IF NOT EXISTS recharge_requests (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   org_id     INTEGER NOT NULL,

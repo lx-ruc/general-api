@@ -136,6 +136,13 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 	{
 		authed.GET("/me", authH.Me)
 		authed.PUT("/me/password", authH.ChangePassword)
+		// 邮箱绑定/换绑（三角色通用）：发码端点与注册验证码同款限流防邮件轰炸；
+		// 确认端点自带错码 5 次作废 + 需 JWT，不另挂限流（同 /me/password 口径）
+		authed.POST("/me/email/code", codeLimiter.Middleware(
+			func(c *gin.Context) string { return c.ClientIP() },
+			"rate_limit_error", "发送太频繁，请稍后再试",
+		), authH.SendEmailCode)
+		authed.PUT("/me/email", authH.BindEmail)
 		// 站内通知（三角色通用顶栏铃铛）：按 JWT uid 严格隔离，写入侧扇出决定谁能看到
 		mh := me.NewHandler(db)
 		authed.GET("/me/notifications", mh.ListNotifications)

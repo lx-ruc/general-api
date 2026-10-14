@@ -3,6 +3,7 @@ package database
 import (
 	_ "embed"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"gorm.io/gorm"
@@ -105,6 +106,20 @@ func migrateAll(db *gorm.DB) error {
 				return fmt.Errorf("alter %s.%s: %w", a[0], a[1], err)
 			}
 		}
+	}
+	// users.email 唯一部分索引：闭合「两人并发绑同一邮箱」在 PG READ COMMITTED 下的
+	// check-then-act 竞态（应用层查重在 PG 下有快照窗口，SQLite 单写者天然串行）。
+	// 必须先去重再建索引，否则存量脏数据会让 CREATE UNIQUE INDEX 失败卡死启动；
+	// 去重保留最早注册者，与找回流程「ORDER BY id LIMIT 1」同口径。语句两方言中立、幂等。
+	if res := db.Exec(`UPDATE users SET email = '' WHERE email != '' AND id NOT IN
+		(SELECT MIN(id) FROM users WHERE email != '' GROUP BY email)`); res.Error != nil {
+		return fmt.Errorf("dedupe users.email: %w", res.Error)
+	} else if res.RowsAffected > 0 {
+		slog.Warn("users.email 存量重复已去重（保留最早绑定者）", "cleared", res.RowsAffected)
+	}
+	if err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email
+		ON users(email) WHERE email != ''`).Error; err != nil {
+		return fmt.Errorf("create idx_users_email: %w", err)
 	}
 	// 文案修正（幂等）：预置模型备注的计价单位「元/百万token」统一为「元/M token」
 	if err := db.Exec(`UPDATE models SET remark = replace(remark, '元/百万token', '元/M token')
