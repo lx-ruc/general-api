@@ -459,7 +459,12 @@ async function removeKey(row: ChannelKeyRow) {
             <el-button size="small" :loading="testing === row.id" @click="test(row)">测试</el-button>
             <el-button size="small" @click="openEdit(row)">编辑</el-button>
             <el-button size="small" @click="openKeys(row)">Key 池</el-button>
-            <el-button size="small" @click="toggleStatus(row)">{{ row.status === 1 ? '停用' : '启用' }}</el-button>
+            <!-- 「有密钥才能启用」：无可用密钥时启用置灰（后端同样拦截），先到 Key 池换回密钥 -->
+            <el-tooltip v-if="row.status === 0 && !row.has_key" placement="top"
+              content="该渠道没有可用密钥（Key 全部被禁用或缺失）：到「Key 池」更换或启用密钥后，才能启用渠道">
+              <span class="op-disabled"><el-button size="small" disabled>启用</el-button></span>
+            </el-tooltip>
+            <el-button v-else size="small" @click="toggleStatus(row)">{{ row.status === 1 ? '停用' : '启用' }}</el-button>
             <el-button size="small" type="danger" @click="remove(row)">删除</el-button>
           </div>
         </template>
@@ -512,7 +517,8 @@ async function removeKey(row: ChannelKeyRow) {
         </el-col>
       </el-row>
       <el-form-item label="状态">
-        <el-switch v-model="form.status" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="停用" />
+        <el-switch v-model="form.status" :active-value="1" :inactive-value="0"
+          :disabled="isEdit && !editHasKey" active-text="启用" inactive-text="停用" />
       </el-form-item>
 
       <el-divider content-position="left">模型能力（该渠道可转发的模型）</el-divider>
@@ -684,6 +690,10 @@ async function removeKey(row: ChannelKeyRow) {
 /* 操作列五颗按钮一行 */
 .ops { white-space: nowrap; }
 .ops :deep(.el-button + .el-button) { margin-left: 8px; }
+/* 置灰按钮外的 tooltip 承接 span（disabled 按钮自身不收鼠标事件）；
+   span 打断了相邻按钮选择器，两侧间距自己补 */
+.op-disabled { display: inline-flex; margin-left: 8px; }
+.op-disabled + :deep(.el-button) { margin-left: 8px; }
 .dim { color: var(--tg-muted); font-size: 12px; }
 .key-ok { color: var(--tg-green-ink); font-size: 12px; }
 .key-miss { color: var(--tg-red); font-size: 12px; }

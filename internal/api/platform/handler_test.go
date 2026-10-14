@@ -770,6 +770,83 @@ func TestChannelRequiresKeyForModels(t *testing.T) {
 	}
 }
 
+// 「有密钥才能手动启用」：无可用密钥（Key 池空 / 全部被禁用）的渠道，
+// 启用（状态端点与编辑保存为启用态两条路）一律 400；换回可用 Key 后恢复正常；
+// 停用方向永不受限；不存在的渠道仍 404
+func TestChannelEnableRequiresKey(t *testing.T) {
+	engine, db, token := newPlatformEnv(t)
+	cipher, _ := crypto.NewCipher("")
+	h := NewHandler(db, cipher, nil, nil, nil)
+	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
+	g.POST("/channels", h.CreateChannel)
+	g.PUT("/channels/:id", h.UpdateChannel)
+	g.PUT("/channels/:id/status", h.UpdateChannelStatus)
+	g.PUT("/channels/:id/keys/:kid/status", h.UpdateChannelKeyStatus)
+
+	do := func(method, url, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, url, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+		return w
+	}
+
+	// 正常建渠道（带 1 把 Key），先停用再禁用唯一 Key → 无可用密钥
+	w := do(http.MethodPost, "/api/platform/channels",
+		`{"name":"c1","base_url":"https://up.example","upstream_key":"sk-1","models":[{"model_name":"m1"}]}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("建渠道应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	var kid int64
+	if err := db.Raw("SELECT id FROM channel_keys WHERE channel_id = 1").Scan(&kid).Error; err != nil || kid == 0 {
+		t.Fatalf("应有池 Key: id=%d err=%v", kid, err)
+	}
+	if w = do(http.MethodPut, "/api/platform/channels/1/status", `{"status":0}`); w.Code != http.StatusOK {
+		t.Fatalf("停用不受密钥限制，应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	if w = do(http.MethodPut, fmt.Sprintf("/api/platform/channels/1/keys/%d/status", kid), `{"status":0}`); w.Code != http.StatusOK {
+		t.Fatalf("禁用 Key 应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+
+	// 无可用密钥：状态端点启用 → 400
+	if w = do(http.MethodPut, "/api/platform/channels/1/status", `{"status":1}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("无可用密钥启用渠道应 400，得 %d: %s", w.Code, w.Body.String())
+	}
+	// 无可用密钥：编辑保存为启用态 → 400（Key 行还在、只是被禁用，不触发「无密钥配模型」那条）
+	if w = do(http.MethodPut, "/api/platform/channels/1",
+		`{"name":"c1","base_url":"https://up.example","status":1,"models":[{"model_name":"m1"}]}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("无可用密钥保存启用态应 400，得 %d: %s", w.Code, w.Body.String())
+	}
+
+	// 从来没有密钥的预置形态渠道：启用同样 400
+	if err := db.Exec(`INSERT INTO channels (id, name, base_url, status, created_at, updated_at)
+		VALUES (99, 'c-preset', 'https://up.example', 0, 0, 0)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if w = do(http.MethodPut, "/api/platform/channels/99/status", `{"status":1}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("无密钥渠道启用应 400，得 %d: %s", w.Code, w.Body.String())
+	}
+
+	// 换回可用 Key（重新启用）→ 启用渠道恢复 200
+	if w = do(http.MethodPut, fmt.Sprintf("/api/platform/channels/1/keys/%d/status", kid), `{"status":1}`); w.Code != http.StatusOK {
+		t.Fatalf("重新启用 Key 应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	if w = do(http.MethodPut, "/api/platform/channels/1/status", `{"status":1}`); w.Code != http.StatusOK {
+		t.Fatalf("有可用密钥后启用应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	var st int64
+	db.Raw("SELECT status FROM channels WHERE id = 1").Scan(&st)
+	if st != 1 {
+		t.Fatalf("渠道应已启用，得 %d", st)
+	}
+
+	// 不存在的渠道仍 404（不是 400）
+	if w = do(http.MethodPut, "/api/platform/channels/999/status", `{"status":1}`); w.Code != http.StatusNotFound {
+		t.Fatalf("不存在渠道应 404，得 %d: %s", w.Code, w.Body.String())
+	}
+}
+
 // ---------------- 客户级差异化定价 ----------------
 
 // org-prices 三端点：list（使用客户 ∪ 覆盖客户，未覆盖回填默认价 + 授权人数）、

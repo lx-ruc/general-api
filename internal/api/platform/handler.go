@@ -773,6 +773,16 @@ func (h *Handler) UpdateChannel(c *gin.Context) {
 			return
 		}
 	}
+	// 「有密钥才能启用」同 UpdateChannelStatus：保存为启用态时校验可用密钥
+	// （本次整池替换会带来全新启用 Key，视为有密钥，不拦）
+	if req.Status != nil && *req.Status == 1 && req.UpstreamKey == "" {
+		var active int64
+		_ = h.DB.Model(&model.ChannelKey{}).Where("channel_id = ? AND status = 1", id).Count(&active).Error
+		if !hasKey(ch.UpstreamKeyEnc, active) {
+			httpx.Fail(c, http.StatusBadRequest, "该渠道没有可用密钥：请先到「Key 池」更换或启用密钥，再启用渠道")
+			return
+		}
+	}
 	updates := map[string]any{
 		"name": req.Name, "vendor": req.Vendor, "base_url": req.BaseURL,
 		"path": req.pathOrDefault(), "weight": maxInt(req.Weight, 1),
@@ -852,18 +862,31 @@ func (h *Handler) UpdateChannelStatus(c *gin.Context) {
 		httpx.Fail(c, http.StatusBadRequest, "status 只能为 0 或 1")
 		return
 	}
+	var ch model.Channel
+	if err := h.DB.Where("id = ?", id).First(&ch).Error; err != nil {
+		httpx.Fail(c, http.StatusNotFound, "渠道不存在")
+		return
+	}
+	// 「有密钥才能启用」：无可用密钥（legacy 密文与池内启用 Key 皆无）的渠道拒绝手动
+	// 启用——启用了也没有可用上游，模型保持停用，只会产生必然失败的请求；停用方向不限制
+	if *req.Status == 1 {
+		var active int64
+		_ = h.DB.Model(&model.ChannelKey{}).Where("channel_id = ? AND status = 1", id).Count(&active).Error
+		if !hasKey(ch.UpstreamKeyEnc, active) {
+			httpx.Fail(c, http.StatusBadRequest, "该渠道没有可用密钥：请先到「Key 池」更换或启用密钥，再启用渠道")
+			return
+		}
+	}
 	// 人工启停均清除"系统熔断"标记：手动禁用表达管理员意图，永不被自动探测重新启用；
 	// 手动启用则清零熔断连续失败计数，避免恢复后一次失败即再次熔断
 	res := h.DB.Exec("UPDATE channels SET status = ?, auto_disabled_at = 0, updated_at = ? WHERE id = ?",
 		*req.Status, time.Now().Unix(), id)
-	if res.Error == nil && res.RowsAffected > 0 {
-		if *req.Status == 1 && h.Breaker != nil {
-			h.Breaker.RecordSuccess(id)
-		}
-	}
-	if res.Error != nil || res.RowsAffected == 0 {
-		httpx.Fail(c, http.StatusNotFound, "渠道不存在")
+	if res.Error != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "更新失败")
 		return
+	}
+	if *req.Status == 1 && h.Breaker != nil {
+		h.Breaker.RecordSuccess(id)
 	}
 	// 手动启停渠道改变模型可用上游 → 对齐模型启用态（禁用可能停用模型，启用恢复模型）
 	service.SyncModelsAndNotify(h.DB, fmt.Sprintf("渠道 #%d 手动%s", id, map[int]string{0: "停用", 1: "启用"}[*req.Status]))
