@@ -829,7 +829,7 @@ func TestQueueWaitTimeoutReturns502(t *testing.T) {
 // 而非误入「全冷却」语义回 429 upstream_busy——Retry-After 会诱导客户端无意义重试
 func TestAllKeysUndecryptableReturns503(t *testing.T) {
 	e := newTestEnv(t)
-	store, _ := crypto.NewCipher(crypto.RandomKeyB64()) // 存库时用的 key
+	store, _ := crypto.NewCipher(crypto.RandomKeyB64())   // 存库时用的 key
 	runtime, _ := crypto.NewCipher(crypto.RandomKeyB64()) // 轮换后的 key
 	encPool, err := store.Encrypt("pool-real-key")
 	if err != nil {
@@ -1103,11 +1103,11 @@ func TestOrgModelPriceOverrideBilling(t *testing.T) {
 	}
 	id2 := e.lastUsage(t)
 	var row struct {
-		Cost             int64
-		InputPrice       int64
-		OutputPrice      int64
-		CostInputPrice   int64
-		CostOutputPrice  int64
+		Cost            int64
+		InputPrice      int64
+		OutputPrice     int64
+		CostInputPrice  int64
+		CostOutputPrice int64
 	}
 	_ = e.f.db.Raw(`SELECT cost, input_price, output_price, cost_input_price, cost_output_price
 		FROM usage_logs WHERE id = ?`, id2).Scan(&row).Error
@@ -1193,11 +1193,21 @@ func TestDisablePoolKeyAutoStopsSoleModel(t *testing.T) {
 		t.Fatalf("独家渠道 Key 被 401 禁用后模型应自动停用: status=%d auto_disabled_at=%d", row.Status, row.AutoAt)
 	}
 
-	// Key 池换回可用 Key → 模型自动恢复，标记清零
+	// Key 池换回可用 Key → 渠道自动恢复（无 Key 停用标记清零），模型同一次调用恢复；
+	// DisablePoolKey / Key 池启停路径收口都在 SyncModelsAndNotify
 	mustExec(t, e.f, `UPDATE channel_keys SET status = 1 WHERE channel_id = 7`)
-	_, recovered, err := service.SyncModelRoutableStatus(e.f.db)
-	if err != nil || len(recovered) != 1 || recovered[0] != "m1" {
-		t.Fatalf("Key 恢复后 m1 应自动恢复: %v %v", recovered, err)
+	service.SyncModelsAndNotify(e.f.db, "测试：Key 池换回可用 Key")
+
+	var chRow struct {
+		Status  int
+		AutoAt  int64
+		NoKeyAt int64
+	}
+	if err := e.f.db.Raw(`SELECT status AS status, auto_disabled_at AS auto_at, nokey_disabled_at AS no_key_at FROM channels WHERE id = 7`).Scan(&chRow).Error; err != nil {
+		t.Fatal(err)
+	}
+	if chRow.Status != 1 || chRow.NoKeyAt != 0 || chRow.AutoAt != 0 {
+		t.Fatalf("Key 恢复后渠道应自动启用并清标记: %+v", chRow)
 	}
 	if err := e.f.db.Raw(`SELECT status AS status, auto_disabled_at AS auto_at FROM models WHERE name = 'm1'`).Scan(&row).Error; err != nil {
 		t.Fatal(err)

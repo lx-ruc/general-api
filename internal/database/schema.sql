@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS channels (
   priority         INTEGER NOT NULL DEFAULT 0,
   status           INTEGER NOT NULL DEFAULT 1,
   auto_disabled_at INTEGER NOT NULL DEFAULT 0,  -- >0=系统熔断禁用时间（自动探测恢复）；0=未禁用或人工禁用
+  nokey_disabled_at INTEGER NOT NULL DEFAULT 0, -- >0=因无可用密钥自动停用的时间（补 Key 自动恢复）；0=未停用/其他原因停用
   last_test_at     INTEGER,
   last_test_ok     INTEGER NOT NULL DEFAULT 0,
   remark           TEXT    NOT NULL DEFAULT '',

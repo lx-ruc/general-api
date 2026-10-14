@@ -1033,3 +1033,68 @@ func TestCreateOrgAdminEmail(t *testing.T) {
 		t.Fatalf("非法邮箱应 400，得 %d", w.Code)
 	}
 }
+
+// Key 池端点联动：禁用启用中渠道的最后一把 Key → 渠道随之联动停用（状态面收口）
+func TestKeyStatusDisablesChannelWithoutKeys(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db, err := database.Open(config.Database{Driver: "sqlite", Path: t.TempDir() + "/test.db"})
+	if err != nil {
+		t.Fatalf("打开测试库失败: %v", err)
+	}
+	if err := database.Migrate(db); err != nil {
+		t.Fatalf("迁移测试库失败: %v", err)
+	}
+	t.Cleanup(func() { sqlDB, _ := db.DB(); _ = sqlDB.Close() })
+
+	now := time.Now().Unix()
+	if err := db.Exec(`INSERT INTO users (id, org_id, username, password_hash, role, status, created_at, updated_at)
+		VALUES (1, NULL, 'root', 'x', 'platform_admin', 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	const secret = "test-secret"
+	token, err := auth.GenerateToken(secret, time.Hour, 1, "platform_admin", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO channels (id, name, base_url, path, upstream_key_enc, status, created_at, updated_at)
+		VALUES (30, 'ch30', 'https://up.example', '/v1/chat/completions', '', 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO channel_keys (id, channel_id, key_enc, status, created_at, updated_at)
+		VALUES (300, 30, 'k', 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	engine := gin.New()
+	cipher, _ := crypto.NewCipher("")
+	h := NewHandler(db, cipher, &http.Client{}, nil, nil)
+	pg := engine.Group("/api/platform", middleware.JWTAuth(secret, db))
+	pg.PUT("/channels/:id/keys/:kid/status", h.UpdateChannelKeyStatus)
+
+	req := httptest.NewRequest(http.MethodPut, "/api/platform/channels/30/keys/300/status",
+		strings.NewReader(`{"status":0}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("禁用 Key 应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+
+	var st struct {
+		Status  int
+		AutoAt  int64
+		NoKeyAt int64
+		Remark  string
+	}
+	_ = db.Raw("SELECT status, auto_disabled_at AS auto_at, nokey_disabled_at AS no_key_at, remark FROM channels WHERE id = 30").Scan(&st).Error
+	if st.Status != 0 || st.NoKeyAt == 0 {
+		t.Fatalf("渠道应联动停用并写 nokey 标记，得 status=%d nokey_at=%d", st.Status, st.NoKeyAt)
+	}
+	if st.AutoAt != 0 {
+		t.Fatalf("无密钥停用不应写熔断标记 auto_disabled_at，得 %d", st.AutoAt)
+	}
+	if !strings.Contains(st.Remark, "无可用密钥") {
+		t.Fatalf("备注应含原因，得 %q", st.Remark)
+	}
+}

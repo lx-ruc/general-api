@@ -892,9 +892,10 @@ func (h *Handler) UpdateChannelStatus(c *gin.Context) {
 			return
 		}
 	}
-	// 人工启停均清除"系统熔断"标记：手动禁用表达管理员意图，永不被自动探测重新启用；
+	// 人工启停均清除自动停用标记（熔断的 auto_disabled_at 与无密钥的 nokey_disabled_at）：
+	// 手动禁用表达管理员意图，永不被自动探测/补 Key 恢复重新启用；
 	// 手动启用则清零熔断连续失败计数，避免恢复后一次失败即再次熔断
-	res := h.DB.Exec("UPDATE channels SET status = ?, auto_disabled_at = 0, updated_at = ? WHERE id = ?",
+	res := h.DB.Exec("UPDATE channels SET status = ?, auto_disabled_at = 0, nokey_disabled_at = 0, updated_at = ? WHERE id = ?",
 		*req.Status, time.Now().Unix(), id)
 	if res.Error != nil {
 		httpx.Fail(c, http.StatusInternalServerError, "更新失败")
