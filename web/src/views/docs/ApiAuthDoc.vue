@@ -22,7 +22,8 @@ const authExample = computed(() => `curl ${baseURL}/models \\
       <CodeBlock :code="authExample" lang="bash" />
 
       <ul>
-        <li>密钥格式为 <code>sk-</code> 前缀，在管理台【我的密钥】创建，<strong>明文仅创建时显示一次</strong>。</li>
+        <li>密钥格式为 <code>sk-</code> 前缀，在管理台【我的密钥】创建，<strong>明文仅创建时显示一次</strong>；
+          之后列表只显示打码串，点「复制」可随时取回完整密钥（直接进剪贴板，不在界面显示）。</li>
         <li>一个密钥可调用多个模型，能调哪些由客户管理员的「模型授权」决定；<code>GET /v1/models</code>
           返回的就是该密钥可用的模型清单。</li>
         <li>每个密钥有独立的每分钟请求数（RPM）限额，默认 60，可由系统管理员调整。</li>

@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -22,7 +23,7 @@ import (
 // 账号模型：专用客户「在线体验」+ 子账号 online_demo（个人不限额），
 // 体验总额度由客户 quota_limit 承担（走 AddOrgQuota，保持 Σgrants 不变量）。
 // 密钥明文存 settings（demo.api_key）：演示密钥本就要反复发给访客，
-// 管理员须能随时查看/复制——与普通密钥「只显示一次」的约定不同，此处是有意为之。
+// 管理员须能随时复制——但界面只展示打码串，取完整明文统一走 /demo-key/copy 端点。
 
 const (
 	settingDemoUserID = "demo.user_id"
@@ -149,9 +150,13 @@ func (h *Handler) demoSnapshot(c *gin.Context, uid, orgID int64) {
 	if key.ExpiredAt != nil {
 		expiresAt = *key.ExpiredAt
 	}
+	keyMasked := "****"
+	if plain := getSettingStr(h.DB, settingDemoKey); plain != "" {
+		keyMasked = service.MaskKey(plain)
+	}
 	httpx.OK(c, gin.H{
 		"provisioned": keyID > 0,
-		"key":         getSettingStr(h.DB, settingDemoKey), // 演示密钥明文：管理员可反复查看/复制
+		"key_masked":  keyMasked, // 打码展示；复制完整密钥走 POST /demo-key/copy
 		"key_prefix":  key.KeyPrefix,
 		"key_id":      keyID,
 		"enabled":     key.Status == 1,
@@ -312,6 +317,11 @@ func (h *Handler) RotateDemoKey(c *gin.Context) {
 		httpx.Fail(c, http.StatusInternalServerError, "生成密钥失败")
 		return
 	}
+	enc, encErr := h.Cipher.Encrypt(plain)
+	if encErr != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "加密密钥失败")
+		return
+	}
 	// 新钥继承现钥的有效期：有效期是持久配置（模型授权/额度挂在账号上本就不丢），
 	// 落在 key 行上，轮换若不带过来会静默丢失变永久——应急轮换恰恰最需要保留期限
 	var inheritExp *int64
@@ -325,7 +335,7 @@ func (h *Handler) RotateDemoKey(c *gin.Context) {
 		}
 		k := model.APIKey{
 			OrgID: orgID, UserID: uid, Name: demoKeyName,
-			KeyPrefix: prefix, KeyHash: hash, Status: 1,
+			KeyPrefix: prefix, KeyHash: hash, KeyEnc: enc, Status: 1,
 			ExpiredAt: inheritExp,
 		}
 		if err := tx.Create(&k).Error; err != nil {
@@ -341,4 +351,16 @@ func (h *Handler) RotateDemoKey(c *gin.Context) {
 		return
 	}
 	httpx.OK(c, gin.H{"key": plain, "message": "已轮换，旧密钥立即失效"})
+}
+
+// CopyDemoKey POST /api/platform/demo-key/copy —— 复制完整体验密钥：
+// 明文只进剪贴板不回显界面（界面一律打码；轮换响应里的一次性明文除外）
+func (h *Handler) CopyDemoKey(c *gin.Context) {
+	plain := getSettingStr(h.DB, settingDemoKey)
+	if plain == "" {
+		httpx.Fail(c, http.StatusNotFound, "尚未配置体验密钥，请先轮换生成")
+		return
+	}
+	slog.Info("密钥明文复制", "what", "demo_key", "actor_uid", middleware.GetUID(c))
+	httpx.OK(c, gin.H{"key": plain})
 }

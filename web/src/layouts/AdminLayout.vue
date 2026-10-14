@@ -9,6 +9,7 @@ import {
   apiCreateAccessToken,
   apiListAccessTokens,
   apiRevokeAccessToken,
+  apiCopyAccessToken,
   type AccessToken,
 } from '../api/auth'
 import { apiOrgRequests } from '../api/org'
@@ -17,6 +18,7 @@ import {
   type NotificationItem, type KeyQuotaPayload,
 } from '../api/platform'
 import PlaygroundDialog from '../components/PlaygroundDialog.vue'
+import MaskedKey from '../components/MaskedKey.vue'
 
 // 在线体验（顶栏入口）
 const pgVisible = ref(false)
@@ -362,7 +364,11 @@ async function revokeToken(row: AccessToken) {
 
     <el-table :data="tokens" size="small">
       <el-table-column prop="name" label="名称" min-width="120" />
-      <el-table-column prop="prefix" label="前缀" width="130" />
+      <el-table-column label="令牌" width="230">
+        <template #default="{ row }">
+          <MaskedKey :masked="row.token_masked" :copyable="row.copyable" :fetch-full="() => apiCopyAccessToken(row.id)" />
+        </template>
+      </el-table-column>
       <el-table-column label="状态" width="80">
         <template #default="{ row }">
           <el-tag :type="row.status === 1 ? 'success' : 'info'" size="small">

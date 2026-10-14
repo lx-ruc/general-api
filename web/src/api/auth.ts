@@ -45,6 +45,8 @@ export interface AccessToken {
   id: number
   name: string
   prefix: string
+  token_masked?: string // 打码展示（复制走 apiCopyAccessToken）
+  copyable?: boolean // false=上线前存量，复制置灰
   status: number
   expires_at: number
   last_used_at: number
@@ -66,3 +68,7 @@ export const apiCreateAccessToken = (name: string, expires_days: number): Promis
 
 export const apiRevokeAccessToken = (id: number): Promise<{ message: string }> =>
   http.delete<any, { message: string }>(`/api/me/tokens/${id}`)
+
+// 复制完整令牌（仅属主）：明文只进剪贴板不回显界面（列表只回打码串）
+export const apiCopyAccessToken = (id: number): Promise<{ key: string }> =>
+  http.post<any, { key: string }>(`/api/me/tokens/${id}/copy`)

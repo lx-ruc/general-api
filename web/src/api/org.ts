@@ -21,6 +21,8 @@ export interface OrgKey {
   id: number
   name: string
   key_prefix: string
+  key_masked?: string // 打码展示（复制走 apiCopyOrgKey）
+  key_copyable?: boolean // false=上线前存量，复制置灰
   status: number
   user_id: number
   username?: string
@@ -86,6 +88,9 @@ export const apiOrgUsage = (params?: any) => http.get<any, any>('/api/org/usage'
 export const apiOrgKeys = (params?: any) => http.get<any, any>('/api/org/keys', { params })
 export const apiUpdateOrgKeyStatus = (id: number, status: number) =>
   http.put<any, any>(`/api/org/keys/${id}/status`, { status })
+// 复制完整密钥（本客户成员的 key，org 隔离）：明文只进剪贴板不回显界面
+export const apiCopyOrgKey = (id: number): Promise<{ key: string }> =>
+  http.post<any, { key: string }>(`/api/org/keys/${id}/copy`)
 
 // ---- 成本中心 ----
 export const apiOrgCostCenters = () => http.get<any, { list: CostCenter[] }>('/api/org/cost-centers')

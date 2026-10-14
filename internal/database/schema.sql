@@ -136,6 +136,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
   name           TEXT    NOT NULL DEFAULT '',
   key_prefix     TEXT    NOT NULL,
   key_hash       TEXT    NOT NULL UNIQUE,
+  key_enc        TEXT    NOT NULL DEFAULT '',  -- 完整明文 AES-GCM 密文（复制完整密钥用；''=功能上线前存量；鉴权仍走 key_hash）
   status         INTEGER NOT NULL DEFAULT 1,
   expired_at     INTEGER,
   last_used_at   INTEGER,
@@ -337,6 +338,7 @@ CREATE TABLE IF NOT EXISTS access_tokens (
   user_id     INTEGER NOT NULL,
   name        TEXT    NOT NULL DEFAULT '',
   token_hash  TEXT    NOT NULL UNIQUE,
+  token_enc   TEXT    NOT NULL DEFAULT '',  -- 完整明文 AES-GCM 密文（复制用；''=功能上线前存量）
   prefix      TEXT    NOT NULL DEFAULT '',
   status      INTEGER NOT NULL DEFAULT 1,
   expires_at  INTEGER NOT NULL DEFAULT 0,

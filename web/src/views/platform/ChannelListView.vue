@@ -4,10 +4,11 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   apiListChannels, apiCreateChannel, apiUpdateChannel, apiUpdateChannelStatus,
   apiDeleteChannel, apiTestChannel, apiListModels, apiListChannelKeys, apiFetchUpstreamModels,
-  apiFetchUpstreamModelsByForm,
+  apiFetchUpstreamModelsByForm, apiChannelKeyFull,
   apiUpdateChannelKeyStatus, apiAddChannelKeys, apiDeleteChannelKey, apiClearChannelKeyCooldown,
   type Channel, type ChannelKeyRow,
 } from '../../api/platform'
+import MaskedKey from '../../components/MaskedKey.vue'
 import { fmtTime } from '../../utils/format'
 import { parseCurl } from '../../utils/curl'
 
@@ -591,8 +592,14 @@ async function removeKey(row: ChannelKeyRow) {
     <el-table v-if="keyList.length > 0" :data="keyList" v-loading="keysLoading" size="small"
       :row-class-name="keyRowClass">
       <el-table-column prop="id" label="#" width="44" />
-      <el-table-column prop="key_masked" label="Key（打码）" min-width="140">
-        <template #default="{ row }"><code>{{ row.key_masked }}</code></template>
+      <el-table-column prop="key_masked" label="Key" min-width="220">
+        <template #default="{ row }">
+          <MaskedKey
+            v-if="keysChannel"
+            :masked="row.key_masked"
+            :fetch-full="() => apiChannelKeyFull(keysChannel!.id, row.id)"
+          />
+        </template>
       </el-table-column>
       <el-table-column prop="weight" label="权重" width="56" align="center" />
       <el-table-column label="状态" width="66" align="center">

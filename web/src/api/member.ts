@@ -4,6 +4,8 @@ export interface MyKey {
   id: number
   name: string
   key_prefix: string
+  key_masked?: string // 打码展示（复制走 apiCopyKey）
+  key_copyable?: boolean // false=上线前存量，复制置灰
   status: number
   last_used_at: number | null
   created_at: number
@@ -44,6 +46,9 @@ export const apiMyKeys = () => http.get<any, MyKey[]>('/api/member/keys')
 export const apiCreateKey = (name: string, expiresAt?: number | null) =>
   http.post<any, any>('/api/member/keys', { name, expires_at: expiresAt ?? null })
 export const apiDeleteKey = (id: number) => http.delete<any, any>(`/api/member/keys/${id}`)
+// 复制完整密钥：明文只进剪贴板不回显界面（列表只回打码串）
+export const apiCopyKey = (id: number): Promise<{ key: string }> =>
+  http.post<any, { key: string }>(`/api/member/keys/${id}/copy`)
 export const apiMyModels = () => http.get<any, any>('/api/member/models')
 export const apiMyStats = () => http.get<any, any>('/api/member/stats/overview')
 // 多维用量统计：start/end 为 unix 秒闭开区间，缺省 = 当月（账期时区）

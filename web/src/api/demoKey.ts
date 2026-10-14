@@ -1,11 +1,11 @@
 import http from './http'
 
 // 对外演示体验密钥（管理台配置；GET 即幂等开通专用体验账号）。
-// 明文可反复查看是有意设计：演示密钥本就要反复发给来访客户，
-// 与普通密钥「只显示一次」的约定不同。
+// 界面只展示打码串，取完整明文统一走 /demo-key/copy（进剪贴板不回显）；
+// 轮换响应里的一次性明文除外。
 export interface DemoKeyConfig {
   provisioned: boolean
-  key: string
+  key_masked: string
   key_prefix: string
   key_id: number
   enabled: boolean
@@ -27,3 +27,5 @@ export const apiConfigureDemoKey = (data: DemoKeyUpdate) =>
   http.put<any, DemoKeyConfig>('/api/platform/demo-key', data)
 export const apiRotateDemoKey = () =>
   http.post<any, { key: string; message: string }>('/api/platform/demo-key/rotate')
+export const apiCopyDemoKey = (): Promise<{ key: string }> =>
+  http.post<any, { key: string }>('/api/platform/demo-key/copy')

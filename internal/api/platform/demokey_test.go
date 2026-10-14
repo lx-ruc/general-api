@@ -13,18 +13,21 @@ import (
 	"gorm.io/gorm"
 
 	"token-gateway/internal/auth"
+	"token-gateway/internal/crypto"
 	"token-gateway/internal/middleware"
 )
 
-// newDemoEnv 脚手架：临时库 + 系统管理员 + 挂 demo-key 三条路由
+// newDemoEnv 脚手架：临时库 + 系统管理员 + 挂 demo-key 四条路由
 func newDemoEnv(t *testing.T) (*gin.Engine, *gorm.DB, string) {
 	t.Helper()
 	engine, db, token := newPlatformEnv(t)
-	h := NewHandler(db, nil, nil, nil, nil)
+	cipher, _ := crypto.NewCipher("")
+	h := NewHandler(db, cipher, nil, nil, nil)
 	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
 	g.GET("/demo-key", h.GetDemoKey)
 	g.PUT("/demo-key", h.ConfigureDemoKey)
 	g.POST("/demo-key/rotate", h.RotateDemoKey)
+	g.POST("/demo-key/copy", h.CopyDemoKey)
 	return engine, db, token
 }
 
@@ -121,10 +124,18 @@ func TestDemoKeyRotateAndRevoke(t *testing.T) {
 		t.Fatal("settings 缺 demo.user_id 锚点")
 	}
 
-	// GET 可见明文（演示密钥可反复查看）
+	// GET 只回打码串（明文不再回显界面）；复制端点取回完整明文；key_enc 存档落库
 	r2 := demoCall(t, engine, token, http.MethodGet, "/api/platform/demo-key", "")
-	if r2["provisioned"] != true || r2["key"] != oldKey {
-		t.Fatalf("GET 应回显密钥，得 provisioned=%v key=%v", r2["provisioned"], r2["key"])
+	masked, _ := r2["key_masked"].(string)
+	if r2["provisioned"] != true || !strings.Contains(masked, "…") || masked == oldKey {
+		t.Fatalf("GET 应回打码串，得 provisioned=%v masked=%q", r2["provisioned"], masked)
+	}
+	r2c := demoCall(t, engine, token, http.MethodPost, "/api/platform/demo-key/copy", "")
+	if r2c["key"] != oldKey {
+		t.Fatalf("复制应回完整密钥，得 %v", r2c["key"])
+	}
+	if n := qInt64(t, db, "SELECT COUNT(*) FROM api_keys WHERE key_enc = ?", oldKey); n != 1 {
+		t.Fatalf("轮换应写 key_enc 存档，得 %d", n)
 	}
 
 	// 再轮换：旧 key 即时吊销（status=0），库里共 2 行

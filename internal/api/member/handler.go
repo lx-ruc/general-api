@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 
 	"token-gateway/internal/auth"
+	"token-gateway/internal/crypto"
 	"token-gateway/internal/httpx"
 	"token-gateway/internal/middleware"
 	"token-gateway/internal/model"
@@ -17,11 +18,12 @@ import (
 )
 
 type Handler struct {
-	DB *gorm.DB
+	DB     *gorm.DB
+	Cipher *crypto.Cipher // 完整密钥 AES-GCM 存档（复制完整密钥用；鉴权仍走哈希）
 }
 
-func NewHandler(db *gorm.DB) *Handler {
-	return &Handler{DB: db}
+func NewHandler(db *gorm.DB, cipher *crypto.Cipher) *Handler {
+	return &Handler{DB: db, Cipher: cipher}
 }
 
 func uid(c *gin.Context) int64 { return middleware.GetUID(c) }
@@ -43,6 +45,8 @@ func (h *Handler) ListKeys(c *gin.Context) {
 	type keyRow struct {
 		model.APIKey
 		CostCenterName string `json:"cost_center_name"` // "" = 未归集
+		KeyMasked      string `json:"key_masked"`       // 打码展示（复制走 /copy 端点）
+		KeyCopyable    bool   `json:"key_copyable"`     // false=上线前存量（无加密存档），复制按钮置灰
 	}
 	var rows []keyRow
 	_ = h.DB.Raw(`
@@ -51,6 +55,10 @@ func (h *Handler) ListKeys(c *gin.Context) {
 		WHERE k.user_id = ? ORDER BY k.id DESC`, uid(c)).Scan(&rows).Error
 	if rows == nil {
 		rows = []keyRow{}
+	}
+	for i := range rows {
+		rows[i].KeyMasked = service.KeyMaskedForList(h.Cipher, rows[i].KeyEnc, rows[i].KeyPrefix)
+		rows[i].KeyCopyable = rows[i].KeyEnc != ""
 	}
 	httpx.OK(c, rows)
 }
@@ -94,9 +102,14 @@ func (h *Handler) CreateKey(c *gin.Context) {
 		httpx.Fail(c, http.StatusInternalServerError, "生成密钥失败")
 		return
 	}
+	enc, err := h.Cipher.Encrypt(plain)
+	if err != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "加密密钥失败")
+		return
+	}
 	k := model.APIKey{
 		OrgID: o.ID, UserID: u.ID, Name: req.Name,
-		KeyPrefix: prefix, KeyHash: hash, Status: 1,
+		KeyPrefix: prefix, KeyHash: hash, KeyEnc: enc, Status: 1,
 		ExpiredAt: req.ExpiresAt,
 	}
 	if err := h.DB.Create(&k).Error; err != nil {
@@ -125,6 +138,17 @@ func (h *Handler) DeleteKey(c *gin.Context) {
 		return
 	}
 	httpx.OK(c, gin.H{"message": "已删除"})
+}
+
+// CopyKey POST /api/member/keys/:id/copy —— 复制完整密钥（仅本人）：
+// 明文只进剪贴板不回显界面；存量无存档的旧密钥 400 引导重建
+func (h *Handler) CopyKey(c *gin.Context) {
+	id, ok := httpx.PathID(c)
+	if !ok {
+		return
+	}
+	service.CopyKeyPayload(c, h.DB, h.Cipher, "密钥", uid(c),
+		"SELECT id, key_enc AS enc FROM api_keys WHERE id = ? AND user_id = ?", id, uid(c))
 }
 
 // ---------------- 模型与额度 ----------------

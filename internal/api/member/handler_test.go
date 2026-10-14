@@ -15,6 +15,7 @@ import (
 
 	"token-gateway/internal/auth"
 	"token-gateway/internal/config"
+	"token-gateway/internal/crypto"
 	"token-gateway/internal/database"
 	"token-gateway/internal/middleware"
 	"token-gateway/internal/service"
@@ -58,7 +59,8 @@ func newMemberEnv(t *testing.T) *memberEnv {
 
 	engine := gin.New()
 	api := engine.Group("/api/member", middleware.JWTAuth(secret, db))
-	h := NewHandler(db)
+	cipher, _ := crypto.NewCipher("")
+	h := NewHandler(db, cipher)
 	api.POST("/keys", h.CreateKey)
 	api.GET("/stats/usage", h.UsageBreakdown)
 	api.GET("/usage", h.ListUsage)

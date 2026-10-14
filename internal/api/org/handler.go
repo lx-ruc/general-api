@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"token-gateway/internal/auth"
+	"token-gateway/internal/crypto"
 	"token-gateway/internal/database"
 	"token-gateway/internal/httpx"
 	"token-gateway/internal/middleware"
@@ -28,11 +29,12 @@ var errRequestHandled = errors.New("request already handled")
 var errMemberUnlimited = errors.New("member quota unlimited")
 
 type Handler struct {
-	DB *gorm.DB
+	DB     *gorm.DB
+	Cipher *crypto.Cipher // 完整密钥 AES-GCM 存档（「密钥一览」复制完整密钥用）
 }
 
-func NewHandler(db *gorm.DB) *Handler {
-	return &Handler{DB: db}
+func NewHandler(db *gorm.DB, cipher *crypto.Cipher) *Handler {
+	return &Handler{DB: db, Cipher: cipher}
 }
 
 // orgID 当前客户管理员所属组织（org 隔离的基础）
@@ -634,6 +636,8 @@ func (h *Handler) ListKeys(c *gin.Context) {
 		model.APIKey
 		Username       string `json:"username"`
 		CostCenterName string `json:"cost_center_name"` // "" = 未归集
+		KeyMasked      string `json:"key_masked"`       // 打码展示（复制走 /copy 端点）
+		KeyCopyable    bool   `json:"key_copyable"`     // false=上线前存量（无加密存档），复制按钮置灰
 	}
 	var rows []keyRow
 	_ = h.DB.Raw(`
@@ -644,7 +648,26 @@ func (h *Handler) ListKeys(c *gin.Context) {
 	if rows == nil {
 		rows = []keyRow{}
 	}
+	for i := range rows {
+		rows[i].KeyMasked = service.KeyMaskedForList(h.Cipher, rows[i].KeyEnc, rows[i].KeyPrefix)
+		rows[i].KeyCopyable = rows[i].KeyEnc != ""
+	}
 	httpx.PageResult(c, rows, total, page, size)
+}
+
+// CopyKey POST /api/org/keys/:id/copy —— 复制完整密钥（org 隔离：仅本客户成员的密钥）：
+// 明文只进剪贴板不回显界面；存量无存档的旧密钥 400 引导重建
+func (h *Handler) CopyKey(c *gin.Context) {
+	oid, ok := orgID(c)
+	if !ok {
+		return
+	}
+	id, ok := httpx.PathID(c)
+	if !ok {
+		return
+	}
+	service.CopyKeyPayload(c, h.DB, h.Cipher, "密钥", middleware.GetUID(c),
+		"SELECT id, key_enc AS enc FROM api_keys WHERE id = ? AND org_id = ?", id, oid)
 }
 
 // UpdateKeyStatus PUT /api/org/keys/:id/status

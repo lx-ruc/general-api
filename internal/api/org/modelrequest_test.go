@@ -16,7 +16,7 @@ import (
 func newModelRequestEnv(t *testing.T) *orgEnv {
 	t.Helper()
 	e := newOrgEnv(t)
-	h := NewHandler(e.db)
+	h := NewHandler(e.db, e.cipher)
 	g := e.engine.Group("/api/org", middleware.JWTAuth("test-secret", e.db))
 	g.GET("/members/:id/models", h.GetMemberModels)
 	g.PUT("/members/:id/models", h.SetMemberModels)

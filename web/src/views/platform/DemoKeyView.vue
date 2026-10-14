@@ -2,7 +2,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiListModels } from '../../api/platform'
-import { apiConfigureDemoKey, apiGetDemoKey, apiRotateDemoKey, type DemoKeyConfig } from '../../api/demoKey'
+import { apiConfigureDemoKey, apiGetDemoKey, apiRotateDemoKey, apiCopyDemoKey, type DemoKeyConfig } from '../../api/demoKey'
+import MaskedKey from '../../components/MaskedKey.vue'
 import { fmtQuota, fmtTime } from '../../utils/format'
 import { copyText } from '../../utils/clipboard'
 
@@ -83,12 +84,6 @@ const quotaMissing = computed(
   () => !!cfg.value?.provisioned && cfg.value.org.quota_limit <= 0,
 )
 
-async function copyKey() {
-  if (!cfg.value?.key) return
-  if (await copyText(cfg.value.key)) ElMessage.success('已复制')
-  else ElMessage.error('复制失败，请手动选择复制')
-}
-
 async function rotate() {
   try {
     await ElMessageBox.confirm(
@@ -163,8 +158,7 @@ async function save() {
 
       <template v-if="cfg?.provisioned">
         <div class="key-row">
-          <code class="key-text">{{ cfg.key || '（未生成）' }}</code>
-          <el-button size="small" @click="copyKey" :disabled="!cfg.key">复制</el-button>
+          <MaskedKey :masked="cfg.key_masked" :fetch-full="() => apiCopyDemoKey()" />
         </div>
         <el-descriptions :column="3" border style="margin-top: 16px">
           <el-descriptions-item label="状态">

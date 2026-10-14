@@ -93,6 +93,8 @@ func migrateAll(db *gorm.DB) error {
 		{"users", "monthly_quota", "INTEGER NOT NULL DEFAULT 0"},
 		{"users", "monthly_cost", "INTEGER NOT NULL DEFAULT 0"},
 		{"users", "monthly_period", "TEXT NOT NULL DEFAULT ''"},
+		{"api_keys", "key_enc", "TEXT NOT NULL DEFAULT ''"},
+		{"access_tokens", "token_enc", "TEXT NOT NULL DEFAULT ''"},
 		{"channels", "auto_disabled_at", "INTEGER NOT NULL DEFAULT 0"},
 		{"quota_requests", "kind", "TEXT NOT NULL DEFAULT 'quota'"},
 		{"quota_requests", "model_names", "TEXT NOT NULL DEFAULT ''"},

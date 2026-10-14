@@ -146,6 +146,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		{
 			tk.GET("", tokenH.List)
 			tk.POST("", tokenH.Create)
+			tk.POST("/:id/copy", tokenH.Copy)
 			tk.DELETE("/:id", tokenH.Revoke)
 		}
 	}
@@ -192,6 +193,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		plat.POST("/channels/:id/keys", ph.AddChannelKeys)
 		plat.DELETE("/channels/:id/keys/:kid", ph.DeleteChannelKey)
 		plat.PUT("/channels/:id/keys/:kid/status", ph.UpdateChannelKeyStatus)
+		plat.GET("/channels/:id/keys/:kid/full", ph.GetChannelKeyFull)
 		plat.POST("/channels/:id/keys/:kid/cooldown/clear", ph.ClearChannelKeyCooldown)
 
 		plat.GET("/models", ph.ListModels)
@@ -224,10 +226,11 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		plat.GET("/demo-key", ph.GetDemoKey)
 		plat.PUT("/demo-key", ph.ConfigureDemoKey)
 		plat.POST("/demo-key/rotate", ph.RotateDemoKey)
+		plat.POST("/demo-key/copy", ph.CopyDemoKey)
 	}
 
 	// 客户管理员（org 隔离：handler 内强制 WHERE org_id）
-	oh := org.NewHandler(db)
+	oh := org.NewHandler(db, cipher)
 	og := authed.Group("/org", middleware.RequireRole(model.RoleOrgAdmin))
 	{
 		og.GET("/members", oh.ListMembers)
@@ -245,6 +248,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		og.GET("/keys", oh.ListKeys)
 		og.PUT("/keys/:id/status", oh.UpdateKeyStatus)
 		og.PUT("/keys/:id/cost-center", oh.ReassignKeyCenter)
+		og.POST("/keys/:id/copy", oh.CopyKey)
 
 		og.GET("/cost-centers", oh.ListCostCenters)
 		og.POST("/cost-centers", oh.CreateCostCenter)
@@ -270,12 +274,13 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 	}
 
 	// 子账号
-	mh := member.NewHandler(db)
+	mh := member.NewHandler(db, cipher)
 	mg := authed.Group("/member", middleware.RequireRole(model.RoleMember))
 	{
 		mg.GET("/keys", mh.ListKeys)
 		mg.POST("/keys", mh.CreateKey)
 		mg.DELETE("/keys/:id", mh.DeleteKey)
+		mg.POST("/keys/:id/copy", mh.CopyKey)
 		mg.GET("/models", mh.ListModels)
 		mg.GET("/models/available", mh.ListAvailableModels)
 		mg.GET("/stats/overview", mh.StatsOverview)

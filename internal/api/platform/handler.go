@@ -937,6 +937,22 @@ func (h *Handler) ListChannelKeys(c *gin.Context) {
 	httpx.OK(c, list)
 }
 
+// GetChannelKeyFull GET /api/platform/channels/:id/keys/:kid/full —— 复制完整渠道 Key：
+// 明文只进剪贴板不回显界面（Key 池列表一律打码）
+func (h *Handler) GetChannelKeyFull(c *gin.Context) {
+	id, ok := httpx.PathID(c)
+	if !ok {
+		return
+	}
+	kid, err := strconv.ParseInt(c.Param("kid"), 10, 64)
+	if err != nil || kid <= 0 {
+		httpx.Fail(c, http.StatusBadRequest, "invalid key id")
+		return
+	}
+	service.CopyKeyPayload(c, h.DB, h.Cipher, "渠道 Key", middleware.GetUID(c),
+		"SELECT id, key_enc AS enc FROM channel_keys WHERE id = ? AND channel_id = ?", kid, id)
+}
+
 // UpdateChannelKeyStatus PUT /api/platform/channels/:id/keys/:kid/status
 // 401 自动禁用后的恢复路径；重新启用时清掉自动禁用备注
 func (h *Handler) UpdateChannelKeyStatus(c *gin.Context) {

@@ -107,6 +107,9 @@ export const apiDeleteChannelKey = (id: number, kid: number) =>
   http.delete<any, any>(`/api/platform/channels/${id}/keys/${kid}`)
 export const apiListChannelKeys = (id: number) =>
   http.get<any, ChannelKeyRow[]>(`/api/platform/channels/${id}/keys`)
+// 复制完整渠道 Key：明文只进剪贴板不回显界面（Key 池列表一律打码）
+export const apiChannelKeyFull = (id: number, kid: number): Promise<{ key: string }> =>
+  http.get<any, { key: string }>(`/api/platform/channels/${id}/keys/${kid}/full`)
 export const apiUpdateChannelKeyStatus = (id: number, kid: number, status: number) =>
   http.put<any, any>(`/api/platform/channels/${id}/keys/${kid}/status`, { status })
 // 立即解除该 Key 的冷却（含配额标记）：厂商侧限额恢复后用，不必等指数退避自然到期

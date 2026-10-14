@@ -12,6 +12,7 @@ import (
 
 	"token-gateway/internal/auth"
 	"token-gateway/internal/config"
+	"token-gateway/internal/crypto"
 	"token-gateway/internal/database"
 	"token-gateway/internal/middleware"
 	"token-gateway/internal/model"
@@ -52,7 +53,8 @@ func newAlertEnv(t *testing.T) *alertEnv {
 	}
 	engine := gin.New()
 	og := engine.Group("/api/org", middleware.JWTAuth("test-secret", db))
-	h := NewHandler(db)
+	cipher, _ := crypto.NewCipher("")
+	h := NewHandler(db, cipher)
 	og.GET("/alert-levels", h.GetAlertLevels)
 	og.PUT("/alert-levels", h.UpdateAlertLevels)
 	og.GET("/members/:id/alert-levels", h.GetMemberAlertLevels)

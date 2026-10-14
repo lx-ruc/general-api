@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { apiMyKeys, apiCreateKey, apiDeleteKey, type MyKey } from '../../api/member'
+import { apiMyKeys, apiCreateKey, apiDeleteKey, apiCopyKey, type MyKey } from '../../api/member'
+import MaskedKey from '../../components/MaskedKey.vue'
 import { fmtTime } from '../../utils/format'
 import { copyText } from '../../utils/clipboard'
 
@@ -70,8 +71,10 @@ async function remove(k: MyKey) {
     <el-table :data="list">
       <el-table-column prop="id" label="#" width="60" />
       <el-table-column prop="name" label="名称" min-width="120" />
-      <el-table-column label="密钥" width="160">
-        <template #default="{ row }"><code>{{ row.key_prefix }}…</code></template>
+      <el-table-column label="密钥" width="230">
+        <template #default="{ row }">
+          <MaskedKey :masked="row.key_masked" :copyable="row.key_copyable" :fetch-full="() => apiCopyKey(row.id)" />
+        </template>
       </el-table-column>
       <el-table-column label="状态" width="80">
         <template #default="{ row }">

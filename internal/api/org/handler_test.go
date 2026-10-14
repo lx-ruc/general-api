@@ -15,6 +15,7 @@ import (
 
 	"token-gateway/internal/auth"
 	"token-gateway/internal/config"
+	"token-gateway/internal/crypto"
 	"token-gateway/internal/database"
 	"token-gateway/internal/middleware"
 )
@@ -23,6 +24,7 @@ type orgEnv struct {
 	engine *gin.Engine
 	db     *gorm.DB
 	token  string
+	cipher *crypto.Cipher
 }
 
 // newOrgEnv 临时库 + org + org_admin 身份，挂成员管理路由
@@ -57,7 +59,8 @@ func newOrgEnv(t *testing.T) *orgEnv {
 
 	engine := gin.New()
 	og := engine.Group("/api/org", middleware.JWTAuth(secret, db))
-	h := NewHandler(db)
+	cipher, _ := crypto.NewCipher("")
+	h := NewHandler(db, cipher)
 	og.POST("/members", h.CreateMember)
 	og.PUT("/members/:id", h.UpdateMember)
 	og.GET("/cost-centers", h.ListCostCenters)
@@ -67,7 +70,7 @@ func newOrgEnv(t *testing.T) *orgEnv {
 	og.GET("/billing", h.Billing)
 	og.GET("/quota-grants", h.ListQuotaGrants)
 	og.PUT("/keys/:id/cost-center", h.ReassignKeyCenter)
-	return &orgEnv{engine: engine, db: db, token: token}
+	return &orgEnv{engine: engine, db: db, token: token, cipher: cipher}
 }
 
 func (e *orgEnv) do(method, path, body string) *httptest.ResponseRecorder {
@@ -166,7 +169,7 @@ func TestHandleRequestConcurrentApproveOnce(t *testing.T) {
 		VALUES (77, 1, 10, 5000, 'need more', 'pending', ?)`, now).Error; err != nil {
 		t.Fatal(err)
 	}
-	h := NewHandler(e.db)
+	h := NewHandler(e.db, e.cipher)
 	// 挂到带 JWTAuth 的 /api/org 组上（与 newOrgEnv 同 secret）
 	g := e.engine.Group("/api/org", middleware.JWTAuth("test-secret", e.db))
 	g.PUT("/requests/:id", h.HandleRequest)
@@ -219,7 +222,7 @@ func TestHandleRequestApproveQuotaOverflow(t *testing.T) {
 		VALUES (79, 1, 13, 5000, 'big', 'pending', ?)`, now).Error; err != nil {
 		t.Fatal(err)
 	}
-	h := NewHandler(e.db)
+	h := NewHandler(e.db, e.cipher)
 	g := e.engine.Group("/api/org", middleware.JWTAuth("test-secret", e.db))
 	g.PUT("/requests/:id", h.HandleRequest)
 
@@ -249,7 +252,7 @@ func TestHandleRequestApproveUnlimitedMember(t *testing.T) {
 		VALUES (78, 1, 12, 5000, 'need more', 'pending', ?)`, now).Error; err != nil {
 		t.Fatal(err)
 	}
-	h := NewHandler(e.db)
+	h := NewHandler(e.db, e.cipher)
 	g := e.engine.Group("/api/org", middleware.JWTAuth("test-secret", e.db))
 	g.PUT("/requests/:id", h.HandleRequest)
 
@@ -287,7 +290,7 @@ func TestDeleteMemberCleansAccessTokens(t *testing.T) {
 		VALUES (11, 'ci', 'hash-11', 'tgp_x', 1, ?, ?)`, now, now).Error; err != nil {
 		t.Fatal(err)
 	}
-	h := NewHandler(e.db)
+	h := NewHandler(e.db, e.cipher)
 	g := e.engine.Group("/api/org", middleware.JWTAuth("test-secret", e.db))
 	g.DELETE("/members/:id", h.DeleteMember)
 
@@ -401,7 +404,7 @@ func TestHandleRequestModelKind(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h := NewHandler(e.db)
+	h := NewHandler(e.db, e.cipher)
 	g := e.engine.Group("/api/org", middleware.JWTAuth("test-secret", e.db))
 	g.PUT("/requests/:id", h.HandleRequest)
 
@@ -477,7 +480,7 @@ func TestHandleRequestModelKind(t *testing.T) {
 func TestStatsOverviewQuotaPool(t *testing.T) {
 	e := newOrgEnv(t)
 	g := e.engine.Group("/api/org", middleware.JWTAuth("test-secret", e.db))
-	h := NewHandler(e.db)
+	h := NewHandler(e.db, e.cipher)
 	g.GET("/stats/overview", h.StatsOverview)
 
 	now := time.Now().Unix()
@@ -543,7 +546,7 @@ func TestHandleRequestNotifiesMember(t *testing.T) {
 		VALUES (88, 1, 10, 5000, 'need more', 'pending', ?)`, now).Error; err != nil {
 		t.Fatal(err)
 	}
-	h := NewHandler(e.db)
+	h := NewHandler(e.db, e.cipher)
 	g := e.engine.Group("/api/org", middleware.JWTAuth("test-secret", e.db))
 	g.PUT("/requests/:id", h.HandleRequest)
 

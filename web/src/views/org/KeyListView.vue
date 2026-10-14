@@ -2,8 +2,10 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
-  apiOrgKeys, apiUpdateOrgKeyStatus, apiReassignKeyCenter, apiOrgCostCenters, type OrgKey, type CostCenter,
+  apiOrgKeys, apiUpdateOrgKeyStatus, apiReassignKeyCenter, apiOrgCostCenters, apiCopyOrgKey,
+  type OrgKey, type CostCenter,
 } from '../../api/org'
+import MaskedKey from '../../components/MaskedKey.vue'
 import { fmtTime } from '../../utils/format'
 
 const list = ref<OrgKey[]>([])
@@ -48,8 +50,10 @@ async function reassign(k: OrgKey, centerID: number | null) {
       <el-table-column prop="id" label="#" width="60" />
       <el-table-column prop="username" label="所属子账号" width="110" />
       <el-table-column prop="name" label="名称" min-width="120" />
-      <el-table-column label="密钥" width="160">
-        <template #default="{ row }"><code class="num">{{ row.key_prefix }}…</code></template>
+      <el-table-column label="密钥" width="230">
+        <template #default="{ row }">
+          <MaskedKey :masked="row.key_masked" :copyable="row.key_copyable" :fetch-full="() => apiCopyOrgKey(row.id)" />
+        </template>
       </el-table-column>
       <el-table-column label="归集中心" width="170">
         <template #default="{ row }">
