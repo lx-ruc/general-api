@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 登录页左侧品牌级流转示意：供应商品牌 → 慧沐引擎 → 企业 → 子账号 四层静态拓扑。
+// 登录页左侧品牌级流转示意：供应商品牌 → 慧沐引擎 → 企业 三层静态拓扑。
 // 纯品牌展示（不出现具体模型版本、不模拟实时数据/请求流），
 // 唯一的动画是连线虚线流动——纯装饰非数据，prefers-reduced-motion 关停。
 
@@ -12,13 +12,12 @@ const VENDORS = [
   { name: 'Kimi', hue: '#0e7d94' },
 ]
 
-// 右侧签发层级：网关 → 多个企业（客户）→ 每企业多个子账号
+// 右侧签发层级：网关 → 多个企业（客户）
 const ORGS = [
   { name: '企业 A', y: 108 },
   { name: '企业 B', y: 180 },
   { name: '企业 C', y: 252 },
 ]
-const SUB_OFFSETS = [-26, 0, 26] // 每企业 3 个子账号的纵向偏移
 </script>
 
 <template>
@@ -32,9 +31,9 @@ const SUB_OFFSETS = [-26, 0, 26] // 每企业 3 个子账号的纵向偏移
       </p>
     </header>
 
-    <!-- 品牌级流转拓扑：供应商 → 网关枢纽 → 企业 → 子账号 -->
+    <!-- 品牌级流转拓扑：供应商 → 网关枢纽 → 企业 -->
     <div class="mod m2 flow-wrap">
-      <svg class="flow" viewBox="0 0 760 360" preserveAspectRatio="xMidYMid meet">
+      <svg class="flow" viewBox="0 0 660 360" preserveAspectRatio="xMidYMid meet">
         <!-- 供应商 → 网关 的连线 -->
         <path v-for="(v, i) in VENDORS" :key="'e' + i" class="edge"
           :style="{ stroke: v.hue }"
@@ -42,11 +41,6 @@ const SUB_OFFSETS = [-26, 0, 26] // 每企业 3 个子账号的纵向偏移
         <!-- 网关 → 企业 的连线 -->
         <path v-for="(o, i) in ORGS" :key="'oe' + i" class="edge edge-out"
           :d="`M474 ${162 + i * 18} C 510 ${162 + i * 18}, 512 ${o.y}, 546 ${o.y}`" />
-        <!-- 企业 → 子账号 的连线 -->
-        <template v-for="(o, i) in ORGS" :key="'se' + i">
-          <path v-for="(dy, j) in SUB_OFFSETS" :key="j" class="edge edge-sub"
-            :d="`M640 ${o.y} C 652 ${o.y}, 656 ${o.y + dy}, 674 ${o.y + dy}`" />
-        </template>
 
         <!-- 供应商品牌节点：品牌名 + 品牌色点（不体现具体模型版本） -->
         <g v-for="(v, i) in VENDORS" :key="'n' + i" class="vnode" :style="{ '--hue': v.hue }">
@@ -63,16 +57,10 @@ const SUB_OFFSETS = [-26, 0, 26] // 每企业 3 个子账号的纵向偏移
           <text class="hub-sub" x="401" y="205">计量 · 转发 · 计费</text>
         </g>
 
-        <!-- 企业节点（客户）与子账号：一层签发、多层使用 -->
+        <!-- 企业节点（客户） -->
         <g v-for="(o, i) in ORGS" :key="'on' + i" class="onode">
           <rect x="546" :y="o.y - 17" width="94" height="34" rx="8" />
           <text class="onode-name" x="593" :y="o.y + 4">{{ o.name }}</text>
-        </g>
-        <g v-for="(o, i) in ORGS" :key="'sg' + i" class="snode">
-          <g v-for="(dy, j) in SUB_OFFSETS" :key="j">
-            <rect x="674" :y="o.y + dy - 11" width="68" height="22" rx="6" />
-            <text x="708" :y="o.y + dy + 3">子账号</text>
-          </g>
         </g>
         <!-- 省略号：接入企业不止图中三家 -->
         <g class="more">
@@ -154,13 +142,9 @@ const SUB_OFFSETS = [-26, 0, 26] // 每企业 3 个子账号的纵向偏移
 .hub-name { font-size: 15px; font-weight: 700; fill: var(--tg-btn-ink); text-anchor: middle; }
 .hub-sub { font-size: 10px; fill: rgba(15, 43, 32, 0.78); text-anchor: middle; }
 
-/* 企业节点：签发给客户企业（绿系浅底，层级介于枢纽与子账号之间） */
+/* 企业节点：签发给客户企业（绿系浅底，最末层级） */
 .onode rect { fill: var(--tg-green-wash); stroke: var(--tg-green-wash-strong); stroke-width: 1; }
 .onode-name { font-size: 12px; font-weight: 600; fill: var(--tg-green-ink); text-anchor: middle; }
-/* 子账号：最末层级，弱化成浅色小票，只承载「多个」的阵列感 */
-.snode rect { fill: color-mix(in srgb, var(--tg-green-wash) 60%, transparent); }
-.snode text { font-size: 9.5px; fill: var(--bd-sub); text-anchor: middle; }
-.edge-sub { stroke: var(--tg-green); opacity: 0.55; stroke-dasharray: 3 4; }
 .more circle { fill: var(--bd-muted); }
 
 /* ---------- 降级 ---------- */
