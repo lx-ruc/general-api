@@ -37,7 +37,7 @@ onMounted(load)
 
 // 新建子账号。额度按元录入，提交前换算成点（0 = 不限额）
 const createVisible = ref(false)
-const createForm = reactive({ username: '', password: '', display_name: '', quota_amount: 0 })
+const createForm = reactive({ username: '', password: '', display_name: '', email: '', quota_amount: 0 })
 async function submitCreate() {
   if (!createForm.username || !createForm.password) {
     ElMessage.warning('请填写用户名和密码')
@@ -49,7 +49,7 @@ async function submitCreate() {
   })
   ElMessage.success('子账号已创建')
   createVisible.value = false
-  Object.assign(createForm, { username: '', password: '', display_name: '', quota_amount: 0 })
+  Object.assign(createForm, { username: '', password: '', display_name: '', email: '', quota_amount: 0 })
   load()
 }
 
@@ -217,6 +217,9 @@ function remove(m: Member) {
       <el-form-item label="用户名" required><el-input v-model="createForm.username" /></el-form-item>
       <el-form-item label="初始密码" required><el-input v-model="createForm.password" show-password placeholder="至少 6 位" /></el-form-item>
       <el-form-item label="姓名"><el-input v-model="createForm.display_name" /></el-form-item>
+      <el-form-item label="邮箱">
+        <el-input v-model="createForm.email" type="email" placeholder="选填；绑定后可自助找回密码" />
+      </el-form-item>
       <el-form-item label="初始额度（元）">
         <el-input-number v-model="createForm.quota_amount" :min="0" :precision="2" :step="100" />
         <span class="tip">0 = 不限额</span>

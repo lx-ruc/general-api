@@ -11,6 +11,7 @@ export interface UserInfo {
   quota_limit: number | null
   quota_used: number
   last_login_at: number | null
+  email?: string // 绑定邮箱（空串=未绑定）：绑定后可走邮件自助找回密码
   points_per_yuan?: number
 }
 
@@ -38,6 +39,17 @@ export const apiForgotPassword = (email: string) =>
 export const apiResetPassword = (token: string, new_password: string) =>
   http.post<any, { message: string }>(
     '/api/auth/reset-password', { token, new_password }, { skipErrorToast: true })
+
+// ---- 邮箱绑定/换绑（三角色通用，登录态）----
+// 绑定后即可走上面的邮件自助找回；错误文案由页面内联展示
+
+export const apiSendEmailCode = (email: string) =>
+  http.post<any, { message: string; dev_code?: string }>(
+    '/api/me/email/code', { email }, { skipErrorToast: true })
+
+export const apiBindEmail = (email: string, code: string) =>
+  http.put<any, { message: string }>(
+    '/api/me/email', { email, code }, { skipErrorToast: true })
 
 // ---- 管理面访问令牌（仅平台/客户管理员；程序化对接管理 API 用）----
 

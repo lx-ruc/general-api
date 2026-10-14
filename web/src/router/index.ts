@@ -41,6 +41,8 @@ const routes: RouteRecordRaw[] = [
       { path: 'member/usage', component: () => import('../views/member/MyUsageView.vue'), meta: { roles: ['member'] } },
       { path: 'member/quota', component: () => import('../views/member/QuotaRequestView.vue'), meta: { roles: ['member'] } },
       { path: 'member/docs', component: () => import('../views/member/DocsView.vue'), meta: { roles: ['member'] } },
+      // 个人资料（所有角色可读，不设 meta.roles）：账号信息 + 邮箱绑定/换绑
+      { path: 'profile', component: () => import('../views/ProfileView.vue') },
       // 文档中心（所有角色可读，不设 meta.roles）
       { path: 'docs/:page?', component: () => import('../views/docs/DocsSiteView.vue') },
     ],

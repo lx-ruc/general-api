@@ -5,6 +5,7 @@ export interface Member {
   org_id: number
   username: string
   display_name: string
+  email?: string // 绑定邮箱（空/未定义=未绑定）
   role: string
   quota_limit: number | null
   quota_used: number

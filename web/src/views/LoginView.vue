@@ -172,7 +172,7 @@ async function sendResetLink() {
           </template>
 
           <el-divider class="forgot-divider" />
-          <p class="fallback-title">收不到邮件？也可以联系管理员重置：</p>
+          <p class="fallback-title">已绑定邮箱的账号可直接用上面的自助找回；未绑定邮箱的账号请联系管理员重置：</p>
           <ul class="forgot-list">
             <li>
               <b>子账号</b> — 联系本客户管理员：

@@ -26,7 +26,7 @@ onMounted(load)
 const createVisible = ref(false)
 const createForm = reactive({
   name: '', remark: '', contact_name: '', contact_phone: '', quota_amount: 100,
-  admin_username: '', admin_password: '', admin_display_name: '',
+  admin_username: '', admin_password: '', admin_display_name: '', admin_email: '',
 })
 async function submitCreate() {
   if (!createForm.name || !createForm.admin_username || !createForm.admin_password) {
@@ -36,7 +36,7 @@ async function submitCreate() {
   await apiCreateOrg({ ...createForm, quota_amount: yuanToPoints(createForm.quota_amount || 0, ppy.value) })
   ElMessage.success('客户已创建')
   createVisible.value = false
-  Object.assign(createForm, { name: '', remark: '', contact_name: '', contact_phone: '', quota_amount: 100, admin_username: '', admin_password: '', admin_display_name: '' })
+  Object.assign(createForm, { name: '', remark: '', contact_name: '', contact_phone: '', quota_amount: 100, admin_username: '', admin_password: '', admin_display_name: '', admin_email: '' })
   load()
 }
 
@@ -145,6 +145,9 @@ async function removeOrg(org: Org) {
       <el-form-item label="管理员用户名" required><el-input v-model="createForm.admin_username" /></el-form-item>
       <el-form-item label="管理员密码" required><el-input v-model="createForm.admin_password" show-password /></el-form-item>
       <el-form-item label="管理员姓名"><el-input v-model="createForm.admin_display_name" /></el-form-item>
+      <el-form-item label="管理员邮箱">
+        <el-input v-model="createForm.admin_email" type="email" placeholder="选填；绑定后可自助找回密码" />
+      </el-form-item>
     </el-form>
     <template #footer>
       <el-button @click="createVisible = false">取消</el-button>

@@ -77,6 +77,7 @@ const activeMenu = computed(() => route.path)
 
 const pageTitles: Record<string, string> = {
   '/platform/orgs/': '客户详情',
+  '/profile': '个人资料',
   '/docs': '文档',
 }
 const pageTitle = computed(() => {
@@ -312,6 +313,7 @@ async function revokeToken(row: AccessToken) {
           </button>
           <template #dropdown>
             <el-dropdown-menu>
+              <el-dropdown-item @click="router.push('/profile')">个人资料</el-dropdown-item>
               <el-dropdown-item @click="pwdVisible = true">修改密码</el-dropdown-item>
               <el-dropdown-item v-if="isAdmin" @click="openTokens">访问令牌</el-dropdown-item>
               <el-dropdown-item divided @click="handleLogout">退出登录</el-dropdown-item>
