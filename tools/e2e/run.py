@@ -250,6 +250,22 @@ def main():
         assert st == 200, (name, st, r)
     mock = f'http://127.0.0.1:{MOCK_PORT}'
 
+    # 客户与模型开通先行：客户级模型白名单必须在建渠道之前——渠道创建/Key 变更会触发
+    # 「无可用上游的模型联动停用」（含从未挂渠道的模型），届时再开通会被「模型不存在
+    # 或未启用」拒绝；此刻全部模型启用中，开通完整白名单
+    st, _, r = call('POST', '/api/platform/orgs', admin, {
+        'name': f'e2e-org-{TS}', 'quota_amount': 10_000_000,
+        'admin_username': f'e2ea{TS}', 'admin_password': 'E2ePass123'})
+    assert st == 200, r
+    org_id = r['org']['id'] if 'org' in r else r['id']
+    org = login(f'e2ea{TS}', 'E2ePass123')
+    granted = [m_free, m_priced, m_noch, m_nokey, m_fail, m_rot, m_dis]
+    st, _, r = call('PUT', f'/api/platform/orgs/{org_id}/models', admin, {'models': granted})
+    assert st == 200, (st, r)
+    # 子账号授权剔除 m_noch / m_nokey：到建号时它们已被联动停用（无渠道/无可用 Key），
+    # SetMemberModels 要求模型启用中；数据面 A6/A7 的 404 由模型状态前置检查保证，与授权无关
+    member_models = [m for m in granted if m not in (m_noch, m_nokey)]
+
     def mk_channel(name, keys, models, priority=10):
         payload = {'name': name, 'vendor': 'e2e', 'base_url': mock, 'priority': priority,
                    'models': [{'model_name': m} for m in models]}
@@ -276,13 +292,6 @@ def main():
     ch_rot = mk_channel(f'e2e-rot-{TS}', ['k429-a', 'k-ok-3'], [m_rot])
     ch_dis = mk_channel(f'e2e-dis-{TS}', ['k401-x'], [m_dis])
 
-    st, _, r = call('POST', '/api/platform/orgs', admin, {
-        'name': f'e2e-org-{TS}', 'quota_amount': 10_000_000,
-        'admin_username': f'e2ea{TS}', 'admin_password': 'E2ePass123'})
-    assert st == 200, r
-    org_id = r['org']['id'] if 'org' in r else r['id']
-    org = login(f'e2ea{TS}', 'E2ePass123')
-
     def mk_member(username, quota, models):
         st, _, r = call('POST', '/api/org/members', org,
                         {'username': username, 'password': 'E2ePass123', 'quota_amount': quota})
@@ -294,8 +303,7 @@ def main():
         assert st == 200 and r.get('key'), r
         return uid, r['key']
 
-    granted = [m_free, m_priced, m_noch, m_nokey, m_fail, m_rot, m_dis]
-    m1_id, k1 = mk_member(f'e2em{TS}', 1_000_000, granted)
+    m1_id, k1 = mk_member(f'e2em{TS}', 1_000_000, member_models)
     mq_id, kq = mk_member(f'e2eq{TS}', 300, [m_priced])
 
     # ============ A. 数据面 ============
@@ -316,11 +324,19 @@ def main():
 
     st, _, r = chat(m_noch, k1)
     code = (r.get('error') or {}).get('code') if isinstance(r, dict) else None
-    check('A6 无渠道模型 → 503 no_available_channel', st == 503 and code == 'no_available_channel', f'got {st} {r}')
+    # 从未挂渠道的模型在首个渠道事件时被联动停用（目录不宣传不可路由模型）→ 数据面 404
+    check('A6 无渠道模型联动停用 → 404', st == 404 and code == 'invalid_request_error', f'got {st} {r}')
 
     st, _, r = chat(m_nokey, k1)
     code = (r.get('error') or {}).get('code') if isinstance(r, dict) else None
-    check('A7 渠道未配 key → 503 channel_key_missing', st == 503 and code == 'channel_key_missing', f'got {st} {r}')
+    # Key 全禁 → 渠道联动停用（无密钥收口）→ 模型失去上游联动停用 → 数据面 404（与目录口径一致）
+    check('A7 Key 全禁 → 渠道与模型联动停用，数据面 404',
+          st == 404 and code == 'invalid_request_error', f'got {st} {r}')
+    st, _, r = call('GET', '/api/platform/channels', admin)
+    chs = r if isinstance(r, list) else (r.get('list') or [])
+    nokey_row = next((x for x in chs if x.get('name') == f'e2e-nokey-{TS}'), None)
+    check('A7b 无密钥渠道联动停用（status=0）', nokey_row is not None and nokey_row.get('status') == 0,
+          f'{nokey_row}')
 
     st, _, r = chat(m_free, k1)
     check('A8 非流式 200 + usage', st == 200 and (r.get('usage') or {}).get('total_tokens') == 150, f'{st} {r}')
@@ -396,6 +412,10 @@ def main():
         st, _, r = call('PUT', f'/api/platform/channels/{ch_dis}/keys/{dis_key["id"]}/status',
                         admin, {'status': 1})
         check('A16 禁用 key 可手动恢复', st == 200, f'{st} {r}')
+        # 联动对称：补回可用 Key → 「无密钥停用」的渠道立即自动恢复启用（同一次收口内）
+        st, _, r = call('GET', f'/api/platform/channels/{ch_dis}', admin)
+        ch_dis_row = r if isinstance(r, dict) else {}
+        check('A16b 补回 Key 后渠道自动恢复启用', ch_dis_row.get('status') == 1, f'{ch_dis_row.get("status")}')
         st, _, r = call('POST', f'/api/platform/channels/{ch_dis}/keys', admin, {'keys': ['k-ok-7']})
         st, _, r = chat(m_dis, k1)
         check('A17 补有效 key 后渠道恢复（轮换绕开坏 key）', st == 200, f'{st} {r}')
@@ -407,6 +427,21 @@ def main():
     check('A18 额度耗尽 → 402 insufficient_balance（允许首次超扣）',
           st1 == 200 and st2 == 200 and st3 == 402 and ecode == 'insufficient_balance',
           f'{st1}/{st2}/{st3} {ecode}')
+
+    # 余额预警：第 2 次请求越 80% 线（400/300），结算后异步检查水位 → 子账号本人 +
+    # 客户管理员收到 quota_alert 站内信。注意节流：第 1 次请求的检查（未越线）占用
+    # 60s 节流窗，第 2 次的检查被顺延到窗口到期兜底补查——预警最迟 ~60s 后落库
+    alerted = None
+    for _ in range(80):
+        time.sleep(1)
+        st, _, r = call('GET', '/api/me/notifications', org)
+        items = r.get('list') if isinstance(r, dict) else r
+        alerted = next((n for n in (items or [])
+                        if n.get('type') == 'quota_alert' and f'e2eq{TS}' in (n.get('title') or '')), None)
+        if alerted:
+            break
+    check('A18b 余额预警：越 80% 线后客户管理员收到站内信（含 60s 节流兜底）',
+          alerted is not None and '80%' in (alerted.get('title') or ''), f'{alerted}')
 
     big = json.dumps({'model': m_free, 'messages': [{'role': 'user', 'content': 'x' * (11 * 1024 * 1024)}]}).encode()
     st, _, r = chat('', k1, raw=big)
@@ -460,7 +495,8 @@ def main():
     call('PUT', f'/api/platform/channels/{ch_ok}/status', admin, {'status': 0})
     st, _, r = chat(m_free, k1)
     code = (r.get('error') or {}).get('code') if isinstance(r, dict) else None
-    check('B12 停用渠道 → 503 no_available_channel', st == 503 and code == 'no_available_channel', f'{st} {code}')
+    # 停用渠道 → 独家模型失去上游联动停用 → 数据面 404（渠道停用与模型停用同口对齐）
+    check('B12 停用渠道 → 模型联动停用 404', st == 404 and code == 'invalid_request_error', f'{st} {code}')
     call('PUT', f'/api/platform/channels/{ch_ok}/status', admin, {'status': 1})
     st, _, r = chat(m_free, k1)
     check('B13 启用渠道恢复', st == 200, f'{st}')
