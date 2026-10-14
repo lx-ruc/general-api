@@ -87,8 +87,9 @@ func main() {
 		slog.Error("客户模型白名单存量继承失败", "err", err)
 		os.Exit(1)
 	}
-	// 启动即对齐模型启用态与上游可用性：进程不在期间 Key 被禁用/渠道被改的漂移
-	// 在此收敛（「没密钥就没有启用模型」）；幂等，常态下零变更
+	// 启动即把渠道与模型启用态对齐上游 Key 可用性：进程不在期间 Key 被禁用/渠道被改的
+	// 漂移在此收敛（「没密钥就没有启用渠道/模型」；无 Key 停用的渠道补 Key 后自动恢复）；
+	// 幂等，常态下零变更
 	service.SyncModelsAndNotify(db, "启动对齐")
 	cipher, err := crypto.NewCipher(cfg.Security.AESKey)
 	if err != nil {

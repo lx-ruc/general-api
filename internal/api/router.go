@@ -81,10 +81,6 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 	}
 	keyLimiter := middleware.NewRateLimiter(cfg.Gateway.PerKeyRPM, keyBurst)
 	gw := gateway.NewHandler(db, cipher, cfg, keyLimiter, m, coordinator)
-	// 状态面收口（同步执行，量小）：启动即把渠道与模型启用态对齐上游 Key 可用性——
-	// 历史遗留的「启用中但无可用密钥」渠道停用（写 nokey_disabled_at，补 Key 自动恢复），
-	// 此前因无 Key 停用的渠道若 Key 已补则恢复，模型随之联动停用/恢复
-	service.SyncModelsAndNotify(db, "启动清扫")
 	// 熔断渠道自动恢复：定期探测系统禁用的渠道，成功即自动启用（人工禁用不探测）
 	go gateway.AutoProbeLoop(cfg.Gateway.AutoProbeInterval.Duration, gw)
 	// 定时渠道体检：周期探活启用中的渠道，连续失败自动禁用（低流量哑渠道故障主动发现）
