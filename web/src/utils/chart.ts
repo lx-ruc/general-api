@@ -1,5 +1,7 @@
 // 趋势图 option 工厂：全部单轴单系列（标题即系列名，无需图例）
 // 数据系列色 #12A462 已通过 dataviz 六项校验（白表面，3.22:1）
+import { fmtTokenCompact } from './format'
+
 const SERIES = '#12A462'
 const INK = '#1b2b24'
 const GRAPHITE = '#5c6b65'
@@ -73,6 +75,8 @@ export function trendOptions(points: DayPoint[]) {
  * 横向条形图（分类构成对比，如 各模型成本 / 客户消耗 Top）
  * 单一绿色（身份由 y 轴标签承载，不做彩色编码）；条端 4px 圆角贴基线；
  * 值直接标注在条端。入参按"最大在前"排序，内部反转使最大者显示在顶部。
+ * 横轴刻度与条端标注均为 M/k 紧凑单位（与看板表格 fmtTokenCompact 同口径）——
+ * 半宽卡片里 8 位千分位长数字会互相叠字。
  */
 export function barOption(categories: string[], values: number[], unit = ' token') {
   const cats = [...categories].reverse()
@@ -91,7 +95,7 @@ export function barOption(categories: string[], values: number[], unit = ' token
     xAxis: {
       type: 'value',
       splitLine: { lineStyle: { color: GRID } },
-      axisLabel: { color: MUTED, fontSize: 11 },
+      axisLabel: { color: MUTED, fontSize: 11, formatter: (v: number) => fmtTokenCompact(v) },
     },
     yAxis: {
       type: 'category',
@@ -112,7 +116,7 @@ export function barOption(categories: string[], values: number[], unit = ' token
           color: GRAPHITE,
           fontSize: 11,
           formatter: (p: { value: number }) =>
-            p.value > 0 ? p.value.toLocaleString('en-US') : '',
+            p.value > 0 ? fmtTokenCompact(p.value) : '',
         },
       },
     ],

@@ -54,12 +54,19 @@ describe('barOption：横向条形图', () => {
     expect(vals).toEqual([3, 1, 2])
   })
 
-  it('条端标注：正值显示千分位，0 与负值隐藏', () => {
-    const fmt = barOption(['a'], [1]).series[0].label.formatter
+  it('条端标注与横轴刻度用 M/k 紧凑单位（与表格 fmtTokenCompact 同口径），0 与负值隐藏', () => {
+    const opt = barOption(['a'], [1])
+    const fmt = opt.series[0].label.formatter as (p: { value: number }) => string
     expect(fmt({ value: 42 })).toBe('42')
-    expect(fmt({ value: 1_234_567 })).toBe('1,234,567')
+    expect(fmt({ value: 119_185 })).toBe('119k')
+    expect(fmt({ value: 1_234_567 })).toBe('1.23M')
+    expect(fmt({ value: 54_584_392 })).toBe('54.6M')
     expect(fmt({ value: 0 })).toBe('')
     expect(fmt({ value: -5 })).toBe('')
+    const axis = opt.xAxis.axisLabel.formatter as (v: number) => string
+    expect(axis(0)).toBe('0')
+    expect(axis(10_000_000)).toBe('10M')
+    expect(axis(50_000_000)).toBe('50M')
   })
 
   it('tooltip 默认单位 token，可自定义', () => {
