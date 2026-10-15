@@ -103,6 +103,8 @@ SCHEDULE = [
     (111111, 22222), (345678, 90123), (56789, 4321), (999999, 888888), (13579, 24680),
 ]
 SPECIAL = {i: (100_000, 40_000) for i in range(300, 304)}  # 预警/超扣专用（520,000 点/笔，序号独立防缓存命中）
+# 极小值段（防截断实证）：1~3 token × 奇价，ceil 后 1/4/5/7 点——非零用量绝不因舍入变 0
+SPECIAL.update({220: (1, 0), 221: (1, 1), 222: (2, 1), 223: (1, 2)})
 NO_USAGE_IDX = set(range(210, 215))          # mock 不回 usage → no_usage 不计费
 
 
@@ -301,6 +303,15 @@ def main():
     # no_usage 批次：上游不回 usage → 不计费但披露
     fire(k1, ma, range(210, 215), O1)
 
+    # 极小值段：1~3 token × 奇价 O1 → ceil 后 1/4/5/7 点，非零用量绝不截断成 0
+    fire(k1, ma, range(220, 224), O1)
+    tiny = db_rows('''SELECT prompt_tokens, completion_tokens, cost FROM usage_logs
+                      WHERE model_name = ? AND prompt_tokens BETWEEN 1 AND 3 AND created_at >= ? ORDER BY id''',
+                   (ma, int(time.time()) - 3600))
+    check('R13a 极小 token 计费不截断（ceil≥1 点）',
+          [(r[0], r[1], r[2]) for r in tiny] == [(1, 0, 1), (1, 1, 4), (2, 1, 5), (1, 2, 7)],
+          f'{tiny}')
+
     # 预警：billalert 一笔 520,000 点 / 限额 600,000 = 86.7% → 越 80% 线
     st, _, _ = chat(mb, k2, 300)
     assert st == 200, st
@@ -482,8 +493,12 @@ def main():
         exp_yuan = f'{exp_c1 / 1_000_000:.2f}'
         check('R12d CSV 对账单总额（元）一致', any(exp_yuan in ln for ln in total_line),
               f'{total_line[:2]} 期望含 {exp_yuan}')
+        # 点数列是 CSV 的精确锚（元列 <1 元最多 4 位小数属展示舍入）：消耗行点数必须逐位相等
+        check('R12e CSV 点数列精确无舍入', any('消耗' in ln and str(exp_c1) in ln for ln in csv.splitlines()),
+              f'期望含点数 {exp_c1}')
     else:
         check('R12d CSV 对账单总额（元）一致', False, f'CSV 拉取失败 {st}')
+        check('R12e CSV 点数列精确无舍入', False, 'CSV 拉取失败')
 
     # ---- 清理 ----
     def db_exec(sql, args=()):
