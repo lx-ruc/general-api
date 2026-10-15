@@ -98,6 +98,76 @@ func TestStatsOverviewEmptyArraysContract(t *testing.T) {
 	}
 }
 
+// 数据面板缓存统计的两层口径：
+//   提示缓存命中率 = cached_tokens / prompt_tokens，只算实际打到上游的行——
+//     网关精确缓存回放行的 cached_tokens 是原始响应的回放值，本回合并未发生上游命中，
+//     计入会失真（回放行整行剔除：分子分母同口径）
+//   网关缓存命中率 = cache_hit 行数 / 总请求数（命中笔费用 0、不打上游）
+func TestStatsOverviewCacheAggregates(t *testing.T) {
+	gdb, err := database.Open(config.Database{Driver: "sqlite", Path: t.TempDir() + "/test.db"})
+	if err != nil {
+		t.Fatalf("打开测试库失败: %v", err)
+	}
+	if err := database.Migrate(gdb); err != nil {
+		t.Fatalf("迁移测试库失败: %v", err)
+	}
+	t.Cleanup(func() { sqlDB, _ := gdb.DB(); _ = sqlDB.Close() })
+
+	now := time.Now().Unix()
+	if err := gdb.Exec(`INSERT INTO orgs (id, name, quota_limit, status, created_at, updated_at)
+		VALUES (1, 'o', 100000000, 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := gdb.Exec(`INSERT INTO users (id, org_id, username, password_hash, role, status, created_at, updated_at)
+		VALUES (1, 1, 'u', 'x', 'member', 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := gdb.Exec(`INSERT INTO api_keys (id, org_id, user_id, key_prefix, key_hash, status, created_at)
+		VALUES (1, 1, 1, 'sk-t', 'h', 1, ?)`, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	// 两笔真实上游调用（输入各 1000，提示缓存命中 400/0）+ 一笔网关精确缓存回放
+	seed := []struct{ prompt, cached, hit int64 }{
+		{1000, 400, 0}, {1000, 0, 0}, {500, 500, 1},
+	}
+	for _, s := range seed {
+		if err := gdb.Exec(`INSERT INTO usage_logs (org_id, user_id, api_key_id, model_name, status,
+			prompt_tokens, completion_tokens, cached_tokens, cache_hit, cost, created_at)
+			VALUES (1, 1, 1, 'm1', 200, ?, 5, ?, ?, 10, ?)`,
+			s.prompt, s.cached, s.hit, now).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ov, err := StatsOverview(gdb, Scope{})
+	if err != nil {
+		t.Fatalf("StatsOverview 失败: %v", err)
+	}
+	if ov.Total.Requests != 3 {
+		t.Fatalf("总请求数应为 3，got %d", ov.Total.Requests)
+	}
+	// 上游口径剔除回放行：输入 = 1000+1000（不含回放行的 500），命中 = 400（不含回放行的 500）
+	if ov.Total.PromptTokens != 2000 || ov.Total.CachedTokens != 400 {
+		t.Fatalf("提示缓存口径应为 输入2000/命中400（剔除回放行），got 输入%d/命中%d",
+			ov.Total.PromptTokens, ov.Total.CachedTokens)
+	}
+	if ov.Total.CacheHits != 1 {
+		t.Fatalf("网关缓存命中应为 1 笔，got %d", ov.Total.CacheHits)
+	}
+	// 行均落在今日：today 与 total 同口径
+	if ov.Today.PromptTokens != 2000 || ov.Today.CachedTokens != 400 || ov.Today.CacheHits != 1 {
+		t.Fatalf("今日缓存口径应与累计一致: %+v", ov.Today)
+	}
+	// org 隔离范围内同样可得
+	ovOrg, err := StatsOverview(gdb, Scope{OrgID: ptrInt64(1)})
+	if err != nil {
+		t.Fatalf("StatsOverview(org) 失败: %v", err)
+	}
+	if ovOrg.Total.CacheHits != 1 || ovOrg.Total.CachedTokens != 400 {
+		t.Fatalf("org 范围缓存口径: %+v", ovOrg.Total)
+	}
+}
+
 func ptrInt64(v int64) *int64 { return &v }
 
 // 模型 Top 只统计真实消耗：被拒尝试（403 未授权/404 不存在/429 限流的零成本行）
