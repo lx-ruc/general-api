@@ -69,6 +69,7 @@ type Handler struct {
 	KeyCooldown      time.Duration // 429 后 Key 冷却时长
 	CacheTTL         time.Duration // 精确缓存 TTL（0=关）
 	CacheIsolateOrg  bool          // 缓存按组织隔离
+	HarvestTimeout   time.Duration // 断连收割窗口：客户端断开后继续读上游的最长等待（<=0 默认 10m）
 
 	// ---- 上游调度强化 ----
 	KeyCooldownScope  string       // channel=429 时同渠道全部 Key 一起冷却（厂商按账户限速）；key=仅当前 Key
@@ -83,7 +84,7 @@ func NewHandler(db *gorm.DB, cipher *crypto.Cipher, cfg *config.Config,
 	if cd == nil {
 		cd = coord.Nop{}
 	}
-	return &Handler{
+	h := &Handler{
 		DB:                db,
 		Cipher:            cipher,
 		Client:            NewHTTPClient(cfg.Gateway.UpstreamFirstByteTimeout.Duration),
@@ -97,12 +98,17 @@ func NewHandler(db *gorm.DB, cipher *crypto.Cipher, cfg *config.Config,
 		KeyCooldown:       cfg.Gateway.KeyCooldown.Duration,
 		CacheTTL:          cfg.Gateway.CacheTTL.Duration,
 		CacheIsolateOrg:   cfg.Gateway.CacheIsolateOrg,
+		HarvestTimeout:    cfg.Gateway.HarvestTimeout.Duration,
 		KeyCooldownScope:  cfg.Gateway.KeyCooldownScope,
 		MaxCandidates:     cfg.Gateway.MaxCandidates,
 		RetryKeyCodes:     parseCodeSet(cfg.Gateway.RetryKeyCodes),
 		DisableKeyCodes:   parseCodeSet(cfg.Gateway.DisableKeyCodes),
 		RetryChannelCodes: parseCodeSet(cfg.Gateway.RetryChannelCodes),
 	}
+	if h.HarvestTimeout <= 0 {
+		h.HarvestTimeout = 10 * time.Minute // 未配置默认：覆盖数十 K token 的长生成绰绰有余
+	}
+	return h
 }
 
 // NewHTTPClient 上游 HTTP 客户端：不设整体 Timeout（会杀 SSE 长连接），
@@ -538,6 +544,23 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		}
 	}
 
+	// 上游上下文与客户端解绑（断连收割计费）：厂商服务端在客户端断开后照常生成并收费，
+	// 上游请求不随客户连接拆除——读完整响应收割 usage 后照常结算，否则这笔钱只能平台垫付
+	// （且是可滥用的逃单口）。断开后仅起 HarvestTimeout 收割窗口兜底（上游悬挂读会泄漏
+	// goroutine），正常长流永远不设整体超时（SSE 红线：只允许 ResponseHeaderTimeout/首字节超时）
+	upCtx, cancelUp := context.WithCancel(context.WithoutCancel(c.Request.Context()))
+	defer cancelUp()
+	go func() {
+		<-c.Request.Context().Done() // 客户端断开（handler 返回后由 server 侧取消）
+		t := time.NewTimer(h.HarvestTimeout)
+		defer t.Stop()
+		select {
+		case <-t.C:
+		case <-upCtx.Done():
+		}
+		cancelUp() // 收割窗口届满仍未读完：放弃（usage 未到手则本单不计费，损失封顶于此）
+	}()
+
 	// 单个候选的完整尝试：acquire 闸门 → 转发 → 按响应分类。
 	// 闭包内 defer release，从结构上避免 defer-in-loop 泄漏。
 	var lastErr string
@@ -581,7 +604,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			onlyRateLimited, authOnly, quotaOnly, timeoutOnly = false, false, false, false
 			return attemptNextKey
 		}
-		req, rerr := http.NewRequestWithContext(c.Request.Context(), http.MethodPost,
+		req, rerr := http.NewRequestWithContext(upCtx, http.MethodPost,
 			endpointURL(cand.BaseURL, cand.Path, spec.fixedPath), bytes.NewReader(upBody))
 		if rerr != nil {
 			lastErr = rerr.Error()
@@ -721,30 +744,31 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			case protoResponses:
 				pipe = responsesPipeSSE
 			}
-			usage, perr := pipe(c.Writer, c.Request.Context(), resp.Body, modelSwap)
+			usage, gone, perr := pipe(c.Writer, c.Request.Context(), resp.Body, modelSwap)
 			_ = resp.Body.Close()
 			if h.Metrics != nil {
 				h.Metrics.ActiveStreams.Dec()
 			}
-			if perr != nil {
-				// 客户端断开（ctx 取消连带上游连接被拆）：非渠道之过，记 499，
-				// 与非流式路径同口径——否则错误率统计把断连误算成成功 200
-				if c.Request.Context().Err() != nil {
-					rec.Status = 499
-				} else {
-					// 上游中途断流（读错误，非干净 EOF）：与非流式读体失败同口径计入
-					// 渠道失败——否则持续断流的坏渠道永远不被熔断，客户端一直收截断流。
-					// 已写出字节无法换渠道重试，这里只为后续路由健康记账
-					h.noteChannelFailure(cand)
-				}
-				if usage == nil {
-					rec.Error = truncateStr(perr.Error(), 500)
-				}
+			// 客户端断开（含收割窗口届满放弃）：非渠道之过，记 499 且不计熔断——
+			// 与非流式路径同口径（错误率统计不把断连误算成成功 200）；
+			// 已收割到 usage 则照常计费（上游已生成并收费，穿透给客户）
+			if perr != nil && !gone && c.Request.Context().Err() == nil {
+				// 上游中途断流（读错误，非干净 EOF）：与非流式读体失败同口径计入
+				// 渠道失败——否则持续断流的坏渠道永远不被熔断，客户端一直收截断流。
+				// 已写出字节无法换渠道重试，这里只为后续路由健康记账
+				h.noteChannelFailure(cand)
+			}
+			if gone || c.Request.Context().Err() != nil {
+				rec.Status, rec.Error = 499, "client disconnected"
+			}
+			if perr != nil && usage == nil {
+				rec.Error = truncateStr(perr.Error(), 500) // 诊断细节仅当无 usage 可结算时保留
 			}
 			if perr == nil && resp.StatusCode < 300 {
-				h.Breaker.RecordSuccess(cand.ChannelID) // 干净收流（含合法 EOF）才算渠道成功
+				h.Breaker.RecordSuccess(cand.ChannelID) // 干净收流（含合法 EOF 与断连收割）才算渠道成功
 			}
 			applyUsage(rec, usage, m)
+			logHarvest(rec, usage, modelName, cand.ChannelName)
 			return attemptDone
 		}
 
@@ -817,6 +841,10 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			h.Coord.CacheSet(cacheKey, data, h.CacheTTL)
 		}
 		c.Data(resp.StatusCode, ct, data)
+		if c.Request.Context().Err() != nil {
+			// 客户端中途断开：响应体已完整收割（上游照常生成并收费），如实记 499 并照常计费
+			rec.Status, rec.Error = 499, "client disconnected"
+		}
 		if spec.proto == protoOpenAI {
 			var ur struct {
 				Usage *Usage `json:"usage"`
@@ -826,6 +854,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		}
 		h.Breaker.RecordSuccess(cand.ChannelID) // 2xx 且读全体成功
 		applyUsage(rec, usage, m)
+		logHarvest(rec, usage, modelName, cand.ChannelName)
 		return attemptDone
 	}
 
@@ -921,6 +950,16 @@ var chatCacheFields = []string{
 
 // embeddingsCacheFields embeddings 端点缓存白名单（input 数组顺序不同 = 不同请求，不命中）
 var embeddingsCacheFields = []string{"model", "input", "encoding_format", "dimensions"}
+
+// logHarvest 断连收割留痕：客户没收到响应但上游已生成并收费、已穿透计费——
+// 服务端可见性（对账时这类单子官网有量、客户侧 499 但计费非零）
+func logHarvest(rec *model.UsageLog, u *Usage, modelName, channelName string) {
+	if rec.Status != 499 || u == nil || (u.PromptTokens <= 0 && u.CompletionTokens <= 0) {
+		return
+	}
+	slog.Info("客户端断开后收割计费", "model", modelName, "channel", channelName,
+		"prompt_tokens", u.PromptTokens, "completion_tokens", u.CompletionTokens, "cost", rec.Cost)
+}
 
 // cacheKey 精确缓存 key：白名单字段按固定顺序拼接原始 JSON 后取 SHA-256（model 为对外名）
 func (h *Handler) cacheKey(bm map[string]json.RawMessage, orgID int64, fields []string) string {

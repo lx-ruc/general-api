@@ -67,8 +67,9 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {
 	t.Fatal("等待条件超时")
 }
 
-// B4：客户端中途断开导致的请求失败不是渠道的错——
-// 不计熔断（连续断开多次不得触发自动禁用），usage_logs 记 499
+// B4：客户端中途断开导致的请求失败不是渠道的错——不计熔断（连续断开多次
+// 不得触发自动禁用），usage_logs 记 499；且上游照常生成并收费，断连收割
+// 计费照常结算（逃单不可行：故意掐线不能躲掉已生成的 token 费用）
 func TestClientCancelNotChannelFailure(t *testing.T) {
 	e := newTestEnv(t)
 	e.h.Breaker = NewBreaker(3)
@@ -92,7 +93,7 @@ func TestClientCancelNotChannelFailure(t *testing.T) {
 			time.Sleep(30 * time.Millisecond)
 			cancel()
 		}()
-		e.engine.ServeHTTP(w, req)
+		e.engine.ServeHTTP(w, req) // 断连收割：等到上游生成完（含 usage）才返回
 	}
 	waitFor(t, 2*time.Second, func() bool { return hits.Load() >= 5 })
 
@@ -101,28 +102,43 @@ func TestClientCancelNotChannelFailure(t *testing.T) {
 	if status != 1 {
 		t.Fatalf("客户端断开不应计入熔断：渠道被误禁用（status=%d）", status)
 	}
-	var n499 int64
-	_ = e.f.db.Raw("SELECT COUNT(*) FROM usage_logs WHERE status = 499").Scan(&n499).Error
-	if n499 == 0 {
+	var row struct {
+		N                int64
+		Status           int64
+		PromptTokens     int64
+		CompletionTokens int64
+		Cost             int64
+	}
+	_ = e.f.db.Raw(`SELECT COUNT(*) AS n FROM usage_logs WHERE status = 499`).Scan(&row.N).Error
+	if row.N == 0 {
 		t.Fatal("客户端断开应记 499 usage_log")
+	}
+	_ = e.f.db.Raw(`SELECT status, prompt_tokens, completion_tokens, cost FROM usage_logs
+		WHERE status = 499 ORDER BY id DESC LIMIT 1`).Scan(&row).Error
+	if row.Status != 499 {
+		t.Fatalf("断连收割应记 499，got %d", row.Status)
+	}
+	// okBody usage 7/3 ×（¥2/M 入 ¥8/M 出）= 14+24 = 38 点：客户没收到但上游生成了，照扣
+	if row.PromptTokens != 7 || row.CompletionTokens != 3 || row.Cost != 38 {
+		t.Fatalf("断连收割应按上游 usage 全额计费: 入=%d 出=%d cost=%d", row.PromptTokens, row.CompletionTokens, row.Cost)
 	}
 }
 
 // B4 流式版：SSE 客户端中途断开 → usage_logs 同样记 499（与非流式同口径，
-// 错误率统计不把断连误算成成功 200）；usage 块未到达 → 不计量（no_usage=1）；
+// 错误率统计不把断连误算成成功 200）；末块 usage 经断连收割到达 → 正常计量计费；
 // 不计熔断
-func TestClientCancelDuringStreamLogged499(t *testing.T) {
+func TestClientCancelDuringStreamHarvestsUsage(t *testing.T) {
 	e := newTestEnv(t)
 	e.h.Breaker = NewBreaker(3)
-	block := make(chan struct{}) // 上游写完首块后挂住，制造"断连落在飞行途中"
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"he\"}}]}\n\n"))
 		w.(http.Flusher).Flush()
-		<-block
+		time.Sleep(250 * time.Millisecond) // 断连落在飞行途中（首块后、usage 块前）
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{}}],\"usage\":{\"prompt_tokens\":9,\"completion_tokens\":4}}\n\n"))
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer up.Close()
-	defer close(block)
 	e.seedUpstreamChannel(t, 1, "ch", up.URL, nil, 10)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
@@ -134,25 +150,60 @@ func TestClientCancelDuringStreamLogged499(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 		cancel()
 	}()
-	e.engine.ServeHTTP(httptest.NewRecorder(), req)
+	start := time.Now()
+	e.engine.ServeHTTP(httptest.NewRecorder(), req) // 收割模式：读到 usage 块才返回
+	if elapsed := time.Since(start); elapsed < 200*time.Millisecond {
+		t.Fatalf("断连后应继续读上游收割 usage（约等到 250ms 生成完），实际 %s 就返回了", elapsed)
+	}
 
-	waitFor(t, 2*time.Second, func() bool {
-		var n int64
-		_ = e.f.db.Raw("SELECT COUNT(*) FROM usage_logs WHERE is_stream = 1 AND status = 499").Scan(&n).Error
-		return n == 1
-	})
-	var row struct{ Status, NoUsage, Cost int64 }
-	_ = e.f.db.Raw("SELECT status, no_usage, cost FROM usage_logs WHERE is_stream = 1").Scan(&row).Error
+	var row struct{ Status, NoUsage, Prompt, Completion, Cost int64 }
+	_ = e.f.db.Raw(`SELECT status, no_usage, prompt_tokens AS prompt, completion_tokens AS completion, cost
+		FROM usage_logs WHERE is_stream = 1`).Scan(&row).Error
 	if row.Status != 499 {
 		t.Fatalf("流式断连应记 499（与非流式同口径），got status=%d", row.Status)
 	}
-	if row.NoUsage != 1 || row.Cost != 0 {
-		t.Fatalf("断连时 usage 块未到达，应不计量: %+v", row)
+	// 9/4 ×（¥2/M 入 ¥8/M 出）= 18+32 = 50 点：usage 块收割成功，照常计费
+	if row.NoUsage != 0 || row.Prompt != 9 || row.Completion != 4 || row.Cost != 50 {
+		t.Fatalf("断连收割应按末块 usage 正常计量计费: %+v", row)
 	}
 	var status int64
 	_ = e.f.db.Raw("SELECT status FROM channels WHERE id = 1").Scan(&status).Error
 	if status != 1 {
 		t.Fatalf("流式断连不应计入熔断：渠道被误禁用（status=%d）", status)
+	}
+}
+
+// B4 收割上限：客户端断开后收割窗口届满仍未读完 → 放弃等待（有界返回、
+// usage 未到手则不计费）——防上游悬挂读把 goroutine 与连接拖成无界泄漏
+func TestHarvestWindowBounds(t *testing.T) {
+	e := newTestEnv(t)
+	e.h.HarvestTimeout = 120 * time.Millisecond
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(500 * time.Millisecond) // 远超收割窗口
+		_, _ = w.Write([]byte(okBody))
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, nil, 10)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(chatBody("harvest-cap", "")))
+	req.Header.Set("Authorization", "Bearer "+e.apiKey)
+	ctx, cancel := context.WithCancel(req.Context())
+	req = req.WithContext(ctx)
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		cancel()
+	}()
+	start := time.Now()
+	e.engine.ServeHTTP(httptest.NewRecorder(), req)
+	if elapsed := time.Since(start); elapsed > 400*time.Millisecond {
+		t.Fatalf("收割窗口届满应放弃等待（≈30ms 断开 + 120ms 窗口），实际等了 %s", elapsed)
+	}
+	var row struct{ Status, Prompt, Cost int64 }
+	_ = e.f.db.Raw(`SELECT status, prompt_tokens AS prompt, cost FROM usage_logs
+		WHERE model_name = 'm1' ORDER BY id DESC LIMIT 1`).Scan(&row).Error
+	if row.Status != 499 || row.Prompt != 0 || row.Cost != 0 {
+		t.Fatalf("收割窗口届满 usage 未到手：应记 499 且不计费, got %+v", row)
 	}
 }
 

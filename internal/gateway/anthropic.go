@@ -716,18 +716,16 @@ func (t *anthStreamTranslator) fail(err error) error {
 }
 
 // anthropicPipeSSE OpenAI SSE 上游流 → Anthropic SSE 客户端流（逐块翻译即时写出）；
-// 返回值口径与 pipeSSE 一致（usage 供计费、err 记渠道健康）
-func anthropicPipeSSE(w io.Writer, ctx context.Context, body io.Reader, modelSwap [2]string) (*Usage, error) {
-	flusher, _ := w.(http.Flusher)
+// 返回值口径与 pipeSSE 一致（usage 供计费、clientGone 记 499、err 记渠道健康）；
+// ctx 仅作客户端断开判定：断开后停写不停读（收割模式，详见 pipeSSE）
+func anthropicPipeSSE(w io.Writer, ctx context.Context, body io.Reader, modelSwap [2]string) (*Usage, bool, error) {
+	gw := &gatedWriter{w: w, client: func() bool { return ctx.Err() != nil }}
 	reader := bufio.NewReaderSize(body, 32*1024)
-	tr := &anthStreamTranslator{w: w, flusher: flusher, openIdx: -1, toolMap: map[int]int{}}
+	tr := &anthStreamTranslator{w: gw, flusher: gw, openIdx: -1, toolMap: map[int]int{}}
 	if modelSwap[1] != "" {
 		tr.model = modelSwap[1] // message_start 锚外部名（映射对客户不可见）
 	}
 	for {
-		if ctx.Err() != nil {
-			return tr.usage, ctx.Err()
-		}
 		line, rerr := reader.ReadString('\n')
 		if t := strings.TrimSpace(line); strings.HasPrefix(t, "data:") {
 			payload := strings.TrimSpace(strings.TrimPrefix(t, "data:"))
@@ -738,16 +736,16 @@ func anthropicPipeSSE(w io.Writer, ctx context.Context, body io.Reader, modelSwa
 						chunk.Model = modelSwap[1]
 					}
 					if herr := tr.handle(chunk); herr != nil {
-						return tr.usage, tr.fail(herr)
+						return tr.usage, gw.gone(), tr.fail(herr)
 					}
 				}
 			}
 		}
 		if rerr != nil {
 			if rerr == io.EOF {
-				return tr.usage, tr.finish()
+				return tr.usage, gw.gone(), tr.finish()
 			}
-			return tr.usage, tr.fail(rerr)
+			return tr.usage, gw.gone(), tr.fail(rerr)
 		}
 	}
 }

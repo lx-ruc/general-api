@@ -89,6 +89,7 @@ type Gateway struct {
 	CacheTTL              Duration `yaml:"cache_ttl"`               // 精确缓存 TTL；0=关闭
 	CacheMaxItems         int      `yaml:"cache_max_items"`         // 内存 LRU 条数上限（redis 模式仅约束写入侧频率）
 	CacheIsolateOrg       bool     `yaml:"cache_isolate_org"`       // true=缓存按客户隔离（默认全局共享）
+	HarvestTimeout        Duration `yaml:"harvest_timeout"`        // 断连收割窗口：客户端断开后继续读上游收割 usage 的最长等待；<=0 默认 10m
 	// ---- 上游调度强化（对标 new-api 调研的四项改进）----
 	KeyCooldownScope  string   `yaml:"key_cooldown_scope"`  // 429 冷却粒度：channel=同渠道全部 Key 一起冷却（默认，适配厂商按账户限速）；key=仅当前 Key
 	MaxCandidates     int      `yaml:"max_candidates"`      // 单请求最多尝试的候选数（渠道×Key）；0=不限
@@ -275,6 +276,7 @@ func applyEnv(cfg *Config) {
 	setDuration("TG_CACHE_TTL", &cfg.Gateway.CacheTTL)
 	setInt("TG_CACHE_MAX_ITEMS", &cfg.Gateway.CacheMaxItems)
 	setBool("TG_CACHE_ISOLATE_ORG", &cfg.Gateway.CacheIsolateOrg)
+	setDuration("TG_HARVEST_TIMEOUT", &cfg.Gateway.HarvestTimeout)
 	setStr("TG_KEY_COOLDOWN_SCOPE", &cfg.Gateway.KeyCooldownScope)
 	setInt("TG_MAX_CANDIDATES", &cfg.Gateway.MaxCandidates)
 	setDuration("TG_AUTO_PROBE_INTERVAL", &cfg.Gateway.AutoProbeInterval)

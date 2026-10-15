@@ -285,7 +285,7 @@ func TestResponsesUsageFrom(t *testing.T) {
 func runRespPipe(t *testing.T, upstream string) (string, *Usage) {
 	t.Helper()
 	var sb strings.Builder
-	usage, err := responsesPipeSSE(&sb, context.Background(), strings.NewReader(upstream), [2]string{})
+	usage, _, err := responsesPipeSSE(&sb, context.Background(), strings.NewReader(upstream), [2]string{})
 	if err != nil {
 		t.Fatalf("SSE 翻译失败: %v", err)
 	}
@@ -406,7 +406,7 @@ func TestResponsesPipeSSEEmptyThenEOF(t *testing.T) {
 
 func TestResponsesPipeSSEModelSwap(t *testing.T) {
 	var sb strings.Builder
-	_, err := responsesPipeSSE(&sb, context.Background(),
+	_, _, err := responsesPipeSSE(&sb, context.Background(),
 		strings.NewReader("data: {\"model\":\"up-name\",\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\ndata: [DONE]\n\n"),
 		[2]string{"up-name", "ext-name"})
 	if err != nil {
@@ -455,7 +455,7 @@ func TestResponsesPipeSSEUpstreamError(t *testing.T) {
 	}
 	for i, r := range cases {
 		var sb strings.Builder
-		_, err := responsesPipeSSE(&sb, context.Background(), r, [2]string{})
+		_, _, err := responsesPipeSSE(&sb, context.Background(), r, [2]string{})
 		if err == nil || !strings.Contains(err.Error(), "boom") {
 			t.Fatalf("case %d 应返回原始错误: %v", i, err)
 		}

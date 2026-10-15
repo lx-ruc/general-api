@@ -54,6 +54,7 @@ python3 tools/e2e/run.py             # 端到端回归（需网关先跑在 :808
 - 分配是"设上限"式：只写 `quota_limit`，消耗只有 `quota_used` 一个真相来源，不存在点数划拨
 - `Precheck` 纯读不锁（advisory）；`Settle` 在响应已发出后无条件执行：同一事务内双记账（users.quota_used + orgs.quota_used）+ 写 usage_logs；超扣幅度串行到达时封顶在单请求成本内，并发齐射上界为 N×单次成本（可用性优先的既定设计，见 `TestQuotaConcurrentAdmissionAndSettle`）
 - 新增额度入口只有 `AddOrgQuota` / `AddUserQuota`（带 QuotaGrant 审计流水）；设值式变更（子账号转不限/转限额）走 `SetUserQuotaUnlimited`，同样差值入流水——**quota_limit 的一切变更必须与流水同事务**，恒保持 Σgrants == COALESCE(quota_limit, 0)
+- **断连也计费**：上游请求用脱离客户 ctx 的独立 context（`WithoutCancel`），客户端断开后继续读上游收割 usage 照常结算（记 499 + 非零 cost，写侧用 gatedWriter 丢弃），但断开后不再发起新的上游尝试；收割窗口 `harvest_timeout`（默认 10m）届满放弃，损失封顶于此。见 `handler.go` 收割 watcher 与 `sse.go` gatedWriter
 
 **SSE 红线**：永远不要给 `http.Server` 设 `WriteTimeout`、给上游 `http.Client` 设整体 `Timeout` —— 都会杀流式长连接（见 main.go 注释与 `gateway.NewHTTPClient`）；只允许用 `ResponseHeaderTimeout` / 首字节超时。
 
