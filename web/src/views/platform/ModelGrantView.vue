@@ -34,6 +34,7 @@ async function approve(row: ModelRequestRow) {
   )
   const r = await apiHandleModelRequest(row.id, 'approve')
   ElMessage.success(r.message || '已批准并开通')
+  window.dispatchEvent(new Event('model-requests-changed'))
   load()
 }
 
@@ -44,6 +45,7 @@ async function reject(row: ModelRequestRow) {
   })
   await apiHandleModelRequest(row.id, 'reject', value.trim())
   ElMessage.success('已驳回')
+  window.dispatchEvent(new Event('model-requests-changed'))
   load()
 }
 

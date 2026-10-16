@@ -12,11 +12,13 @@ import {
   apiCopyAccessToken,
   type AccessToken,
 } from '../api/auth'
-import { apiOrgRequests } from '../api/org'
+import { apiOrgRequests, apiOrgModelRequests } from '../api/org'
 import {
   apiListNotifications, apiReadNotification, apiReadAllNotifications, apiClearChannelKeyCooldown,
+  apiListRecharges, apiListModelRequests,
   type NotificationItem, type KeyQuotaPayload,
 } from '../api/platform'
+import { apiMyRequests } from '../api/member'
 import PlaygroundDialog from '../components/PlaygroundDialog.vue'
 import MaskedKey from '../components/MaskedKey.vue'
 
@@ -102,26 +104,55 @@ function handleLogout() {
   router.push('/login')
 }
 
-// 待审批额度申请角标（客户管理员）。额度申请页审批/驳回后广播
-// quota-requests-changed 事件，这里监听重拉，避免角标留旧值误导
-const pendingCount = ref(0)
-async function refreshPending() {
-  if (auth.user?.role !== 'org_admin') return
+// 侧栏菜单徽标：对应模块需要关注的事项数，三角色统一——
+//   平台管理员：充值审批/模型开通的待审批笔数；
+//   客户管理员：申请审批的子账号待审批数 + 模型申请的已提交待平台处理数；
+//   子账号：额度/模型申请的处理中笔数
+// 30s 与站内通知同节拍轮询；各页面操作后广播 *-changed 事件，这里监听即时重拉，避免徽标留旧值
+const menuBadges = ref<Record<string, number>>({})
+async function refreshBadges() {
+  const role = auth.user?.role
   try {
-    const r = await apiOrgRequests({ status: 'pending', page: 1, page_size: 1 })
-    pendingCount.value = r.total || 0
+    if (role === 'platform_admin') {
+      const [recharges, modelReqs] = await Promise.all([
+        apiListRecharges({ status: 'pending', page: 1, page_size: 1 }),
+        apiListModelRequests({ status: 'pending', page: 1, page_size: 1 }),
+      ])
+      menuBadges.value = {
+        '/platform/recharges': recharges.total || 0,
+        '/platform/model-grants': modelReqs.total || 0,
+      }
+    } else if (role === 'org_admin') {
+      const [quotaReqs, modelReqs] = await Promise.all([
+        apiOrgRequests({ status: 'pending', page: 1, page_size: 1 }),
+        apiOrgModelRequests(),
+      ])
+      menuBadges.value = {
+        '/org/requests': quotaReqs.total || 0,
+        '/org/model-requests': modelReqs.filter((x) => x.status === 'pending').length,
+      }
+    } else if (role === 'member') {
+      const mine = await apiMyRequests()
+      menuBadges.value = {
+        '/member/quota': (mine || []).filter((x) => x.status === 'pending').length,
+      }
+    }
   } catch { /* 拉取失败不打扰 */ }
 }
+const badgeEvents = ['quota-requests-changed', 'recharges-changed', 'model-requests-changed']
 onMounted(() => {
-  refreshPending()
-  window.addEventListener('quota-requests-changed', refreshPending)
+  refreshBadges()
+  badgeEvents.forEach((ev) => window.addEventListener(ev, refreshBadges))
   // 站内通知铃铛：三角色通用（平台：Key 冷却/充值申请/额度耗尽；客户管理员：申请待审批/
   // 额度告警/充值到账；子账号：审批结果/个人额度告警），30s 轮询
   refreshNotifs()
-  notifTimer = window.setInterval(refreshNotifs, 30_000)
+  notifTimer = window.setInterval(() => {
+    refreshNotifs()
+    refreshBadges()
+  }, 30_000)
 })
 onUnmounted(() => {
-  window.removeEventListener('quota-requests-changed', refreshPending)
+  badgeEvents.forEach((ev) => window.removeEventListener(ev, refreshBadges))
   if (notifTimer) window.clearInterval(notifTimer)
 })
 
@@ -268,8 +299,8 @@ async function revokeToken(row: AccessToken) {
           :class="{ active: activeMenu === m.index }">
           <el-icon :size="16"><component :is="m.icon" /></el-icon>
           <span>{{ m.title }}</span>
-          <span v-if="m.index === '/org/requests' && pendingCount > 0" class="nav-badge num">
-            {{ pendingCount > 99 ? '99+' : pendingCount }}
+          <span v-if="menuBadges[m.index] > 0" class="nav-badge num">
+            {{ menuBadges[m.index] > 99 ? '99+' : menuBadges[m.index] }}
           </span>
         </router-link>
       </nav>

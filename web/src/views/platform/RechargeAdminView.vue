@@ -54,6 +54,7 @@ async function approve(row: RechargeRow) {
   )
   const r = await apiHandleRecharge(row.id, 'approve')
   ElMessage.success(r.message || '已批准')
+  window.dispatchEvent(new Event('recharges-changed'))
   load()
 }
 
@@ -64,6 +65,7 @@ async function reject(row: RechargeRow) {
   })
   await apiHandleRecharge(row.id, 'reject', value.trim())
   ElMessage.success('已驳回')
+  window.dispatchEvent(new Event('recharges-changed'))
   load()
 }
 

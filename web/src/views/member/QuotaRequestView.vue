@@ -38,6 +38,7 @@ async function submit() {
     ElMessage.success('申请已提交，等待客户管理员审批')
     form.amount = 100
     form.reason = ''
+    window.dispatchEvent(new Event('quota-requests-changed'))
     load()
   } finally {
     submitting.value = false
@@ -55,6 +56,7 @@ async function submitModels() {
     ElMessage.success('申请已提交，等待客户管理员审批')
     modelForm.models = []
     modelForm.reason = ''
+    window.dispatchEvent(new Event('quota-requests-changed'))
     load()
   } finally {
     submitting.value = false

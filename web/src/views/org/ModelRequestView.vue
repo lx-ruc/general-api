@@ -36,6 +36,7 @@ async function submit() {
     ElMessage.success('申请已提交，平台审批通过后即可在子账号管理中授权这些模型')
     form.models = []
     form.reason = ''
+    window.dispatchEvent(new Event('model-requests-changed'))
     load()
   } finally {
     submitting.value = false
