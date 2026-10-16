@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"bytes"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -93,7 +92,7 @@ func newTestEnv(t *testing.T) *testEnv {
 		RetryChannelCodes:        []string{"5xx"},
 	}
 	cipher, _ := crypto.NewCipher("")
-	cd := coord.NewMem(1000)
+	cd := coord.NewMem()
 	m := metrics.New()
 	h := NewHandler(f.db, cipher, cfg, middleware.NewRateLimiter(10000, 20), m, cd)
 
@@ -563,10 +562,10 @@ func TestConcurrencyGateSerializes(t *testing.T) {
 	}
 }
 
-// 精确缓存：相同请求第二次 X-Tg-Cache: hit、body 相同、上游只打一次、第二笔 cost=0
-func TestExactCacheHit(t *testing.T) {
+// 网关本地缓存已移除：相同请求每次都真实打上游并照常计费（缓存语义完全对齐
+// 上游厂商的提示缓存——网关不再自己造一层「相同请求零费用回放」，对账口径唯一）
+func TestNoGatewayLocalCache(t *testing.T) {
 	e := newTestEnv(t)
-	e.h.CacheTTL = time.Minute
 	var hits atomic.Int64
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
@@ -578,45 +577,23 @@ func TestExactCacheHit(t *testing.T) {
 	body := chatBody("same-question", `,"temperature":0.7`)
 	w1 := e.post(body)
 	if w1.Code != http.StatusOK || w1.Header().Get("X-Tg-Cache") != "" {
-		t.Fatalf("首请求应 miss: code=%d cache=%q", w1.Code, w1.Header().Get("X-Tg-Cache"))
+		t.Fatalf("首请求应 200 且无缓存头，got %d cache=%q", w1.Code, w1.Header().Get("X-Tg-Cache"))
 	}
-	id1 := e.lastUsage(t)
-
 	w2 := e.post(body)
-	if w2.Code != http.StatusOK {
-		t.Fatalf("缓存命中应 200，got %d", w2.Code)
+	if w2.Code != http.StatusOK || w2.Header().Get("X-Tg-Cache") != "" {
+		t.Fatalf("第二次相同请求也应真实打上游（无缓存头），got %d cache=%q", w2.Code, w2.Header().Get("X-Tg-Cache"))
 	}
-	if w2.Header().Get("X-Tg-Cache") != "hit" {
-		t.Fatal("第二次请求应标记 X-Tg-Cache: hit")
+	if hits.Load() != 2 {
+		t.Fatalf("相同请求两次应打上游两次（网关不缓存），hits=%d", hits.Load())
 	}
-	if !bytes.Equal(w1.Body.Bytes(), w2.Body.Bytes()) {
-		t.Fatal("缓存命中应回放相同 body")
-	}
-	if hits.Load() != 1 {
-		t.Fatalf("上游只应被打一次，hits=%d", hits.Load())
-	}
-
-	// 计费：第一笔 cost = ceil((7*2M + 3*8M)/1M) = 38；第二笔缓存 cost=0 cache_hit=1
-	if cost, _, _ := e.usageRow(t, id1); cost != 38 {
-		t.Fatalf("第一笔 cost 应为 38，got %d", cost)
-	}
-	id2 := e.lastUsage(t)
-	if id2 == id1 {
-		t.Fatal("应产生第二笔 usage_log")
-	}
-	if cost, hit, _ := e.usageRow(t, id2); cost != 0 || hit != 1 {
-		t.Fatalf("缓存命中笔应为 cost=0 cache_hit=1，got cost=%d hit=%d", cost, hit)
+	// 两笔都照常计费：okBody usage 7/3 ×（¥2/M 入 ¥8/M 出）= 38 点
+	if cost, hit, _ := e.usageRow(t, e.lastUsage(t)); cost != 38 || hit != 0 {
+		t.Fatalf("第二笔应照常计费 38 点且 cache_hit=0，got cost=%d hit=%d", cost, hit)
 	}
 	var used int64
 	_ = e.f.db.Raw("SELECT quota_used FROM users WHERE id = 1").Scan(&used).Error
-	if used != 38 {
-		t.Fatalf("用户仅应被扣 38 点，got %d", used)
-	}
-
-	// 不同 prompt → 不同缓存 key → 仍打上游
-	w3 := e.post(chatBody("another-question", `,"temperature":0.7`))
-	if w3.Header().Get("X-Tg-Cache") == "hit" || hits.Load() != 2 {
-		t.Fatalf("不同请求不应命中缓存，cache=%q hits=%d", w3.Header().Get("X-Tg-Cache"), hits.Load())
+	if used != 76 {
+		t.Fatalf("两笔共应扣 76 点，got %d", used)
 	}
 }
 

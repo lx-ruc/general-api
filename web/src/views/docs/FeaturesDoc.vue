@@ -37,8 +37,8 @@
           <code>quota_used</code>，两级都是硬上限；结算在响应发出后无条件执行，超扣幅度封顶在单请求消耗内。</li>
         <li><strong>流式保证计费</strong>：流式请求自动注入 <code>stream_options.include_usage</code>，
           保证末块携带用量；上游未返回用量的请求标记不计量（不误扣）。</li>
-        <li><strong>缓存命中不计费</strong>：开启精确缓存后，相同请求命中缓存直接返回
-          （响应头 <code>X-Tg-Cache: hit</code>），记录用量日志但消耗为 0。</li>
+        <li><strong>提示缓存按命中价计费</strong>：上游厂商提示缓存命中的输入 tokens 按更低的缓存命中价
+          单独计费（可按模型 / 客户配置），账单与厂商对账口径一致。</li>
         <li><strong>额度流水</strong>：额度上限的一切变更都与 QuotaGrant 流水同事务，恒满足
           Σ流水 == 当前上限，可完整审计每一分的来龙去脉。</li>
       </ul>

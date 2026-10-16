@@ -74,9 +74,9 @@ docker compose up -d          # postgres + redis + gateway×2 + caddy（80/443�
 
 - **切 PG 搬存量数据**：`TG_DATABASE_DRIVER=postgres TG_DATABASE_DSN="..." ./token-gateway -migrate-from-sqlite data/token_.db`
 - **滚动发布**（不停机）：`docker compose up -d --no-deps --build gateway1`，健康检查通过后再发 gateway2
-- **监控**：`GET /metrics` 输出 Prometheus 指标（请求量/延迟直方图/活跃流/上游错误/熔断/上游 429/Key 冷却/排队时长/缓存命中等）
+- **监控**：`GET /metrics` 输出 Prometheus 指标（请求量/延迟直方图/活跃流/上游错误/熔断/上游 429/Key 冷却/排队时长等）
 - **渠道熔断**：某渠道连续失败 N 次（`gateway.channel_breaker_threshold`，默认 5，0=关）自动禁用并写备注，修复后手动启用
-- **高并发协调器**（`internal/coord`）：渠道多 Key 池 + 429 冷却自动换 Key + 渠道并发闸门（排队削峰）+ 非流式精确缓存（命中不扣费）；compose 内置 Redis 全局共享，Redis 故障 fail-open 不拖死数据面
+- **高并发协调器**（`internal/coord`）：渠道多 Key 池 + 429 冷却自动换 Key + 渠道并发闸门（排队削峰）；compose 内置 Redis 全局共享，Redis 故障 fail-open 不拖死数据面。网关不做本地响应缓存，缓存口径完全对齐上游厂商的提示缓存
 - Caddyfile 改成你的域名即自动 HTTPS；SSE 已配 `flush_interval -1` 透传
 - per-key 限流仍为 per-node 内存令牌桶：双实例下单 key 实际上限约为配置值 × 节点数（几百客户场景可接受；需精确全局限流时引入 Redis）
 

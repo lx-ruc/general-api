@@ -99,25 +99,23 @@ func TestNoMappingPassthrough(t *testing.T) {
 	}
 }
 
-// 映射 + 缓存：缓存写入的已是改写后的 body，回放不泄漏上游名
-func TestModelMappingCacheNoLeak(t *testing.T) {
+// 映射 + 重复请求（网关缓存已下线）：每次都真实打上游，响应恒为改写后的对外名，不泄漏上游名
+func TestModelMappingRepeatNoLeak(t *testing.T) {
 	e := newTestEnv(t)
-	e.h.CacheTTL = time.Minute
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"id":"x","model":"up-m1","choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":5,"completion_tokens":2}}`))
 	}))
 	defer up.Close()
 	e.seedMappedChannel(t, 1, "ch", up.URL)
 
-	if w := e.post(chatBody("q", "")); w.Code != http.StatusOK {
-		t.Fatalf("首次应 200，got %d", w.Code)
-	}
-	w2 := e.post(chatBody("q", ""))
-	if w2.Header().Get("X-Tg-Cache") != "hit" {
-		t.Fatal("第二次应命中缓存")
-	}
-	if strings.Contains(w2.Body.String(), "up-m1") {
-		t.Fatalf("缓存回放不应泄漏上游名，body=%s", w2.Body)
+	for i := 0; i < 2; i++ {
+		w := e.post(chatBody("q", ""))
+		if w.Code != http.StatusOK {
+			t.Fatalf("第 %d 次应 200，got %d", i+1, w.Code)
+		}
+		if strings.Contains(w.Body.String(), "up-m1") {
+			t.Fatalf("响应不应泄漏上游名，body=%s", w.Body)
+		}
 	}
 }
 

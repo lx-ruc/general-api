@@ -27,9 +27,8 @@ go run ./tools/loadgen -c 16 -rps 15 -d 60s -key sk-xxx -model mock-chat
 
 ## 步骤
 
-1. **本地配置改两项**（`config.yaml`，压测完改回）：
+1. **本地配置改一项**（`config.yaml`，压测完改回）：
    - `gateway.per_key_rpm: 60 → 100000`（否则客户端侧限流 1 rps 先掐死流量）
-   - `gateway.cache_ttl: 5m → 0s`（否则重复请求命中缓存，根本不打上游）
 2. 建**单价为 0** 的模型（压测不扣额度）+ 渠道指到 mock，Key 池每行一把：
 
    ```json

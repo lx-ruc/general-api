@@ -15,11 +15,11 @@ type Totals struct {
 	Cost       int64 `json:"cost"`        // 客户消耗（平台营收）
 	VendorCost int64 `json:"vendor_cost"` // 厂商成本；毛利 = Cost - VendorCost
 	Errors     int64 `json:"errors"`
-	// 缓存两层原始聚合（数据面板折算命中率）：
-	//   提示缓存（上游）= CachedTokens/PromptTokens；网关精确缓存 = CacheHits/Requests
-	PromptTokens int64 `json:"prompt_tokens"` // 实际打到上游的输入 tokens（剔除网关回放行）
+	// 提示缓存（上游厂商侧）命中率原料：CachedTokens/PromptTokens。
+	// 剔除 cache_hit=1 的网关缓存回放行——缓存层已下线，该条件只影响
+	// 存量历史行（回放行的 prompt/cached_tokens 是原始响应的回放值，未真实打上游）
+	PromptTokens int64 `json:"prompt_tokens"` // 实际打到上游的输入 tokens
 	CachedTokens int64 `json:"cached_tokens"` // 其中命中上游提示缓存的部分（按缓存价计费）
-	CacheHits    int64 `json:"cache_hits"`    // 网关精确缓存命中请求数（费用 0、不打上游）
 }
 
 type DayPoint struct {
@@ -181,8 +181,7 @@ func scanTotals(db *gorm.DB, t *Totals, cond string, args []any) error {
 		       COALESCE(SUM(l.vendor_cost), 0) AS vendor_cost,
 		       COALESCE(SUM(CASE WHEN l.status >= 400 OR l.error != '' THEN 1 ELSE 0 END), 0) AS errors,
 		       COALESCE(SUM(CASE WHEN l.cache_hit = 0 THEN l.prompt_tokens ELSE 0 END), 0) AS prompt_tokens,
-		       COALESCE(SUM(CASE WHEN l.cache_hit = 0 THEN l.cached_tokens ELSE 0 END), 0) AS cached_tokens,
-		       COALESCE(SUM(l.cache_hit), 0) AS cache_hits
+		       COALESCE(SUM(CASE WHEN l.cache_hit = 0 THEN l.cached_tokens ELSE 0 END), 0) AS cached_tokens
 		FROM usage_logs l WHERE %s`, cond), args...).Scan(t).Error
 }
 

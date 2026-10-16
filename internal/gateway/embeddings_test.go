@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 )
 
 const embedOkBody = `{"object":"list","data":[{"object":"embedding","embedding":[0.1,-0.2,0.3],"index":0}],"model":"m1","usage":{"prompt_tokens":7}}`
@@ -72,10 +71,9 @@ func TestEmbeddingsMissingInput(t *testing.T) {
 	}
 }
 
-// 缓存：相同请求第二次命中（body 逐字节相同、cost=0）；input 数组顺序不同不命中
-func TestEmbeddingsCache(t *testing.T) {
+// 网关本地缓存已移除：相同 embeddings 请求每次都真实打上游并照常计费
+func TestEmbeddingsNoLocalCache(t *testing.T) {
 	e := newTestEnv(t)
-	e.h.CacheTTL = time.Minute
 	var hits int
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits++
@@ -85,31 +83,21 @@ func TestEmbeddingsCache(t *testing.T) {
 	e.seedUpstreamChannel(t, 1, "ch", up.URL, nil, 10)
 
 	w1 := e.postEmbed(`{"model":"m1","input":["a","b"]}`)
-	if w1.Code != http.StatusOK || w1.Header().Get("X-Tg-Cache") != "" {
-		t.Fatalf("首次应 200 且非缓存，got %d cache=%q", w1.Code, w1.Header().Get("X-Tg-Cache"))
-	}
 	w2 := e.postEmbed(`{"model":"m1","input":["a","b"]}`)
-	if w2.Code != http.StatusOK || w2.Header().Get("X-Tg-Cache") != "hit" {
-		t.Fatalf("第二次应命中缓存，got %d cache=%q", w2.Code, w2.Header().Get("X-Tg-Cache"))
+	if w1.Code != http.StatusOK || w2.Code != http.StatusOK {
+		t.Fatalf("两次都应 200，got %d/%d", w1.Code, w2.Code)
 	}
-	if w1.Body.String() != w2.Body.String() {
-		t.Fatalf("缓存回放应逐字节相同")
-	}
-	cost, cacheHit, _ := e.usageRow(t, e.lastUsage(t))
-	if cacheHit != 1 || cost != 0 {
-		t.Fatalf("缓存命中应 cost=0 cache_hit=1，got cost=%d cache_hit=%d", cost, cacheHit)
-	}
-	// input 顺序不同 = 不同请求，不命中
-	w3 := e.postEmbed(`{"model":"m1","input":["b","a"]}`)
-	if w3.Code != http.StatusOK || w3.Header().Get("X-Tg-Cache") == "hit" {
-		t.Fatalf("input 顺序不同不应命中，got %d cache=%q", w3.Code, w3.Header().Get("X-Tg-Cache"))
+	if w1.Header().Get("X-Tg-Cache") != "" || w2.Header().Get("X-Tg-Cache") != "" {
+		t.Fatal("网关缓存已移除，不应再出现 X-Tg-Cache 头")
 	}
 	if hits != 2 {
-		t.Fatalf("上游应被打 2 次（首次+顺序变化），got %d", hits)
+		t.Fatalf("相同请求两次应打上游两次（网关不缓存），hits=%d", hits)
+	}
+	if cost, hit, _ := e.usageRow(t, e.lastUsage(t)); cost == 0 || hit != 0 {
+		t.Fatalf("第二笔应照常计费且 cache_hit=0，got cost=%d hit=%d", cost, hit)
 	}
 }
 
-// Key 池与 429 账户级冷却对 embeddings 同样生效：2 把 Key 池，上游 429 → 只打 1 次上游、全池冷却、回 429
 func TestEmbeddingsKeyPoolCooldown(t *testing.T) {
 	e := newTestEnv(t)
 	var hits int

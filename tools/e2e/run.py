@@ -2,7 +2,7 @@
 """慧沐引擎端到端回归：数据面 / 管理面 / 计费不变量。
 
 前置条件：
-- 网关跑在 :8081（建议 TG_CACHE_TTL>0 以启用缓存断言，否则缓存项自动跳过）
+- 网关跑在 :8081
 - 脚本自带 mock 上游（:9102），按 path 与 key 前缀切换行为，无外部依赖
 - 依赖本地账号 admin / liance_admin / tester01（仅用 admin 建隔离的 e2e 数据，不碰存量账号）
 
@@ -351,16 +351,14 @@ def main():
     check('A10 /v1/models 只含已授权', m_free in ids and m_nogrant not in ids, f'{ids}')
 
     _, _, m_before = call('GET', '/metrics')
-    cache_enabled = True
     body_a = {'model': m_priced, 'max_tokens': 64, 'messages': [{'role': 'user', 'content': f'cache-probe {TS}'}]}
     st1, h1, r1 = call('POST', '/v1/chat/completions', body=body_a, key=k1)
     st2, h2, r2 = call('POST', '/v1/chat/completions', body=body_a, key=k1)
-    if h2.get('X-Tg-Cache') != 'hit' and h1.get('X-Tg-Cache') != 'hit':
-        cache_enabled = False
-        check('A11 精确缓存命中（第二次 X-Tg-Cache: hit）', True, 'SKIP：网关未开 cache_ttl')
-    else:
-        check('A11 精确缓存命中（第二次 X-Tg-Cache: hit）',
-              st1 == 200 and st2 == 200 and (h1.get('X-Tg-Cache') == 'hit' or h2.get('X-Tg-Cache') == 'hit'))
+    # 网关本地精确缓存已下线：相同请求两次都真实打上游并照常计费，不再出现 X-Tg-Cache 头
+    check('A11 网关不做本地缓存（重复请求照常打上游并计费）',
+          st1 == 200 and st2 == 200
+          and h1.get('X-Tg-Cache') is None and h2.get('X-Tg-Cache') is None,
+          f'{st1}/{st2} cache={h1.get("X-Tg-Cache")}/{h2.get("X-Tg-Cache")}')
 
     _, _, m_after = call('GET', '/metrics')
     def metric(name, text):
@@ -590,13 +588,10 @@ def main():
 
     rows = db_rows("SELECT cost, cache_hit FROM usage_logs WHERE model_name=? AND user_id=? ORDER BY id",
                    (m_priced, m1_id))
-    costs = [c for c, ch in rows if ch == 0]
-    check('C5 定价模型 cost == 200 点（100in×1 + 50out×2）', all(c == 200 for c in costs) and costs, f'{rows}')
-    if cache_enabled:
-        hits = [ch for _, ch in rows]
-        check('C6 缓存命中行 cost=0 cache_hit=1', 1 in hits, f'{rows}')
-        hit_cost = [c for c, ch in rows if ch == 1]
-        check('C7 缓存命中不扣费', all(c == 0 for c in hit_cost), f'{hit_cost}')
+    check('C5 定价模型 cost == 200 点（100in×1 + 50out×2，含 A11 两笔重复请求）',
+          all(c == 200 for c, ch in rows) and rows, f'{rows}')
+    check('C6 全部行 cache_hit=0（网关缓存已下线，不再有零费用回放行）',
+          all(ch == 0 for _, ch in rows), f'{rows}')
 
     rows = db_rows("SELECT COALESCE(quota_used,0) FROM users WHERE id=?", (mq_id,))
     check('C8 超扣封顶在单请求成本内（300 限额两次 200 后 ≈400）', 0 < rows[0][0] <= 400, f'{rows[0][0]}')

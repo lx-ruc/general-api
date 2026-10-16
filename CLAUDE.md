@@ -40,7 +40,7 @@ python3 tools/e2e/run.py             # 端到端回归（需网关先跑在 :808
 
 **网关编排**（`internal/gateway/handler.go` ChatCompletions / Embeddings 共用 relay 内核）：per-key 限流（内存令牌桶，多实例下为 per-node）→ 模型/授权/额度预检 → 渠道选择 → 转发 → defer 里结算。流式请求会向 body 注入 `stream_options.include_usage` 保证末块带 usage 供计费；上游没返回 usage 则标记不计量。
 
-**高并发协调器**（`internal/coord`，`Coordinator` 接口 + Redis/内存双实现）：渠道多 Key 池轮询、上游 429 按渠道+Key 冷却并自动换 Key、渠道并发闸门（超限排队削峰）、非流式精确缓存（命中不扣费）。配了 `redis.addr` 走全局实现，连不上 fail-open 回退进程内存（多实例下退化为 per-node）；装配见 router.go `newCoordinator`。
+**高并发协调器**（`internal/coord`，`Coordinator` 接口 + Redis/内存双实现）：渠道多 Key 池轮询、上游 429 按渠道+Key 冷却并自动换 Key、渠道并发闸门（超限排队削峰）。网关不做本地响应缓存——缓存语义与计费口径完全对齐上游厂商的提示缓存。配了 `redis.addr` 走全局实现，连不上 fail-open 回退进程内存（多实例下退化为 per-node）；装配见 router.go `newCoordinator`。
 
 **模型名映射**（`channels.model_mapping`，JSON）：渠道可配「对外名 → 上游名」；出站请求改写为上游名，响应（含流式每块）改写回对外名，计费与 usage_logs 锚定对外名，映射对客户不可见。
 

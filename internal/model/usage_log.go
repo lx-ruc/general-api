@@ -23,7 +23,7 @@ type UsageLog struct {
 	VendorCost       int64  `json:"vendor_cost"` // 厂商成本；毛利 = Cost - VendorCost
 	Cost             int64  `json:"cost"`        // 客户扣减（= 平台营收）
 	NoUsage          int    `json:"no_usage"`     // 1=上游未回 usage，本次未计费
-	CacheHit         int    `json:"cache_hit"`    // 1=精确缓存命中（未打上游，cost=0）
+	CacheHit         int    `json:"cache_hit"`    // 1=精确缓存命中（缓存层已下线，仅存量历史行；统计口径仍需剔除）
 	Status           int    `json:"status"`
 	Error            string `json:"error"`
 	LatencyMs        int64  `json:"latency_ms"`

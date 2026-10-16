@@ -299,11 +299,10 @@ func TestStreamUpstreamCleanEOFNotFailure(t *testing.T) {
 	}
 }
 
-// B6：n / max_completion_tokens / logprobs / parallel_tool_calls 参与
-// 精确缓存 key——仅这些字段不同的请求不得共享缓存条目
+// B6（缓存层已移除后的口径）：网关不再做本地精确缓存——语义字段不同的请求
+// 各自打上游本是应有行为；关键断言是「完全相同的请求也每次都打上游并照常计费」
 func TestCacheKeyDistinguishesSemantics(t *testing.T) {
 	e := newTestEnv(t)
-	e.h.CacheTTL = time.Minute
 	var hits atomic.Int64
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
@@ -313,11 +312,10 @@ func TestCacheKeyDistinguishesSemantics(t *testing.T) {
 	e.seedUpstreamChannel(t, 1, "ch", up.URL, nil, 10)
 
 	base := e.post(chatBody("same", ""))
-	if base.Header().Get("X-Tg-Cache") == "hit" || hits.Load() != 1 {
-		t.Fatalf("首请求应 miss，cache=%q hits=%d", base.Header().Get("X-Tg-Cache"), hits.Load())
+	if base.Code != http.StatusOK || base.Header().Get("X-Tg-Cache") != "" {
+		t.Fatalf("首请求应 200 且无缓存头，cache=%q", base.Header().Get("X-Tg-Cache"))
 	}
-
-	// 每个变体只改一个语义字段：均不得命中
+	// 语义变体各自打上游（网关不缓存，也无从共享）
 	for _, extra := range []string{
 		`,"n":2`, `,"max_completion_tokens":128`, `,"logprobs":true`, `,"parallel_tool_calls":false`,
 	} {
@@ -325,17 +323,17 @@ func TestCacheKeyDistinguishesSemantics(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Fatalf("变体 %s 应 200，got %d", extra, w.Code)
 		}
-		if w.Header().Get("X-Tg-Cache") == "hit" {
-			t.Fatalf("变体 %s 语义不同，不得命中缓存", extra)
+		if w.Header().Get("X-Tg-Cache") != "" {
+			t.Fatalf("网关缓存已移除，不应出现 X-Tg-Cache 头（%s）", extra)
 		}
 	}
 	if hits.Load() != 5 {
-		t.Fatalf("四个变体应各自打上游（共 5 次含首笔），hits=%d", hits.Load())
+		t.Fatalf("五个请求应各自打上游（共 5 次），hits=%d", hits.Load())
 	}
-	// 完全相同的请求：命中
+	// 完全相同的请求再发一次：同样打上游、同样计费（不再零费用回放）
 	w := e.post(chatBody("same", ""))
-	if w.Header().Get("X-Tg-Cache") != "hit" {
-		t.Fatal("完全相同请求应命中缓存")
+	if w.Header().Get("X-Tg-Cache") != "" || hits.Load() != 6 {
+		t.Fatalf("重复请求也应真实打上游，cache=%q hits=%d", w.Header().Get("X-Tg-Cache"), hits.Load())
 	}
 }
 

@@ -192,7 +192,6 @@ func (h *Handler) CostCenterReport(c *gin.Context) {
 		ModelName        string `json:"model_name"`
 		Day              string `json:"day"`
 		Requests         int64  `json:"requests"`
-		CacheHits        int64  `json:"cache_hits"`
 		PromptTokens     int64  `json:"prompt_tokens"`
 		CompletionTokens int64  `json:"completion_tokens"`
 		Cost             int64  `json:"cost"`
@@ -203,7 +202,6 @@ func (h *Handler) CostCenterReport(c *gin.Context) {
 		       COALESCE(cc.status,1) AS center_status,
 		       l.model_name, %s AS day,
 		       COUNT(CASE WHEN l.status = 200 THEN 1 END) AS requests,
-		       COUNT(CASE WHEN l.cache_hit = 1 THEN 1 END) AS cache_hits,
 		       SUM(l.prompt_tokens) AS prompt_tokens,
 		       SUM(l.completion_tokens) AS completion_tokens,
 		       SUM(l.cost) AS cost

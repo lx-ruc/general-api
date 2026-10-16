@@ -223,11 +223,6 @@ function exportCSV() {
           </template>
         </el-table-column>
         <el-table-column prop="requests" label="请求" width="70" align="right" />
-        <el-table-column label="缓存命中" width="80" align="right">
-          <template #default="{ row }">
-            <span :class="{ green: row.cache_hits > 0 }">{{ row.cache_hits }}</span>
-          </template>
-        </el-table-column>
         <el-table-column label="tokens" width="120" align="right">
           <template #default="{ row }">
             <span class="dim">入 {{ fmtNum(row.prompt_tokens) }} / 出 {{ fmtNum(row.completion_tokens) }}</span>

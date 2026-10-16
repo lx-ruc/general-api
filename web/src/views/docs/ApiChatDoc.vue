@@ -222,8 +222,8 @@ data: [DONE]' />
       <div class="doc-callout info">
         <div class="doc-callout-title">计费说明</div>
         <p>响应完成后按 <code>usage</code> 结算：<code>ceil((输入tokens × 输入单价 + 输出tokens × 输出单价) / 1M)</code>，
-          子账号与客户额度同事务双记账；上游未返回 usage 的请求不计量。命中精确缓存时消耗为 0
-          （响应头 <code>X-Tg-Cache: hit</code>）。</p>
+          子账号与客户额度同事务双记账；上游未返回 usage 的请求不计量。上游提示缓存命中的输入 tokens
+          按更低的缓存命中价计费。</p>
       </div>
     </div>
   </article>

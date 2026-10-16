@@ -4,13 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sync"
 	"testing"
 	"time"
 )
 
 func TestMemCooldown(t *testing.T) {
-	m := NewMem(0)
+	m := NewMem()
 	if m.IsCooling("ck:1:2") {
 		t.Fatal("未设置冷却却返回 cooling")
 	}
@@ -26,7 +25,7 @@ func TestMemCooldown(t *testing.T) {
 
 // SetCooldown keep-longer：短冷却不得截断在期的长冷却；长冷却可以延长短冷却
 func TestMemCooldownKeepLonger(t *testing.T) {
-	m := NewMem(0)
+	m := NewMem()
 	m.SetCooldown("k:1", 500*time.Millisecond)
 	m.SetCooldown("k:1", 30*time.Millisecond) // 并发 429 的短冷却：不应缩短
 	if !m.IsCooling("k:1") {
@@ -37,7 +36,7 @@ func TestMemCooldownKeepLonger(t *testing.T) {
 		t.Fatal("短冷却不应截断长冷却（500ms 仍应在期）")
 	}
 
-	m2 := NewMem(0)
+	m2 := NewMem()
 	m2.SetCooldown("k:2", 30*time.Millisecond)
 	m2.SetCooldown("k:2", 500*time.Millisecond) // 更长的冷却到达：应延长
 	time.Sleep(60 * time.Millisecond)
@@ -48,7 +47,7 @@ func TestMemCooldownKeepLonger(t *testing.T) {
 
 // Backoff 指数退避：连击翻倍、封顶 max、冷却到期连击归零重新起步
 func TestMemBackoffStaircase(t *testing.T) {
-	m := NewMem(0)
+	m := NewMem()
 	base, cap := 10*time.Minute, 24*time.Hour
 	want := []time.Duration{
 		10 * time.Minute, 20 * time.Minute, 40 * time.Minute, 80 * time.Minute,
@@ -65,7 +64,7 @@ func TestMemBackoffStaircase(t *testing.T) {
 	}
 	// 普通冷却重置连击：SetCooldown 覆盖（keep-longer 成立，须比剩余退避长）后
 	// 下一次 Backoff 回到起步档
-	mr := NewMem(0)
+	mr := NewMem()
 	mr.Backoff("k:rs", base, cap)            // 10min
 	mr.SetCooldown("k:rs", 12*time.Hour)     // 更长 → 覆盖且连击归零
 	if got := mr.Backoff("k:rs", base, cap); got != 10*time.Minute {
@@ -75,7 +74,7 @@ func TestMemBackoffStaircase(t *testing.T) {
 
 // 冷却到期（探测成功无人续期）→ 连击自然归零，下一次从起步档重来
 func TestMemBackoffResetsAfterExpiry(t *testing.T) {
-	m := NewMem(0)
+	m := NewMem()
 	if got := m.Backoff("k:exp", 30*time.Millisecond, time.Minute); got != 30*time.Millisecond {
 		t.Fatalf("首次应为 base，got %v", got)
 	}
@@ -92,7 +91,7 @@ func TestMemBackoffResetsAfterExpiry(t *testing.T) {
 // 配额标记：MarkQuotaCooling 置位（IsQuotaCooling ⊆ IsCooling）；
 // ClearCooldown 立即解除冷却与标记，且连击归零（下次退避回起步档）
 func TestMemQuotaCoolingAndClear(t *testing.T) {
-	m := NewMem(0)
+	m := NewMem()
 	d := m.Backoff("ck:1:2", time.Hour, 24*time.Hour)
 	m.MarkQuotaCooling("ck:1:2", d)
 	if !m.IsCooling("ck:1:2") || !m.IsQuotaCooling("ck:1:2") {
@@ -116,7 +115,7 @@ func TestMemQuotaCoolingAndClear(t *testing.T) {
 }
 
 func TestMemSlotQueueAndTimeout(t *testing.T) {
-	m := NewMem(0)
+	m := NewMem()
 	ctx := context.Background()
 
 	rel1, ok := m.AcquireSlot(ctx, "ch:1", 1)
@@ -137,7 +136,7 @@ func TestMemSlotQueueAndTimeout(t *testing.T) {
 }
 
 func TestMemSlotReleaseIdempotent(t *testing.T) {
-	m := NewMem(0)
+	m := NewMem()
 	rel, ok := m.AcquireSlot(context.Background(), "ch:1", 1)
 	if !ok {
 		t.Fatal("应获取成功")
@@ -157,7 +156,7 @@ func TestMemSlotReleaseIdempotent(t *testing.T) {
 }
 
 func TestMemSlotUnlimited(t *testing.T) {
-	m := NewMem(0)
+	m := NewMem()
 	for i := 0; i < 100; i++ {
 		if _, ok := m.AcquireSlot(context.Background(), "ch:9", 0); !ok {
 			t.Fatalf("max<=0 应不限流，第 %d 次被拒", i+1)
@@ -165,93 +164,9 @@ func TestMemSlotUnlimited(t *testing.T) {
 	}
 }
 
-func TestMemCacheLRUEviction(t *testing.T) {
-	m := NewMem(2)
-	m.CacheSet("k1", []byte("v1"), time.Minute)
-	m.CacheSet("k2", []byte("v2"), time.Minute)
-	if _, ok := m.CacheGet("k1"); !ok {
-		t.Fatal("k1 应命中")
-	}
-	m.CacheSet("k3", []byte("v3"), time.Minute) // 淘汰最久未用的 k2
-	if _, ok := m.CacheGet("k2"); ok {
-		t.Fatal("k2 应被 LRU 淘汰")
-	}
-	if v, ok := m.CacheGet("k1"); !ok || string(v) != "v1" {
-		t.Fatal("k1 最近使用过，不应被淘汰")
-	}
-	if v, ok := m.CacheGet("k3"); !ok || string(v) != "v3" {
-		t.Fatal("k3 应命中")
-	}
-}
 
-// 满容时覆盖已有 key 走"前移+覆写"早退路径，不得挤掉其他条目；
-// 已过期但未被惰性清理的条目同理（items 命中即覆写，不产生多余逐出）
-func TestMemCacheOverwriteAtCapacity(t *testing.T) {
-	m := NewMem(2)
-	m.CacheSet("k1", []byte("v1"), time.Minute)
-	m.CacheSet("k2", []byte("v2"), time.Minute)
-	m.CacheSet("k1", []byte("v1b"), time.Minute) // 满容覆盖：不得逐出 k2
-	if v, ok := m.CacheGet("k2"); !ok || string(v) != "v2" {
-		t.Fatal("满容覆盖 k1 不应逐出 k2")
-	}
-	if v, ok := m.CacheGet("k1"); !ok || string(v) != "v1b" {
-		t.Fatal("覆盖后应返回新值")
-	}
-	m.CacheSet("k3", []byte("v3"), time.Minute) // k2 现为最久未用，被逐出
-	if _, ok := m.CacheGet("k2"); ok {
-		t.Fatal("k2 应在 k3 入缓后被逐出")
-	}
 
-	// 过期条目占位时再 set：items 仍命中 → 覆写复活，长度不增
-	m2 := NewMem(1)
-	m2.CacheSet("e1", []byte("old"), 30*time.Millisecond)
-	time.Sleep(40 * time.Millisecond)
-	m2.CacheSet("e1", []byte("new"), time.Minute)
-	if v, ok := m2.CacheGet("e1"); !ok || string(v) != "new" {
-		t.Fatal("过期条目覆写后应立即以新值命中")
-	}
-}
 
-// 并发 get/set/TTL 过期混合锤击：任何未持锁的 map/list 访问都会被 -race 抓出；
-// 断言只有命中语义（不 panic），不断言具体哪次命中（并发下顺序不定）
-func TestMemCacheConcurrentHammer(t *testing.T) {
-	m := NewMem(4)
-	var wg sync.WaitGroup
-	for g := 0; g < 8; g++ {
-		wg.Add(1)
-		go func(g int) {
-			defer wg.Done()
-			for i := 0; i < 3000; i++ {
-				k := fmt.Sprintf("k%d", (g*7+i)%6) // 键集有交集也有竞争
-				switch i % 3 {
-				case 0:
-					m.CacheGet(k)
-				case 1:
-					m.CacheSet(k, []byte{byte(i)}, time.Duration(i%5)*10*time.Millisecond) // TTL 0~40ms 混入过期
-				default:
-					m.CacheSet(k, []byte{byte(g)}, time.Minute)
-					m.CacheGet(k)
-				}
-			}
-		}(g)
-	}
-	wg.Wait()
-	if _, ok := m.CacheGet("k0"); !ok { // 锤击后写入仍在：最后一批 1 分钟 TTL 的键可命中
-		m.CacheSet("k0", []byte("post"), time.Minute) // 不作断言依据，仅保证不 panic
-	}
-}
-
-func TestMemCacheTTLExpiry(t *testing.T) {
-	m := NewMem(0)
-	m.CacheSet("k", []byte("v"), 40*time.Millisecond)
-	if v, ok := m.CacheGet("k"); !ok || string(v) != "v" {
-		t.Fatal("TTL 内应命中")
-	}
-	time.Sleep(50 * time.Millisecond)
-	if _, ok := m.CacheGet("k"); ok {
-		t.Fatal("TTL 过期后应 miss")
-	}
-}
 
 // TestRedisCoord 真实 Redis 集成测试：TG_TEST_REDIS_ADDR=redis:6379 go test 才执行
 func TestRedisCoord(t *testing.T) {
@@ -367,9 +282,4 @@ func TestRedisCoord(t *testing.T) {
 	}
 	rel2() // 收尾释放，避免污染下一轮
 
-	// 缓存
-	rc.CacheSet("t:ck", []byte("v"), time.Minute)
-	if v, ok := rc.CacheGet("t:ck"); !ok || string(v) != "v" {
-		t.Fatalf("缓存应命中，got %q %v", v, ok)
-	}
 }

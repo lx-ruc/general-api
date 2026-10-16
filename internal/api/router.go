@@ -71,7 +71,7 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		m.Handler()(c.Writer, c.Request)
 	})
 
-	// ---- 协调器（Key 冷却/渠道闸门/缓存）：配了 Redis 用全局实现，否则进程内存 ----
+	// ---- 协调器（Key 冷却/渠道闸门）：配了 Redis 用全局实现，否则进程内存 ----
 	coordinator := newCoordinator(cfg, m)
 
 	// ---- 数据面 /v1（API key 鉴权 + per-key 限流）----
@@ -343,12 +343,12 @@ func newCoordinator(cfg *config.Config, m *metrics.Metrics) coord.Coordinator {
 			slog.Error("Redis 协调器连接失败，回退内存模式（多实例下闸门/冷却为 per-node）",
 				"addr", cfg.Redis.Addr, "err", err)
 		} else {
-			slog.Info("Redis 协调器已启用（闸门/冷却/缓存全局共享）", "addr", cfg.Redis.Addr)
+			slog.Info("Redis 协调器已启用（闸门/冷却全局共享）", "addr", cfg.Redis.Addr)
 			return rc
 		}
 	}
 	if cfg.Database.Driver == "postgres" {
-		slog.Warn("postgres 部署未配置 redis：闸门/冷却/缓存为 per-node，多实例下实际并发≈max×节点数")
+		slog.Warn("postgres 部署未配置 redis：闸门/冷却为 per-node，多实例下实际并发≈max×节点数")
 	}
-	return coord.NewMem(cfg.Gateway.CacheMaxItems)
+	return coord.NewMem()
 }

@@ -95,7 +95,7 @@ func newPGEnv(t *testing.T) *pgEnv {
 		QueueWaitTimeout:         config.Duration{Duration: 2 * time.Second},
 	}
 	cipher, _ := crypto.NewCipher("")
-	gw := gateway.NewHandler(db, cipher, cfg, middleware.NewRateLimiter(10000, 20), metrics.New(), coord.NewMem(1000))
+	gw := gateway.NewHandler(db, cipher, cfg, middleware.NewRateLimiter(10000, 20), metrics.New(), coord.NewMem())
 
 	engine := gin.New()
 	grp := engine.Group("/api", middleware.JWTAuth(jwtSecret, db))

@@ -38,7 +38,7 @@ func TestSelectCandidatesPoolExpansion(t *testing.T) {
 	f := newTestDB(t)
 	seedChannel(t, f, 1, "ch1", "", []string{"k1", "k2", "k3"}, 10)
 	cipher, _ := crypto.NewCipher("")
-	cd := coord.NewMem(0)
+	cd := coord.NewMem()
 
 	cands, _, err := SelectCandidates(f.db, cipher, "m1", cd)
 	if err != nil || len(cands) != 3 {
@@ -63,7 +63,7 @@ func TestSelectCandidatesCooldownFilter(t *testing.T) {
 	f := newTestDB(t)
 	seedChannel(t, f, 1, "ch1", "", []string{"k1", "k2", "k3"}, 10)
 	cipher, _ := crypto.NewCipher("")
-	cd := coord.NewMem(0)
+	cd := coord.NewMem()
 	cd.SetCooldown("ck:1:2", time.Minute) // 冷却中间那把
 
 	cands, _, err := SelectCandidates(f.db, cipher, "m1", cd)
@@ -85,7 +85,7 @@ func TestSelectCandidatesAllKeysCoolingSkipsChannel(t *testing.T) {
 	seedChannel(t, f, 1, "ch1", "", []string{"k1"}, 10)
 	seedChannel(t, f, 2, "ch2", "", []string{"k2"}, 1)
 	cipher, _ := crypto.NewCipher("")
-	cd := coord.NewMem(0)
+	cd := coord.NewMem()
 	cd.SetCooldown("ck:1:1", time.Minute) // 渠道 1 全部 key 冷却
 
 	cands, _, err := SelectCandidates(f.db, cipher, "m1", cd)
@@ -101,7 +101,7 @@ func TestSelectCandidatesLegacyFallbackAndScope(t *testing.T) {
 	f := newTestDB(t)
 	seedChannel(t, f, 1, "ch1", "legacy-key", nil, 10)
 	cipher, _ := crypto.NewCipher("")
-	cd := coord.NewMem(0)
+	cd := coord.NewMem()
 
 	cands, _, err := SelectCandidates(f.db, cipher, "m1", cd)
 	if err != nil || len(cands) != 1 {
@@ -131,7 +131,7 @@ func TestSelectCandidatesDisabledKeyExcluded(t *testing.T) {
 	mustExec(t, f, "UPDATE channel_keys SET status = 0 WHERE channel_id = 1 AND key_enc = 'k1'")
 	cipher, _ := crypto.NewCipher("")
 
-	cands, _, err := SelectCandidates(f.db, cipher, "m1", coord.NewMem(0))
+	cands, _, err := SelectCandidates(f.db, cipher, "m1", coord.NewMem())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestSelectCandidatesPriorityGroups(t *testing.T) {
 	seedChannel(t, f, 2, "low", "", []string{"lk"}, 1)
 	cipher, _ := crypto.NewCipher("")
 
-	cands, _, err := SelectCandidates(f.db, cipher, "m1", coord.NewMem(0))
+	cands, _, err := SelectCandidates(f.db, cipher, "m1", coord.NewMem())
 	if err != nil || len(cands) != 2 {
 		t.Fatalf("应有两个候选 got %d err=%v", len(cands), err)
 	}
@@ -177,7 +177,7 @@ func TestSelectCandidatesDecryptFailedStats(t *testing.T) {
 	mustExec(t, f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (2,'m1')`)
 
 	// 错误 key：候选空，两渠道均计解密失败
-	cands, stats, err := SelectCandidates(f.db, wrong, "m1", coord.NewMem(0))
+	cands, stats, err := SelectCandidates(f.db, wrong, "m1", coord.NewMem())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,7 @@ func TestSelectCandidatesDecryptFailedStats(t *testing.T) {
 	}
 
 	// 正确 key：池 2 + legacy 1 共 3 候选，解密失败归零
-	cands, stats, err = SelectCandidates(f.db, store, "m1", coord.NewMem(0))
+	cands, stats, err = SelectCandidates(f.db, store, "m1", coord.NewMem())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func TestSelectCandidatesDecryptFailedStats(t *testing.T) {
 	}
 
 	// 混合：渠道 1 全冷却（先跳过不解密）、渠道 2 解密失败 → 只计 1，保留 429 语义
-	cd := coord.NewMem(0)
+	cd := coord.NewMem()
 	cd.SetCooldown("ck:1:1", time.Minute)
 	cd.SetCooldown("ck:1:2", time.Minute)
 	cands, stats, err = SelectCandidates(f.db, wrong, "m1", cd)

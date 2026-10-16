@@ -50,7 +50,6 @@ export interface CostReportRow {
   model_name: string
   day: string
   requests: number
-  cache_hits: number
   prompt_tokens: number
   completion_tokens: number
   cost: number
@@ -165,7 +164,7 @@ export const apiUpdateMemberAlertLevels = (id: number, threshold: number, alertB
 export interface BillGrantRow { id: number; amount: number; remark: string; created_at: number }
 export interface BillDetailRow {
   day: string; model_name: string; cost_center_id: number | null; cost_center_name: string
-  requests: number; cache_hits: number; prompt_tokens: number; completion_tokens: number; cost: number
+  requests: number; prompt_tokens: number; completion_tokens: number; cost: number
 }
 export interface BillStatement {
   month: string; timezone: string; start_unix: number; end_unix: number

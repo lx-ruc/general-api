@@ -163,7 +163,6 @@ type BillDetailRow struct {
 	CostCenterID     *int64 `json:"cost_center_id"`
 	CostCenterName   string `json:"cost_center_name"`
 	Requests         int64  `json:"requests"`
-	CacheHits        int64  `json:"cache_hits"`
 	PromptTokens     int64  `json:"prompt_tokens"`
 	CompletionTokens int64  `json:"completion_tokens"`
 	Cost             int64  `json:"cost"`
@@ -300,7 +299,7 @@ func BuildBillStatement(db *gorm.DB, loc *time.Location, orgID int64, period str
 	q := fmt.Sprintf(`
 		SELECT %s AS day, l.model_name,
 		       l.cost_center_id, COALESCE(cc.name, '') AS cost_center_name,
-		       COUNT(*) AS requests, COALESCE(SUM(l.cache_hit),0) AS cache_hits,
+		       COUNT(*) AS requests,
 		       COALESCE(SUM(l.prompt_tokens),0) AS prompt_tokens,
 		       COALESCE(SUM(l.completion_tokens),0) AS completion_tokens,
 		       COALESCE(SUM(l.cost),0) AS cost%s
@@ -526,10 +525,10 @@ func WriteStatementCSV(st *BillStatement, orgName string, includeVendor bool) []
 	}
 	line("—— 消耗明细（模型 × 成本中心 × 日）——")
 	if includeVendor {
-		line("日期", "模型", "成本中心", "请求数", "缓存命中", "输入tokens", "输出tokens",
+		line("日期", "模型", "成本中心", "请求数", "输入tokens", "输出tokens",
 			"金额（元）", "金额（点数）", "厂商成本（元）", "厂商成本（点数）", "毛利（元）", "毛利（点数）")
 	} else {
-		line("日期", "模型", "成本中心", "请求数", "缓存命中", "输入tokens", "输出tokens",
+		line("日期", "模型", "成本中心", "请求数", "输入tokens", "输出tokens",
 			"金额（元）", "金额（点数）")
 	}
 	for _, r := range st.Rows {
@@ -538,13 +537,13 @@ func WriteStatementCSV(st *BillStatement, orgName string, includeVendor bool) []
 			center = "未归集"
 		}
 		if includeVendor {
-			line(r.Day, r.ModelName, center, i64(r.Requests), i64(r.CacheHits),
+			line(r.Day, r.ModelName, center, i64(r.Requests),
 				i64(r.PromptTokens), i64(r.CompletionTokens),
 				yuan(r.Cost), i64(r.Cost),
 				yuan(r.VendorCost), i64(r.VendorCost),
 				yuan(r.Margin), i64(r.Margin))
 		} else {
-			line(r.Day, r.ModelName, center, i64(r.Requests), i64(r.CacheHits),
+			line(r.Day, r.ModelName, center, i64(r.Requests),
 				i64(r.PromptTokens), i64(r.CompletionTokens),
 				yuan(r.Cost), i64(r.Cost))
 		}

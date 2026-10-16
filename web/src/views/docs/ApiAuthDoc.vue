@@ -123,7 +123,6 @@ const authExample = computed(() => `curl ${baseURL}/models \\
           </thead>
           <tbody>
             <tr><td><code>X-Tg-Channel-Id</code></td><td>实际服务本次请求的渠道 ID（平台侧定位上游问题用）。</td></tr>
-            <tr><td><code>X-Tg-Cache: hit</code></td><td>精确缓存命中，本次请求未访问上游、不计费。</td></tr>
             <tr><td><code>Retry-After</code></td><td><code>429 upstream_busy</code> 时建议的等待秒数。</td></tr>
           </tbody>
         </table>

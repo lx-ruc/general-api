@@ -13,12 +13,12 @@
   R7  账单勾稽：期初快照 + 期内授权 − 消耗 == 期末快照；chain_ok 由服务端判
   R8  厂商账单对账：diff==0 / 篡改后 diff 精确
   R9  no_usage（上游漏 usage）不计费、statement 披露笔数
-  R10 精确缓存命中 cost=0；被拒尝试（403/404/400）零成本不进账单明细
+  R10 网关无本地缓存：重复请求照常打上游并计费；被拒尝试（403/404/400）零成本不进账单明细
   R11 余额预警：越 80% 线 → 客户管理员站内信
   R12 超扣封顶在单请求成本内，且已扣数 == 精确期望
 
-前置：网关 :8081（admin/admin123456；database.path 指向仓库 data/token_.db；
-gateway.cache_ttl > 0）。自带 mock 上游 :9103（按请求序号给预设 token 数）。
+前置：网关 :8081（admin/admin123456；database.path 指向仓库 data/token_.db）。
+自带 mock 上游 :9103（按请求序号给预设 token 数）。
 """
 import json
 import os
@@ -293,12 +293,15 @@ def main():
     # 跨客户：org2 打 mx 走默认价（覆盖价不串客户）
     fire(k4, mx, range(118, 128), PX, member='m4')
 
-    # 精确缓存：同 body 两次 → 第二次命中 cost=0
+    # 网关无本地缓存：同 body 两次 → 两次都真实打上游并照常计费
     st1, h1, _ = chat(ma, k1, 200)
     st2, h2, _ = chat(ma, k1, 200)
-    hit = h2.get('X-Tg-Cache') == 'hit' or h1.get('X-Tg-Cache') == 'hit'
-    check('R10a 精确缓存第二次命中', hit, f'{h1.get("X-Tg-Cache")}/{h2.get("X-Tg-Cache")}')
-    ledger.append(('m1', ma, 200, O1))  # 命中行 cost=0，由 cache_hit 标记区分
+    check('R10a 重复请求照常打上游（无 X-Tg-Cache 回放）',
+          st1 == 200 and st2 == 200
+          and h1.get('X-Tg-Cache') is None and h2.get('X-Tg-Cache') is None,
+          f'{st1}/{st2} cache={h1.get("X-Tg-Cache")}/{h2.get("X-Tg-Cache")}')
+    ledger.append(('m1', ma, 200, O1))  # 两笔都按 idx=200 预设计费
+    ledger.append(('m1', ma, 200, O1))
 
     # no_usage 批次：上游不回 usage → 不计费但披露
     fire(k1, ma, range(210, 215), O1)
@@ -400,7 +403,7 @@ def main():
     check('R2 价格快照随时间线正确（P1→P2→O1/默认）', not bad_snapshot, f'{bad_snapshot[:3]}')
     check('R3 每行 vendor_cost 精确 + 成本价不漂移', not bad_vendor, f'{bad_vendor[:3]}')
     check('R5b 成功行与账本一一对应（无缺无重）', not unmatched, f'{unmatched[:3]}')
-    check('R10b 缓存命中 1 行 cost=0', n_cache == 1, f'{n_cache}')
+    check('R10b 无缓存命中行（cache_hit 全 0，网关缓存已下线）', n_cache == 0, f'{n_cache}')
     check('R9a no_usage 5 行零成本', n_no_usage == 5, f'{n_no_usage}')
     check('R10c 被拒尝试零成本（403 未授权 / 402 超扣）',
           n_failed == 2 and all(c == 0 for _, _, c in failed_detail), f'{failed_detail}')

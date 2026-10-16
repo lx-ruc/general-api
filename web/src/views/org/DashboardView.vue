@@ -42,12 +42,10 @@ const cards = computed(() => {
     { label: '调用成功率', value: succRate(t), tone: succTone(t) },
     { label: '提示缓存命中率', value: cacheRate(t.cached_tokens, t.prompt_tokens),
       sub: `命中 ${fmtTokenCompact(t.cached_tokens)} / 输入 ${fmtTokenCompact(t.prompt_tokens)} token` },
-    { label: '网关缓存命中率', value: cacheRate(t.cache_hits, t.requests),
-      sub: `命中 ${fmtNum(t.cache_hits)} / ${fmtNum(t.requests)} 笔请求` },
   ]
 })
 
-// 缓存命中率（提示缓存/网关精确缓存共用）：命中 / 总量（分母为 0 显示 —）
+// 提示缓存命中率（上游厂商侧）：命中 tokens / 输入 tokens（分母为 0 显示 —）
 function cacheRate(hit: number, total: number): string {
   if (!total) return '—'
   return `${Math.min(100, Math.floor((hit / total) * 1000) / 10)}%`

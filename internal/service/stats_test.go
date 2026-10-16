@@ -98,11 +98,10 @@ func TestStatsOverviewEmptyArraysContract(t *testing.T) {
 	}
 }
 
-// 数据面板缓存统计的两层口径：
-//   提示缓存命中率 = cached_tokens / prompt_tokens，只算实际打到上游的行——
-//     网关精确缓存回放行的 cached_tokens 是原始响应的回放值，本回合并未发生上游命中，
-//     计入会失真（回放行整行剔除：分子分母同口径）
-//   网关缓存命中率 = cache_hit 行数 / 总请求数（命中笔费用 0、不打上游）
+// 数据面板提示缓存口径：cached_tokens / prompt_tokens，只算实际打到上游的行——
+//   存量网关精确缓存回放行（cache_hit=1，缓存层已下线但历史行仍在）的
+//   cached_tokens 是原始响应的回放值，本回合并未发生上游命中，
+//   计入会失真（回放行整行剔除：分子分母同口径）
 func TestStatsOverviewCacheAggregates(t *testing.T) {
 	gdb, err := database.Open(config.Database{Driver: "sqlite", Path: t.TempDir() + "/test.db"})
 	if err != nil {
@@ -151,11 +150,8 @@ func TestStatsOverviewCacheAggregates(t *testing.T) {
 		t.Fatalf("提示缓存口径应为 输入2000/命中400（剔除回放行），got 输入%d/命中%d",
 			ov.Total.PromptTokens, ov.Total.CachedTokens)
 	}
-	if ov.Total.CacheHits != 1 {
-		t.Fatalf("网关缓存命中应为 1 笔，got %d", ov.Total.CacheHits)
-	}
 	// 行均落在今日：today 与 total 同口径
-	if ov.Today.PromptTokens != 2000 || ov.Today.CachedTokens != 400 || ov.Today.CacheHits != 1 {
+	if ov.Today.PromptTokens != 2000 || ov.Today.CachedTokens != 400 {
 		t.Fatalf("今日缓存口径应与累计一致: %+v", ov.Today)
 	}
 	// org 隔离范围内同样可得
@@ -163,7 +159,7 @@ func TestStatsOverviewCacheAggregates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StatsOverview(org) 失败: %v", err)
 	}
-	if ovOrg.Total.CacheHits != 1 || ovOrg.Total.CachedTokens != 400 {
+	if ovOrg.Total.CachedTokens != 400 {
 		t.Fatalf("org 范围缓存口径: %+v", ovOrg.Total)
 	}
 }

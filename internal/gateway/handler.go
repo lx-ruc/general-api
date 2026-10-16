@@ -3,8 +3,6 @@ package gateway
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -67,8 +65,6 @@ type Handler struct {
 	MaxConcurrency   int           // 渠道并发闸门（0=不限）
 	QueueWaitTimeout time.Duration // 闸门排队等待上限
 	KeyCooldown      time.Duration // 429 后 Key 冷却时长
-	CacheTTL         time.Duration // 精确缓存 TTL（0=关）
-	CacheIsolateOrg  bool          // 缓存按组织隔离
 	HarvestTimeout   time.Duration // 断连收割窗口：客户端断开后继续读上游的最长等待（<=0 默认 10m）
 
 	// ---- 上游调度强化 ----
@@ -96,8 +92,6 @@ func NewHandler(db *gorm.DB, cipher *crypto.Cipher, cfg *config.Config,
 		MaxConcurrency:    cfg.Gateway.ChannelMaxConcurrency,
 		QueueWaitTimeout:  cfg.Gateway.QueueWaitTimeout.Duration,
 		KeyCooldown:       cfg.Gateway.KeyCooldown.Duration,
-		CacheTTL:          cfg.Gateway.CacheTTL.Duration,
-		CacheIsolateOrg:   cfg.Gateway.CacheIsolateOrg,
 		HarvestTimeout:    cfg.Gateway.HarvestTimeout.Duration,
 		KeyCooldownScope:  cfg.Gateway.KeyCooldownScope,
 		MaxCandidates:     cfg.Gateway.MaxCandidates,
@@ -230,9 +224,8 @@ const (
 )
 
 // relaySpec 端点差异参数化：chat / embeddings / messages / responses 共用同一条编排链路
-// （限流→解析→授权→预检→缓存→选渠道→闸门→转发→分类→结算），chat 行为零变化
+// （限流→解析→授权→预检→选渠道→闸门→转发→分类→结算），chat 行为零变化
 type relaySpec struct {
-	cacheFields []string // 参与精确缓存 key 的字段白名单（固定顺序）
 	allowStream bool     // 是否支持流式（embeddings 不支持）
 	fixedPath   string   // 非空 → 出站路径最后一段替换为该值（如 /embeddings）
 	require     []string // 除 model 外的必填请求体字段
@@ -243,27 +236,26 @@ type relaySpec struct {
 
 // ChatCompletions POST /v1/chat/completions
 func (h *Handler) ChatCompletions(c *gin.Context) {
-	h.relay(c, relaySpec{cacheFields: chatCacheFields, allowStream: true})
+	h.relay(c, relaySpec{allowStream: true})
 }
 
 // Messages POST /v1/messages：Anthropic Messages 协议（Claude Code 等 Anthropic 系
 // 客户端直连）。协议翻译只发生在边界，编排内核（授权/额度/渠道/映射/计费）完全复用
 func (h *Handler) Messages(c *gin.Context) {
-	h.relay(c, relaySpec{cacheFields: chatCacheFields, allowStream: true, proto: protoAnthropic})
+	h.relay(c, relaySpec{allowStream: true, proto: protoAnthropic})
 }
 
 // Responses POST /v1/responses：OpenAI Responses 协议（Codex CLI 0.142+ 等客户端
 // 直连，自定义 provider 仅支持 wire_api="responses"）。协议翻译只发生在边界，
 // 编排内核（授权/额度/渠道/映射/计费）完全复用
 func (h *Handler) Responses(c *gin.Context) {
-	h.relay(c, relaySpec{cacheFields: chatCacheFields, allowStream: true, proto: protoResponses})
+	h.relay(c, relaySpec{allowStream: true, proto: protoResponses})
 }
 
 // Embeddings POST /v1/embeddings：向量接口（RAG/知识库场景）；
 // 计费走 CalcCost 的 completion=0 退化路径（纯输入计费）
 func (h *Handler) Embeddings(c *gin.Context) {
 	h.relay(c, relaySpec{
-		cacheFields: embeddingsCacheFields,
 		fixedPath:   "/embeddings",
 		require:     []string{"input"},
 	})
@@ -437,49 +429,6 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			rec.Status, rec.Error = http.StatusInternalServerError, err.Error()
 			werr(c, http.StatusInternalServerError, "internal_error", "quota precheck failed")
 			return
-		}
-	}
-
-	// 精确缓存查询（授权/预检之后、选渠道之前）：命中直接回，不触发上游调用与扣费
-	cacheKey := ""
-	if h.CacheTTL > 0 && !stream {
-		cacheKey = h.cacheKey(bodyMap, ki.OrgID, spec.cacheFields)
-		if data, ok := h.Coord.CacheGet(cacheKey); ok {
-			if h.Metrics != nil {
-				h.Metrics.CacheHits.Inc()
-			}
-			rec.Status = http.StatusOK
-			rec.CacheHit = 1
-			c.Writer.Header().Set("X-Tg-Cache", "hit")
-			c.Data(http.StatusOK, "application/json", data)
-			// 缓存里存的是本协议形状（翻译型端点存翻译后的体），usage 按协议取
-			var usage *Usage
-			switch spec.proto {
-			case protoAnthropic:
-				usage = anthropicUsageFrom(data)
-			case protoResponses:
-				usage = responsesUsageFrom(data)
-			default:
-				var ur struct {
-					Usage *Usage `json:"usage"`
-				}
-				_ = json.Unmarshal(data, &ur)
-				usage = ur.Usage
-			}
-			if usage != nil {
-				rec.PromptTokens = usage.PromptTokens
-				rec.CompletionTokens = usage.CompletionTokens
-				rec.CachedTokens = usage.CachedTokens()
-				if rec.CachedTokens > rec.PromptTokens {
-					rec.CachedTokens = rec.PromptTokens
-				}
-				rec.InputPrice = m.InputPrice
-				rec.OutputPrice = m.OutputPrice
-				rec.InputCacheHitPrice = m.InputCacheHitPrice
-			} else {
-				rec.NoUsage = 1
-			}
-			return // Cost 保持 0：缓存命中不扣费
 		}
 	}
 
@@ -836,10 +785,6 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			}
 			data, usage = out, u
 		}
-		// 非流式、体积受限 → 写精确缓存
-		if resp.StatusCode < 300 && cacheKey != "" && len(data) <= 1<<20 {
-			h.Coord.CacheSet(cacheKey, data, h.CacheTTL)
-		}
 		c.Data(resp.StatusCode, ct, data)
 		if c.Request.Context().Err() != nil {
 			// 客户端中途断开：响应体已完整收割（上游照常生成并收费），如实记 499 并照常计费
@@ -939,18 +884,6 @@ const (
 	attemptNextChannel                      // 跳过该渠道全部剩余 Key
 )
 
-// chatCacheFields chat 端点参与精确缓存 key 的请求字段白名单（固定顺序迭代，绝不 range map）。
-// 影响输出的采样/行为参数必须全部入 key，否则语义不同的请求会命中同一缓存条目
-var chatCacheFields = []string{
-	"model", "messages", "temperature", "top_p", "seed",
-	"presence_penalty", "frequency_penalty", "max_tokens", "max_completion_tokens", "stop",
-	"n", "logit_bias", "logprobs", "parallel_tool_calls",
-	"response_format", "tools", "tool_choice",
-}
-
-// embeddingsCacheFields embeddings 端点缓存白名单（input 数组顺序不同 = 不同请求，不命中）
-var embeddingsCacheFields = []string{"model", "input", "encoding_format", "dimensions"}
-
 // logHarvest 断连收割留痕：客户没收到响应但上游已生成并收费、已穿透计费——
 // 服务端可见性（对账时这类单子官网有量、客户侧 499 但计费非零）
 func logHarvest(rec *model.UsageLog, u *Usage, modelName, channelName string) {
@@ -959,24 +892,6 @@ func logHarvest(rec *model.UsageLog, u *Usage, modelName, channelName string) {
 	}
 	slog.Info("客户端断开后收割计费", "model", modelName, "channel", channelName,
 		"prompt_tokens", u.PromptTokens, "completion_tokens", u.CompletionTokens, "cost", rec.Cost)
-}
-
-// cacheKey 精确缓存 key：白名单字段按固定顺序拼接原始 JSON 后取 SHA-256（model 为对外名）
-func (h *Handler) cacheKey(bm map[string]json.RawMessage, orgID int64, fields []string) string {
-	var sb strings.Builder
-	if h.CacheIsolateOrg {
-		fmt.Fprintf(&sb, "org:%d:", orgID)
-	}
-	for _, f := range fields {
-		if raw, ok := bm[f]; ok {
-			sb.WriteString(f)
-			sb.WriteByte(0)
-			sb.Write(raw)
-			sb.WriteByte(0)
-		}
-	}
-	sum := sha256.Sum256([]byte(sb.String()))
-	return hex.EncodeToString(sum[:])
 }
 
 // endpointURL 出站完整地址 = base_url + path；fixed 非空时改写端点段：

@@ -262,28 +262,3 @@ func (r *RedisCoord) heartbeat(slotKey, member string, stop chan struct{}) {
 		}
 	}
 }
-
-// ---- 缓存 ----
-
-func (r *RedisCoord) CacheGet(key string) ([]byte, bool) {
-	ctx, cancel := withTimeout()
-	defer cancel()
-	val, err := r.client.Get(ctx, "tg:cache:"+key).Bytes()
-	if err == redis.Nil {
-		return nil, false
-	}
-	if r.err(ctx, "cache_get", err) {
-		return nil, false // fail-open：当 miss
-	}
-	return val, true
-}
-
-func (r *RedisCoord) CacheSet(key string, val []byte, ttl time.Duration) {
-	if ttl <= 0 {
-		return
-	}
-	ctx, cancel := withTimeout()
-	defer cancel()
-	err := r.client.Set(ctx, "tg:cache:"+key, val, ttl).Err()
-	r.err(ctx, "cache_set", err)
-}

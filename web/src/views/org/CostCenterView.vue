@@ -162,7 +162,6 @@ function centerName(r: CostReportRow): string {
       <el-table-column prop="model_name" label="模型" min-width="140" />
       <el-table-column prop="day" label="日期" width="110" />
       <el-table-column prop="requests" label="请求数" width="90" />
-      <el-table-column prop="cache_hits" label="缓存命中" width="90" />
       <el-table-column prop="prompt_tokens" label="输入 tokens" width="120" />
       <el-table-column prop="completion_tokens" label="输出 tokens" width="120" />
       <el-table-column label="消耗（元）" width="140">

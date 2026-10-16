@@ -1,7 +1,6 @@
 package coord
 
 import (
-	"container/list"
 	"context"
 	"sync"
 	"time"
@@ -15,8 +14,6 @@ type Mem struct {
 
 	slotsMu sync.Mutex
 	slots   map[string]chan struct{}
-
-	cache *memCache
 }
 
 // cdEntry 冷却条目：hits 为 Backoff 连击次数（SetCooldown 不动它），
@@ -28,12 +25,10 @@ type cdEntry struct {
 	quota bool
 }
 
-// NewMem maxCacheItems 内存 LRU 条数上限（<=0 视为不限，仅靠 TTL）
-func NewMem(maxCacheItems int) *Mem {
+func NewMem() *Mem {
 	return &Mem{
 		cooldown: map[string]cdEntry{},
 		slots:    map[string]chan struct{}{},
-		cache:    newMemCache(maxCacheItems),
 	}
 }
 
@@ -143,70 +138,4 @@ func (m *Mem) AcquireSlot(ctx context.Context, scope string, max int) (func(), b
 	case <-ctx.Done():
 		return func() {}, false
 	}
-}
-
-func (m *Mem) CacheGet(key string) ([]byte, bool) { return m.cache.get(key) }
-
-func (m *Mem) CacheSet(key string, val []byte, ttl time.Duration) { m.cache.set(key, val, ttl) }
-
-// ---- 内存 LRU 缓存（TTL + 条数上限）----
-
-type cacheEntry struct {
-	key    string
-	val    []byte
-	expire time.Time
-}
-
-type memCache struct {
-	mu       sync.Mutex
-	maxItems int
-	ll       *list.List               // front=最近使用
-	items    map[string]*list.Element // key → element
-}
-
-func newMemCache(maxItems int) *memCache {
-	return &memCache{maxItems: maxItems, ll: list.New(), items: map[string]*list.Element{}}
-}
-
-func (c *memCache) get(key string) ([]byte, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	el, ok := c.items[key]
-	if !ok {
-		return nil, false
-	}
-	e := el.Value.(*cacheEntry)
-	if time.Now().After(e.expire) {
-		c.ll.Remove(el)
-		delete(c.items, key)
-		return nil, false
-	}
-	c.ll.MoveToFront(el)
-	return e.val, true
-}
-
-func (c *memCache) set(key string, val []byte, ttl time.Duration) {
-	if ttl <= 0 {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if el, ok := c.items[key]; ok { // 已存在：覆盖并前移
-		e := el.Value.(*cacheEntry)
-		e.val, e.expire = val, time.Now().Add(ttl)
-		c.ll.MoveToFront(el)
-		return
-	}
-	if c.maxItems > 0 {
-		for c.ll.Len() >= c.maxItems { // 淘汰最久未用
-			back := c.ll.Back()
-			if back == nil {
-				break
-			}
-			c.ll.Remove(back)
-			delete(c.items, back.Value.(*cacheEntry).key)
-		}
-	}
-	el := c.ll.PushFront(&cacheEntry{key: key, val: val, expire: time.Now().Add(ttl)})
-	c.items[key] = el
 }

@@ -71,8 +71,8 @@
       <ul>
         <li><strong>渠道路由</strong>：同模型多渠道按优先级 + 权重负载均衡，失败自动降级备用渠道；
           单渠道连续失败自动熔断，上游恢复后由周期探测自动拉起。</li>
-        <li><strong>高并发</strong>：渠道多 Key 池轮转、上游 429 自动冷却换 Key、并发闸门排队削峰、
-          非流式精确缓存（命中不计费）；多实例可接 Redis 全局协调。</li>
+        <li><strong>高并发</strong>：渠道多 Key 池轮转、上游 429 自动冷却换 Key、并发闸门排队削峰；
+          多实例可接 Redis 全局协调。</li>
         <li><strong>计量计费</strong>：全整数运算（无浮点误差），流式请求自动注入
           <code>stream_options.include_usage</code> 保证末块带用量。</li>
         <li><strong>额度控制</strong>：客户 / 子账号两级「设上限、双记账」，单月上限次月自动清零，

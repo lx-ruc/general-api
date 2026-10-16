@@ -32,7 +32,6 @@ func (h *Handler) CostCenterCrossReport(c *gin.Context) {
 		CenterName    string `json:"center_name"` // "" = 未归集
 		CenterStatus  int    `json:"center_status"`
 		Requests      int64  `json:"requests"`
-		CacheHits     int64  `json:"cache_hits"`
 		PromptTokens  int64  `json:"prompt_tokens"`
 		CompleteToks  int64  `json:"completion_tokens"`
 		Cost          int64  `json:"cost"`        // 平台营收（客户扣减）
@@ -44,7 +43,6 @@ func (h *Handler) CostCenterCrossReport(c *gin.Context) {
 		       l.cost_center_id, COALESCE(cc.name,'') AS center_name,
 		       COALESCE(cc.status,1) AS center_status,
 		       COUNT(CASE WHEN l.status = 200 THEN 1 END) AS requests,
-		       COUNT(CASE WHEN l.cache_hit = 1 THEN 1 END) AS cache_hits,
 		       SUM(l.prompt_tokens) AS prompt_tokens,
 		       SUM(l.completion_tokens) AS completion_tokens,
 		       SUM(l.cost) AS cost,

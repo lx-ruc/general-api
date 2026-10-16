@@ -91,8 +91,6 @@ type Metrics struct {
 	QueueWait *Histogram
 	// 闸门排队超时次数
 	QueueTimeouts Counter
-	// 精确缓存命中次数
-	CacheHits Counter
 	// 协调器 Redis 故障次数（fail-open）
 	CoordRedisErrors Counter
 	// 预算告警档位触发次数（按主体 org/user）
@@ -134,7 +132,6 @@ func (m *Metrics) Handler() http.HandlerFunc {
 		writeSimple(&b, "tg_gateway_key_cooldown_total", "Key 进入冷却次数", "counter", fmt.Sprint(m.KeyCooldown.Value()))
 		writeSimple(&b, "tg_gateway_key_disabled_total", "Key 因上游 401/403 自动禁用次数", "counter", fmt.Sprint(m.KeyDisabled.Value()))
 		writeSimple(&b, "tg_gateway_queue_timeouts_total", "渠道闸门排队超时次数", "counter", fmt.Sprint(m.QueueTimeouts.Value()))
-		writeSimple(&b, "tg_gateway_cache_hits_total", "精确缓存命中次数", "counter", fmt.Sprint(m.CacheHits.Value()))
 		writeSimple(&b, "tg_coord_redis_errors_total", "协调器 Redis 故障次数（fail-open）", "counter", fmt.Sprint(m.CoordRedisErrors.Value()))
 		writeVec(&b, m.AlertTriggers, "subject")
 		writeVec(&b, m.ChannelProbeResult, "result")
