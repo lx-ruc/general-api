@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '../stores/auth'
@@ -138,8 +138,54 @@ async function refreshBadges() {
       }
     }
   } catch { /* 拉取失败不打扰 */ }
+  // 基线随实际处理下移（在页面里处理掉事项后，后续增量计算仍准确）
+  let lowered = false
+  const next: Record<string, number> = {}
+  for (const [k, v] of Object.entries(menuBadges.value)) {
+    const s = menuSeen.value[k] || 0
+    if (v < s) { next[k] = v; lowered = true } else if (s > 0) next[k] = s
+  }
+  if (lowered) {
+    menuSeen.value = next
+    persistSeen()
+  }
+  // 停留在对应页面期间拉到的更新同样视为已读（覆盖刷新页面停在徽标页的场景）
+  for (const k of Object.keys(menuBadges.value)) {
+    if (route.path === k || route.path.startsWith(k + '/')) markSeen(k)
+  }
 }
 const badgeEvents = ['quota-requests-changed', 'recharges-changed', 'model-requests-changed']
+// 点击侧栏标签进入对应页面 → 该菜单当前计数标记已读，徽标即时消失
+watch(() => route.path, (path) => {
+  for (const k of Object.keys(menuBadges.value)) {
+    if (path === k || path.startsWith(k + '/')) markSeen(k)
+  }
+})
+// 已读基线：上次进入该页面时看到的计数，按用户名持久化到 localStorage。
+// 徽标显示「当前计数 − 已读基线」的增量——点击进入页面即视为已读（徽标消失），
+// 之后新到达的事项重新点亮；处理掉事项后基线自动下移，增量不失真
+const seenKey = () => `tg_menu_seen_${auth.user?.username || ''}`
+function loadSeen(): Record<string, number> {
+  try { return JSON.parse(localStorage.getItem(seenKey()) || '{}') } catch { return {} }
+}
+function persistSeen() {
+  try { localStorage.setItem(seenKey(), JSON.stringify(menuSeen.value)) } catch { /* 存储不可用则退化为会话内 */ }
+}
+const menuSeen = ref<Record<string, number>>(loadSeen())
+const menuUnread = computed(() => {
+  const out: Record<string, number> = {}
+  for (const [k, v] of Object.entries(menuBadges.value)) {
+    const n = Math.max(0, v - (menuSeen.value[k] || 0))
+    if (n > 0) out[k] = n
+  }
+  return out
+})
+function markSeen(key: string) {
+  const cur = menuBadges.value[key] || 0
+  if (cur <= 0 || menuSeen.value[key] === cur) return
+  menuSeen.value = { ...menuSeen.value, [key]: cur }
+  persistSeen()
+}
 onMounted(() => {
   refreshBadges()
   badgeEvents.forEach((ev) => window.addEventListener(ev, refreshBadges))
@@ -299,8 +345,8 @@ async function revokeToken(row: AccessToken) {
           :class="{ active: activeMenu === m.index }">
           <el-icon :size="16"><component :is="m.icon" /></el-icon>
           <span>{{ m.title }}</span>
-          <span v-if="menuBadges[m.index] > 0" class="nav-badge num">
-            {{ menuBadges[m.index] > 99 ? '99+' : menuBadges[m.index] }}
+          <span v-if="menuUnread[m.index] > 0" class="nav-badge num">
+            {{ menuUnread[m.index] > 99 ? '99+' : menuUnread[m.index] }}
           </span>
         </router-link>
       </nav>
