@@ -37,8 +37,8 @@ func newPlatformEnv(t *testing.T) (*gin.Engine, *gorm.DB, string) {
 	t.Cleanup(func() { sqlDB, _ := db.DB(); _ = sqlDB.Close() })
 
 	now := time.Now().Unix()
-	if err := db.Exec(`INSERT INTO users (id, org_id, username, password_hash, role, status, created_at, updated_at)
-		VALUES (1, NULL, 'root', 'x', 'platform_admin', 1, ?, ?)`, now, now).Error; err != nil {
+	if err := db.Exec(`INSERT INTO users (id, org_id, username, password_hash, role, is_super, status, created_at, updated_at)
+		VALUES (1, NULL, 'root', 'x', 'platform_admin', 1, 1, ?, ?)`, now, now).Error; err != nil {
 		t.Fatalf("造系统管理员失败: %v", err)
 	}
 
@@ -56,6 +56,13 @@ func newPlatformEnv(t *testing.T) (*gin.Engine, *gorm.DB, string) {
 	pg.PUT("/orgs/:id/quota", h.SetOrgQuota)
 	pg.GET("/quota-grants", h.ListQuotaGrants)
 	pg.GET("/billing/overview", h.BillingOverview)
+	// 超管专属组（与 router.go 同款装配）
+	sg := pg.Group("", middleware.RequireSuperAdmin())
+	sg.GET("/audit", h.ListAudit)
+	sg.GET("/admins", h.ListAdmins)
+	sg.POST("/admins", h.CreateAdmin)
+	sg.PUT("/admins/:id", h.UpdateAdmin)
+	sg.POST("/admins/:id/reset-password", h.ResetAdminPassword)
 	return engine, db, token
 }
 

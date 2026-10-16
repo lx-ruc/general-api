@@ -176,8 +176,54 @@ export const apiDeleteOrgModelPrice = (modelName: string, orgId: number) =>
 export const apiStatsOverview = () => http.get<any, any>('/api/platform/stats/overview')
 export const apiListUsage = (params?: any) => http.get<any, any>('/api/platform/usage', { params })
 
-// ---- 审计 ----
-export const apiListAudit = (params?: any) => http.get<any, any>('/api/platform/audit', { params })
+// ---- 审计（超级管理员专属）----
+export interface AuditRow {
+  id: number
+  actor_id: number | null // 已删/历史账号 JOIN 不上时前端回退显示裸 ID
+  actor: string
+  username: string
+  display_name: string
+  method: string
+  path: string
+  status: number
+  detail: string
+  ip: string
+  created_at: number
+}
+export interface AuditQuery {
+  page?: number
+  page_size?: number
+  scope?: 'platform' | 'all' // 缺省 platform：只看 /api/platform 前缀的管理操作
+  path?: string
+  actor?: string // 操作者用户名/显示名模糊
+  method?: string
+  start?: number
+  end?: number
+}
+export interface AuditPage { list: AuditRow[]; total: number; page: number; page_size: number }
+export const apiListAudit = (params?: AuditQuery) => http.get<any, AuditPage>('/api/platform/audit', { params })
+
+// ---- 子管理员管理（超级管理员专属）----
+export interface AdminRow {
+  id: number
+  username: string
+  display_name: string
+  email: string
+  role: string
+  is_super: number
+  status: number
+  last_login_at: number | null
+  created_at: number
+}
+export interface AdminPage { list: AdminRow[]; total: number; page: number; page_size: number }
+export const apiListAdmins = (params?: { page?: number; page_size?: number; query?: string }) =>
+  http.get<any, AdminPage>('/api/platform/admins', { params })
+export const apiCreateAdmin = (data: { username: string; password: string; display_name?: string; email?: string }) =>
+  http.post<any, any>('/api/platform/admins', data)
+export const apiUpdateAdmin = (id: number, data: { display_name?: string; email?: string; status?: number; is_super?: boolean }) =>
+  http.put<any, any>(`/api/platform/admins/${id}`, data)
+export const apiResetAdminPassword = (id: number, new_password: string) =>
+  http.post<any, { message: string }>(`/api/platform/admins/${id}/reset-password`, { new_password })
 
 // ---- 站内通知（顶栏铃铛） ----
 // key_quota_cooling 的 payload：定位渠道与 Key（打码），就地「清除冷却」用

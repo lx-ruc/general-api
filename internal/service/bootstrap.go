@@ -59,12 +59,13 @@ func bootstrapAdminTx(db *gorm.DB, cfg *config.Config) error {
 		PasswordHash: hash,
 		DisplayName:  "系统管理员",
 		Role:         model.RolePlatformAdmin,
+		IsSuper:      1, // 自举管理员即超级管理员（子管理员由其在管理台分配）
 		Status:       1,
 	}
 	if err := db.Create(admin).Error; err != nil {
 		return err
 	}
-	slog.Info("bootstrap: platform admin created",
+	slog.Info("bootstrap: super admin created",
 		"username", admin.Username, "id", admin.ID)
 	// 默认口令弱口令告警：建号后仍未改密码是最常见的失守入口
 	if cfg.Security.BootstrapAdminPassword == "change-me" || cfg.Security.BootstrapAdminPassword == "admin123456" {

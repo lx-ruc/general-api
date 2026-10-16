@@ -16,6 +16,7 @@ const (
 	ctxUID   = "uid"
 	ctxRole  = "role"
 	ctxOrgID = "jwt_org_id"
+	ctxSuper = "is_super"
 )
 
 // JWTAuth 管理面鉴权（双轨）：
@@ -51,12 +52,13 @@ func JWTAuth(secret string, db *gorm.DB) gin.HandlerFunc {
 		var row struct {
 			Status       int
 			Role         string
+			IsSuper      int
 			OrgID        *int64
 			PasswordHash string
 			OrgState     *int // LEFT JOIN：系统管理员无组织为 NULL
 		}
 		if err := db.Raw(`
-			SELECT u.status, u.role, u.org_id, u.password_hash, o.status AS org_state
+			SELECT u.status, u.role, u.is_super, u.org_id, u.password_hash, o.status AS org_state
 			FROM users u LEFT JOIN orgs o ON o.id = u.org_id
 			WHERE u.id = ?`, uid).Scan(&row).Error; err != nil || row.Role == "" {
 			abortUnauthorized(c, "account not found or deleted")
@@ -78,7 +80,8 @@ func JWTAuth(secret string, db *gorm.DB) gin.HandlerFunc {
 			return
 		}
 		c.Set(ctxUID, uid)
-		c.Set(ctxRole, row.Role) // 以库内角色为准，角色变更即时生效
+		c.Set(ctxRole, row.Role)        // 以库内角色为准，角色变更即时生效
+		c.Set(ctxSuper, row.IsSuper == 1) // 超管标志同口径：库内即时生效（双轨共用此 SELECT）
 		// org 归属以库内为准（账号调动/迁移即时生效）；库内无归属时才回退签发时值
 		if row.OrgID != nil && *row.OrgID != 0 {
 			c.Set(ctxOrgID, row.OrgID)
@@ -146,6 +149,17 @@ func GetOrgID(c *gin.Context) *int64 {
 		}
 	}
 	return nil
+}
+
+// IsSuperAdmin 平台层超级管理员（子管理员 false；非 platform_admin 恒 false，
+// 语义见 RequireSuperAdmin 的双重校验）
+func IsSuperAdmin(c *gin.Context) bool {
+	v, ok := c.Get(ctxSuper)
+	if !ok {
+		return false
+	}
+	b, ok := v.(bool)
+	return ok && b
 }
 
 func getContextInt64(c *gin.Context, key string) int64 {

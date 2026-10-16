@@ -5,6 +5,7 @@ export interface UserInfo {
   username: string
   display_name: string
   role: 'platform_admin' | 'org_admin' | 'member'
+  is_super?: boolean // 平台层超管标志：true=超级管理员（仅 platform_admin 有意义）
   org_id: number | null
   org_name?: string
   status: number

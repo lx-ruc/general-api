@@ -83,3 +83,10 @@ export const roleNames: Record<string, string> = {
   org_admin: '客户管理员',
   member: '子账号',
 }
+
+// 角色展示名（带平台层超管分层）：platform_admin 按 is_super 区分超级管理员/子管理员。
+// roleNames 本身不动——审计日志 actor 列直接显示后端 role 字符串，历史契约保持
+export function roleLabel(u?: { role?: string; is_super?: boolean } | null): string {
+  if (u?.role === 'platform_admin') return u.is_super ? '超级管理员' : '子管理员'
+  return roleNames[u?.role || ''] || u?.role || ''
+}

@@ -2069,21 +2069,55 @@ func (h *Handler) ReadAllNotifications(c *gin.Context) {
 	httpx.OK(c, gin.H{"message": "已全部标记已读"})
 }
 
-// ListAudit GET /api/platform/audit：操作审计日志
+// ListAudit GET /api/platform/audit：操作审计日志（超级管理员专属，路由挂 RequireSuperAdmin 组）。
+// 默认只看平台层操作（/api/platform 前缀）——超管关注的是平台账号做了什么；
+// scope=all 放开看管理台全部写操作（org/member 层一并可见）
 func (h *Handler) ListAudit(c *gin.Context) {
 	page, size, offset := httpx.PageParams(c)
 	cond, args := "1=1", []any{}
+	if c.Query("scope") != "all" {
+		cond += " AND a.path LIKE ?"
+		args = append(args, "/api/platform/%")
+	}
 	if v := c.Query("path"); v != "" {
-		cond += " AND path LIKE ?"
+		cond += " AND a.path LIKE ?"
 		args = append(args, "%"+v+"%")
 	}
+	if v := httpx.QueryInt64(c, "actor_id", 0); v > 0 {
+		cond += " AND a.actor_id = ?"
+		args = append(args, v)
+	}
+	if v := c.Query("actor"); v != "" { // 操作者：用户名/显示名模糊
+		cond += " AND (u.username LIKE ? OR u.display_name LIKE ?)"
+		args = append(args, "%"+v+"%", "%"+v+"%")
+	}
+	if v := c.Query("method"); v != "" {
+		cond += " AND a.method = ?"
+		args = append(args, strings.ToUpper(v))
+	}
+	if v := httpx.QueryInt64(c, "start", 0); v > 0 {
+		cond += " AND a.created_at >= ?"
+		args = append(args, v)
+	}
+	if v := httpx.QueryInt64(c, "end", 0); v > 0 {
+		cond += " AND a.created_at < ?"
+		args = append(args, v)
+	}
+	// LEFT JOIN：actor_id 可空且无外键（已删/历史账号 JOIN 不上），前端回退显裸 ID
+	join := "FROM audit_logs a LEFT JOIN users u ON u.id = a.actor_id"
 	var total int64
-	_ = h.DB.Raw(fmt.Sprintf("SELECT COUNT(*) FROM audit_logs WHERE %s", cond), args...).Scan(&total).Error
-	var rows []model.AuditLog
-	_ = h.DB.Raw(fmt.Sprintf("SELECT * FROM audit_logs WHERE %s ORDER BY id DESC LIMIT ? OFFSET ?", cond),
+	_ = h.DB.Raw(fmt.Sprintf("SELECT COUNT(*) %s WHERE %s", join, cond), args...).Scan(&total).Error
+	type auditRow struct {
+		model.AuditLog
+		Username    string `json:"username"`
+		DisplayName string `json:"display_name"`
+	}
+	var rows []auditRow
+	_ = h.DB.Raw(fmt.Sprintf(
+		"SELECT a.*, u.username, u.display_name %s WHERE %s ORDER BY a.id DESC LIMIT ? OFFSET ?", join, cond),
 		append(args, size, offset)...).Scan(&rows).Error
 	if rows == nil {
-		rows = []model.AuditLog{}
+		rows = []auditRow{}
 	}
 	httpx.PageResult(c, rows, total, page, size)
 }

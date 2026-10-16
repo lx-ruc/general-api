@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS users (
   alert_since    INTEGER NOT NULL DEFAULT 0,
   alert_balance     INTEGER NOT NULL DEFAULT 0, -- 个人剩余额度预警阈值（点；0=关闭）
   alert_balance_hit INTEGER NOT NULL DEFAULT 0, -- 金额档命中时刻（0=未命中）
+  is_super      INTEGER NOT NULL DEFAULT 0, -- 平台层超管标志（1=超级管理员；仅 role=platform_admin 有意义）
   status         INTEGER NOT NULL DEFAULT 1,
   last_login_at  INTEGER,
   created_at     INTEGER NOT NULL,

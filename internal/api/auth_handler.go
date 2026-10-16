@@ -257,7 +257,7 @@ func (h *AuthHandler) BindEmail(c *gin.Context) {
 func userInfo(db *gorm.DB, u *model.User) gin.H {
 	resp := gin.H{
 		"id": u.ID, "username": u.Username, "display_name": u.DisplayName,
-		"role": u.Role, "org_id": u.OrgID, "status": u.Status,
+		"role": u.Role, "is_super": u.IsSuper == 1, "org_id": u.OrgID, "status": u.Status,
 		"quota_limit": u.QuotaLimit, "quota_used": u.QuotaUsed,
 		"last_login_at": u.LastLoginAt, "email": u.Email,
 	}

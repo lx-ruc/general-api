@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-慧沐引擎（token 中转站）— 自托管的大模型 API 网关与计量计费平台（Go 后端 + Vue3 管理台，前端 embed 进单个二进制）。把厂商 API（DeepSeek / 智谱 GLM / 通义千问等任意 OpenAI 兼容厂商）转换为自己签发的统一 OpenAI 兼容接口，支持三级账号（系统管理员 → 客户管理员 → 子账号）、模型级授权、token 计量计费与双层额度控制。
+慧沐引擎（token 中转站）— 自托管的大模型 API 网关与计量计费平台（Go 后端 + Vue3 管理台，前端 embed 进单个二进制）。把厂商 API（DeepSeek / 智谱 GLM / 通义千问等任意 OpenAI 兼容厂商）转换为自己签发的统一 OpenAI 兼容接口，支持三级账号（系统管理员 → 客户管理员 → 子账号）、模型级授权、token 计量计费与双层额度控制。平台层再分超管/子管：`users.is_super` 标志（不新增角色值，role CHECK 约束不动），子管理员拥有平台全部业务权限，仅「子管理员管理 + 审计查看」（`/api/platform/admins*` 与 `/api/platform/audit`，挂 `RequireSuperAdmin`）为超管专属；管理台全部写操作由 audit 中间件自动留痕到 `audit_logs`。
 
 代码注释、commit message、文档均为中文；commit 格式 `feat: <中文描述>`。
 

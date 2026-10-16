@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '../stores/auth'
-import { fmtTime, roleNames } from '../utils/format'
+import { fmtTime, roleLabel } from '../utils/format'
 import {
   apiChangePassword,
   apiCreateAccessToken,
@@ -35,8 +35,9 @@ interface MenuItem {
 
 const menus = computed<MenuItem[]>(() => {
   switch (auth.user?.role) {
-    case 'platform_admin':
-      return [
+    case 'platform_admin': {
+      // 基础业务菜单（子管理员全量可见）；「管理员管理/审计日志」两页超管专属
+      const items: MenuItem[] = [
         { index: '/platform/dashboard', title: '数据看板', icon: 'Odometer' },
         { index: '/platform/orgs', title: '客户管理', icon: 'OfficeBuilding' },
         { index: '/platform/channels', title: '渠道管理', icon: 'Connection' },
@@ -44,11 +45,18 @@ const menus = computed<MenuItem[]>(() => {
         { index: '/platform/quotas', title: '配额管理', icon: 'Coin' },
         { index: '/platform/bills', title: '账单查询', icon: 'Tickets' },
         { index: '/platform/usage', title: '调用日志', icon: 'Document' },
-        { index: '/platform/audit', title: '审计日志', icon: 'List' },
+      ]
+      if (auth.user.is_super) {
+        items.push({ index: '/platform/admins', title: '管理员管理', icon: 'UserFilled' })
+        items.push({ index: '/platform/audit', title: '审计日志', icon: 'List' })
+      }
+      items.push(
         { index: '/platform/recharges', title: '充值审批', icon: 'Wallet' },
         { index: '/platform/model-grants', title: '模型开通', icon: 'Unlock' },
         { index: '/platform/demo-key', title: '在线体验', icon: 'Promotion' },
-      ]
+      )
+      return items
+    }
     case 'org_admin':
       return [
         { index: '/org/dashboard', title: '客户看板', icon: 'Odometer' },
@@ -307,7 +315,7 @@ async function revokeToken(row: AccessToken) {
             }}</span>
             <span class="user-meta">
               <span class="user-name">{{ auth.user?.display_name || auth.user?.username }}</span>
-              <span class="user-role">{{ auth.user?.org_name || roleNames[auth.user?.role || ''] }}</span>
+              <span class="user-role">{{ auth.user?.org_name || roleLabel(auth.user) }}</span>
             </span>
             <el-icon :size="12" color="#8a9993"><ArrowDown /></el-icon>
           </button>

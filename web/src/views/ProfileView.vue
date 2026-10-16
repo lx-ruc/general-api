@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useAuthStore } from '../stores/auth'
 import { apiSendEmailCode, apiBindEmail } from '../api/auth'
-import { roleNames, fmtTime } from '../utils/format'
+import { roleLabel as roleLabelOf, fmtTime } from '../utils/format'
 import { useCountdown } from '../composables/useCountdown'
 
 // 个人资料（三角色通用）：账号信息 + 邮箱绑定/换绑。
@@ -14,7 +14,7 @@ const auth = useAuthStore()
 onMounted(() => { auth.fetchMe().catch(() => { /* 401 由拦截器跳登录 */ }) })
 
 const user = computed(() => auth.user)
-const roleLabel = computed(() => roleNames[user.value?.role || ''] || user.value?.role || '')
+const roleLabel = computed(() => roleLabelOf(user.value))
 const orgLabel = computed(() =>
   user.value?.role === 'platform_admin' ? '平台' : (user.value?.org_name || '—'))
 const boundEmail = computed(() => user.value?.email || '')

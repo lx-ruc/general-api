@@ -102,6 +102,7 @@ func migrateAll(db *gorm.DB) error {
 		{"channels", "nokey_disabled_at", "INTEGER NOT NULL DEFAULT 0"},
 		{"quota_requests", "kind", "TEXT NOT NULL DEFAULT 'quota'"},
 		{"quota_requests", "model_names", "TEXT NOT NULL DEFAULT ''"},
+		{"users", "is_super", "INTEGER NOT NULL DEFAULT 0"},
 	}
 	for _, a := range alters {
 		if !columnExists(db, a[0], a[1]) {
@@ -123,6 +124,15 @@ func migrateAll(db *gorm.DB) error {
 	if err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email
 		ON users(email) WHERE email != ''`).Error; err != nil {
 		return fmt.Errorf("create idx_users_email: %w", err)
+	}
+	// 存量库首次引入平台层超管分层：尚无超管时把最早的 platform_admin 提升为超管。
+	// 必须可重复执行（-migrate-from-sqlite 搬数据进程在自举前 return，旧源库无此列
+	// 全部落 0，搬完后的下一次正常启动仍靠这里补提升）；提升后 NOT EXISTS 恒假即 no-op。
+	if err := db.Exec(`UPDATE users SET is_super = 1
+		WHERE role = 'platform_admin'
+		  AND NOT EXISTS (SELECT 1 FROM users WHERE is_super = 1)
+		  AND id = (SELECT MIN(id) FROM users WHERE role = 'platform_admin')`).Error; err != nil {
+		return fmt.Errorf("promote super admin: %w", err)
 	}
 	// 文案修正（幂等）：预置模型备注的计价单位「元/百万token」统一为「元/M token」
 	if err := db.Exec(`UPDATE models SET remark = replace(remark, '元/百万token', '元/M token')

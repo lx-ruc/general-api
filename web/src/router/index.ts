@@ -20,7 +20,9 @@ const routes: RouteRecordRaw[] = [
       { path: 'platform/quotas', component: () => import('../views/platform/QuotaManageView.vue'), meta: { roles: ['platform_admin'] } },
       { path: 'platform/bills', component: () => import('../views/platform/BillQueryView.vue'), meta: { roles: ['platform_admin'] } },
       { path: 'platform/usage', component: () => import('../views/platform/UsageView.vue'), meta: { roles: ['platform_admin'] } },
-      { path: 'platform/audit', component: () => import('../views/platform/AuditView.vue'), meta: { roles: ['platform_admin'] } },
+      // 超管专属两页：平台层账号分层（super 标志由守卫校验，后端同款 RequireSuperAdmin 兜底）
+      { path: 'platform/audit', component: () => import('../views/platform/AuditView.vue'), meta: { roles: ['platform_admin'], super: true } },
+      { path: 'platform/admins', component: () => import('../views/platform/AdminListView.vue'), meta: { roles: ['platform_admin'], super: true } },
       { path: 'platform/recharges', component: () => import('../views/platform/RechargeAdminView.vue'), meta: { roles: ['platform_admin'] } },
       { path: 'platform/model-grants', component: () => import('../views/platform/ModelGrantView.vue'), meta: { roles: ['platform_admin'] } },
       { path: 'platform/demo-key', component: () => import('../views/platform/DemoKeyView.vue'), meta: { roles: ['platform_admin'] } },
@@ -90,6 +92,10 @@ router.beforeEach(async (to) => {
   }
   const roles = to.meta.roles as string[] | undefined
   if (roles && auth.user && !roles.includes(auth.user.role)) {
+    return homeOf(auth.user.role)
+  }
+  // 超管专属页（平台层账号管理/操作审计）：子管理员回首页
+  if (to.meta.super && auth.user && !auth.user.is_super) {
     return homeOf(auth.user.role)
   }
   return true

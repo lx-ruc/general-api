@@ -15,6 +15,7 @@ type User struct {
 	DisplayName  string `json:"display_name"`
 	Email        string `json:"email"`
 	Role         string `json:"role"`
+	IsSuper      int    `json:"is_super"` // 平台层超管标志（1=超级管理员；仅 role=platform_admin 有意义）
 	QuotaLimit    *int64 `json:"quota_limit"`  // NULL=不限额（仅 member 有意义）
 	QuotaUsed     int64  `json:"quota_used"`
 	MonthlyQuota  int64  `json:"monthly_quota"` // 单月消费上限（点；0=不限）

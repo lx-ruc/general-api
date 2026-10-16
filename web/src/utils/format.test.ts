@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import dayjs from 'dayjs'
 import {
+  roleLabel,
   yuanToPoints,
   pointsToYuan,
   fmtTokenCompact,
@@ -169,5 +170,20 @@ describe('fmtYuan：消耗点数 → 账单费用（元）', () => {
 
   it('负数（理论不出现，防御性）对称', () => {
     expect(fmtYuan(-2_000_000)).toBe('¥-2.00')
+  })
+})
+
+describe('roleLabel：角色展示名（平台层超管分层）', () => {
+  it('platform_admin 按 is_super 区分超级管理员/子管理员', () => {
+    expect(roleLabel({ role: 'platform_admin', is_super: true })).toBe('超级管理员')
+    expect(roleLabel({ role: 'platform_admin', is_super: false })).toBe('子管理员')
+    expect(roleLabel({ role: 'platform_admin' })).toBe('子管理员') // is_super 缺省按子管理员
+  })
+
+  it('其余角色走 roleNames；空值兜底', () => {
+    expect(roleLabel({ role: 'org_admin' })).toBe('客户管理员')
+    expect(roleLabel({ role: 'member' })).toBe('子账号')
+    expect(roleLabel(null)).toBe('')
+    expect(roleLabel({})).toBe('')
   })
 })

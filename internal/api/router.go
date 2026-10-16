@@ -223,7 +223,6 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		plat.GET("/reports/cost-centers", ph.CostCenterCrossReport)
 		plat.GET("/recharges", ph.ListRecharges)
 		plat.PUT("/recharges/:id", ph.HandleRecharge)
-		plat.GET("/audit", ph.ListAudit)
 		plat.GET("/bank-info", ph.GetBankInfo)
 		plat.PUT("/bank-info", ph.UpdateBankInfo)
 		plat.GET("/notifications", ph.ListNotifications)
@@ -234,6 +233,17 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		plat.PUT("/demo-key", ph.ConfigureDemoKey)
 		plat.POST("/demo-key/rotate", ph.RotateDemoKey)
 		plat.POST("/demo-key/copy", ph.CopyDemoKey)
+
+		// 平台层超管专属：子管理员管理 + 操作审计（叠加在 RequireRole(platform_admin) 之上）。
+		// 子管理员拥有上面全部业务端点权限；写操作由 audit 中间件自动留痕
+		super := plat.Group("", middleware.RequireSuperAdmin())
+		{
+			super.GET("/audit", ph.ListAudit)
+			super.GET("/admins", ph.ListAdmins)
+			super.POST("/admins", ph.CreateAdmin)
+			super.PUT("/admins/:id", ph.UpdateAdmin)
+			super.POST("/admins/:id/reset-password", ph.ResetAdminPassword)
+		}
 	}
 
 	// 客户管理员（org 隔离：handler 内强制 WHERE org_id）
