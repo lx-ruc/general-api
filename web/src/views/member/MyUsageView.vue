@@ -4,7 +4,7 @@ import dayjs from 'dayjs'
 import { apiMyUsage, apiMyStats, apiMyUsageBreakdown } from '../../api/member'
 import StatRow from '../../components/StatRow.vue'
 import LineChart from '../../components/LineChart.vue'
-import { fmtNum, fmtYuan, fmtTime, fmtTokensM } from '../../utils/format'
+import { fmtNum, fmtYuan, fmtTime, fmtTokensM, fmtTokenCompact } from '../../utils/format'
 import { trendOptions } from '../../utils/chart'
 import { usePpy } from '../../composables/usePpy'
 
@@ -105,16 +105,33 @@ function succTone(t: { requests: number; errors: number }): 'green' | 'default' 
   return pct >= 99 ? 'green' : pct >= 95 ? 'default' : 'danger'
 }
 
-// 概览卡：今日 / 当月固定口径（不受筛选区间影响）
+// 提示缓存命中率（上游厂商侧）：命中 tokens / 输入 tokens（分母为 0 显示 —）
+function cacheRate(hit: number, total: number): string {
+  if (!total) return '—'
+  return `${Math.min(100, Math.floor((hit / total) * 1000) / 10)}%`
+}
+
+// 概览卡：今日 / 当月固定口径（不受筛选区间影响）；缓存命中率来自 overview
+// 的 cached_tokens/prompt_tokens（已剔除网关缓存回放行，与平台/客户面板同口径）
 const cards = computed(() => {
-  if (!bd.value) return []
+  if (!bd.value || !stats.value) return []
   const d = bd.value
   return [
     { label: '今日 tokens', value: fmtTokensM(d.today.tokens), tone: 'green' as const },
     { label: '今日请求', value: fmtNum(d.today.requests) },
+    { label: '今日成功率', value: succRate(d.today), tone: succTone(d.today) },
+    {
+      label: '今日缓存命中率',
+      value: cacheRate(stats.value.today.cached_tokens, stats.value.today.prompt_tokens),
+      sub: `命中 ${fmtTokenCompact(stats.value.today.cached_tokens)} / 输入 ${fmtTokenCompact(stats.value.today.prompt_tokens)} token`,
+    },
     { label: '当月 tokens', value: fmtTokensM(d.month.tokens), tone: 'green' as const },
     { label: '当月请求', value: fmtNum(d.month.requests) },
-    { label: '今日成功率', value: succRate(d.today), tone: succTone(d.today) },
+    {
+      label: '累计缓存命中率',
+      value: cacheRate(stats.value.total.cached_tokens, stats.value.total.prompt_tokens),
+      sub: `命中 ${fmtTokenCompact(stats.value.total.cached_tokens)} / 输入 ${fmtTokenCompact(stats.value.total.prompt_tokens)} token`,
+    },
   ]
 })
 
