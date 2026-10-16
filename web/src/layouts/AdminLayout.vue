@@ -104,10 +104,10 @@ function handleLogout() {
   router.push('/login')
 }
 
-// 侧栏菜单徽标：对应模块需要关注的事项数，三角色统一——
-//   平台管理员：充值审批/模型开通的待审批笔数；
-//   客户管理员：申请审批的子账号待审批数 + 模型申请的已提交待平台处理数；
-//   子账号：额度/模型申请的处理中笔数
+// 侧栏菜单徽标：对应模块需要关注的事项数，三角色统一——分两类：
+//   接收方徽标（充值审批/模型开通/申请审批）：pending 待处理数，首次即全部显示；
+//   发出方徽标（模型申请/额度·模型申请）：自己的申请 pending 不算通知，
+//   只有「新到达的审批结果」点亮（见 resultBadges 的首次基线初始化）
 // 30s 与站内通知同节拍轮询；各页面操作后广播 *-changed 事件，这里监听即时重拉，避免徽标留旧值
 const menuBadges = ref<Record<string, number>>({})
 async function refreshBadges() {
@@ -129,12 +129,12 @@ async function refreshBadges() {
       ])
       menuBadges.value = {
         '/org/requests': quotaReqs.total || 0,
-        '/org/model-requests': modelReqs.filter((x) => x.status === 'pending').length,
+        '/org/model-requests': modelReqs.filter((x) => x.status !== 'pending').length,
       }
     } else if (role === 'member') {
       const mine = await apiMyRequests()
       menuBadges.value = {
-        '/member/quota': (mine || []).filter((x) => x.status === 'pending').length,
+        '/member/quota': (mine || []).filter((x) => x.status !== 'pending').length,
       }
     }
   } catch { /* 拉取失败不打扰 */ }
@@ -149,12 +149,16 @@ async function refreshBadges() {
     menuSeen.value = next
     persistSeen()
   }
+  // 发出方徽标首次拉取时基线初始化为当前结果数（历史结果不算未读，只点亮之后新到达的）；
   // 停留在对应页面期间拉到的更新同样视为已读（覆盖刷新页面停在徽标页的场景）
   for (const k of Object.keys(menuBadges.value)) {
+    if (resultBadges.has(k) && menuSeen.value[k] === undefined) { markSeen(k); continue }
     if (route.path === k || route.path.startsWith(k + '/')) markSeen(k)
   }
 }
 const badgeEvents = ['quota-requests-changed', 'recharges-changed', 'model-requests-changed']
+// 发出方徽标集合：这些菜单的计数是「已出结果的申请总数」（单调增），配已读基线得「新结果增量」
+const resultBadges = new Set(['/org/model-requests', '/member/quota'])
 // 点击侧栏标签进入对应页面 → 该菜单当前计数标记已读，徽标即时消失
 watch(() => route.path, (path) => {
   for (const k of Object.keys(menuBadges.value)) {
@@ -164,7 +168,7 @@ watch(() => route.path, (path) => {
 // 已读基线：上次进入该页面时看到的计数，按用户名持久化到 localStorage。
 // 徽标显示「当前计数 − 已读基线」的增量——点击进入页面即视为已读（徽标消失），
 // 之后新到达的事项重新点亮；处理掉事项后基线自动下移，增量不失真
-const seenKey = () => `tg_menu_seen_${auth.user?.username || ''}`
+const seenKey = () => `tg_menu_seen_v2_${auth.user?.username || ''}`
 function loadSeen(): Record<string, number> {
   try { return JSON.parse(localStorage.getItem(seenKey()) || '{}') } catch { return {} }
 }
