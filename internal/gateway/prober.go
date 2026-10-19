@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"log/slog"
@@ -307,7 +308,12 @@ func probeOnce(db *gorm.DB, ch model.Channel, ab model.ChannelAbility, isEmbed b
 	if isEmbed {
 		body = fmt.Sprintf(`{"model":%q,"input":"ping"}`, upModel)
 	} else {
-		body = fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":1,"stream":false}`, upModel)
+		// 流式探测：思考型模型的耗时大头在「思考+完整生成」（非流式要等全部结束
+		// 才有响应，实测 6s+）；stream 模式下首个 SSE 数据块到达即证明渠道通、
+		// Key 有效、模型开始应答——探测语义到此已满足，立刻断开不等生成，
+		// 耗时从「整次生成」降到「排队+首 token」。上游忽略 stream 参数
+		// 回普通 JSON 时自动落回非流式判定，兼容无碍
+		body = fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":1,"stream":true}`, upModel)
 	}
 	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(ch.BaseURL, "/")+probePath(ch.Path, isEmbed), strings.NewReader(body))
 	if err != nil {
@@ -324,6 +330,12 @@ func probeOnce(db *gorm.DB, ch model.Channel, ab model.ChannelAbility, isEmbed b
 		// 网络层失败（超时/拒绝连接/DNS/证书）分类成中文可读描述，附原始错误供排障——
 		// 管理台「测试」按钮直接展示，不再是一段英文 Go 错误
 		return ProbeResult{LatencyMs: latency, Err: DescribeNetErr(derr), KeyDesc: ak.desc}
+	}
+	// 流式探测的响应侧：2xx + SSE 时读到首个数据块即成功断开（不等思考/生成跑完）；
+	// 上游忽略 stream 参数回普通 JSON 时不进此分支，落回原非流式判定
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 && !isEmbed &&
+		strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		return probeStreamFirstChunk(resp, cd, ak.scope, ak.desc, start)
 	}
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	_ = resp.Body.Close()
@@ -351,6 +363,37 @@ func probeOnce(db *gorm.DB, ch model.Channel, ab model.ChannelAbility, isEmbed b
 	}
 	return ProbeResult{Status: resp.StatusCode, LatencyMs: latency, KeyDesc: ak.desc,
 		Err: fmt.Sprintf("HTTP %d: %s", resp.StatusCode, truncateStr(string(data), 300))}
+}
+
+// probeStreamFirstChunk 流式探测响应处理：读到首个 SSE data 块即成功并断开——
+// 首块到达即证明渠道通、Key 有效、模型开始应答（含思考型模型开始输出思考 token）。
+// 首块为 error 事件、或连接断开仍未收到任何数据块，按失败返回由调用方分类处理
+func probeStreamFirstChunk(resp *http.Response, cd coord.Coordinator, scope, keyDesc string, start time.Time) ProbeResult {
+	br := bufio.NewReader(io.LimitReader(resp.Body, 1<<16))
+	for {
+		line, rerr := br.ReadString('\n')
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "data:") {
+			payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+			if payload != "" {
+				_ = resp.Body.Close()
+				if strings.Contains(payload, `"error"`) {
+					return ProbeResult{Status: resp.StatusCode, LatencyMs: time.Since(start).Milliseconds(),
+						KeyDesc: keyDesc, Err: "流式首块为错误事件: " + truncateStr(payload, 200)}
+				}
+				if scope != "" {
+					cd.ClearCooldown(scope)
+				}
+				return ProbeResult{OK: true, Status: resp.StatusCode,
+					LatencyMs: time.Since(start).Milliseconds(), KeyDesc: keyDesc}
+			}
+		}
+		if rerr != nil { // EOF/读错：连接关闭仍未收到数据块（上游异常，非探测语义失败）
+			_ = resp.Body.Close()
+			return ProbeResult{Status: resp.StatusCode, LatencyMs: time.Since(start).Milliseconds(),
+				KeyDesc: keyDesc, Err: "连接关闭前未收到任何流式数据块"}
+		}
+	}
 }
 
 // isEmbeddingModel 按 openai 生态惯例：embedding 系模型名都含 "embedding"

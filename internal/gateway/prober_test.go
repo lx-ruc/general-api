@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -478,6 +479,78 @@ func TestProbeQuotaNotifiesPlatformAdmins(t *testing.T) {
 	}
 	if cnt == 0 {
 		t.Fatal("探测发现配额耗尽应站内通知系统管理员")
+	}
+}
+
+// 流式探测：chat 请求带 stream，读到首个 SSE 数据块即成功断开——不等思考/生成
+// 跑完。上游首块后故意挂住 10 分钟（模拟思考型模型继续生成），若探测等完整流
+// 则必然拖死；首块即返回则毫秒级完成
+func TestProbeStreamFirstChunkSucceeds(t *testing.T) {
+	e := newTestEnv(t)
+	hang := make(chan struct{})
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n")
+		if fl, ok := w.(http.Flusher); ok {
+			fl.Flush()
+		}
+		<-hang // 首块之后挂住：探测不该等到这里
+	}))
+	defer func() { close(hang); up.Close() }()
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, []string{"k1"}, 10)
+
+	done := make(chan ProbeResult, 1)
+	go func() {
+		done <- ProbeChannel(e.h.DB, e.h.Cipher, e.h.Client, e.h.Coord, e.h.KeyCooldown, 1)
+	}()
+	select {
+	case res := <-done:
+		if !res.OK {
+			t.Fatalf("流式探测应首块即成功，got err=%s", res.Err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("流式探测应首块即返回，不应等待完整流（上游已挂住）")
+	}
+}
+
+// 流式 200 但连接断开时一个数据块都没发：按失败处理（非探测语义成功）
+func TestProbeStreamNoChunkFails(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// 不写任何 data 块直接结束：上游异常
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, []string{"k1"}, 10)
+
+	res := ProbeChannel(e.h.DB, e.h.Cipher, e.h.Client, e.h.Coord, e.h.KeyCooldown, 1)
+	if res.OK {
+		t.Fatal("无任何数据块断流不应判成功")
+	}
+	if !strings.Contains(res.Err, "未收到任何流式数据块") {
+		t.Fatalf("应报未收到数据块，got %s", res.Err)
+	}
+}
+
+// 流式首块即 error 事件（部分厂商 200 后在流内报错）：按失败处理
+func TestProbeStreamFirstChunkErrorFails(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "data: {\"error\":{\"message\":\"model not found\"}}\n\n")
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, []string{"k1"}, 10)
+
+	res := ProbeChannel(e.h.DB, e.h.Cipher, e.h.Client, e.h.Coord, e.h.KeyCooldown, 1)
+	if res.OK {
+		t.Fatal("流内 error 事件不应判成功")
+	}
+	if !strings.Contains(res.Err, "错误事件") {
+		t.Fatalf("应报流式错误事件，got %s", res.Err)
 	}
 }
 
