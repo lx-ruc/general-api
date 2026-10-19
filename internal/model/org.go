@@ -19,6 +19,7 @@ type Org struct {
 	AlertSince        int64  `json:"alert_since"`         // 进入当前档位的时间
 	AlertBalance      int64  `json:"alert_balance"`       // 剩余额度预警阈值（点；0=关闭。与百分比档正交）
 	AlertBalanceHit   int64  `json:"alert_balance_hit"`   // 金额档命中时刻（0=未命中；边沿状态机）
+	DiscountPermille  int64  `json:"discount_permille"`   // 客户折扣（千分比售价系数：1000=不打折，600=6折；作用于售卖三价，成本价不打折）
 	CreatedAt         int64  `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt         int64  `gorm:"autoUpdateTime" json:"updated_at"`
 }

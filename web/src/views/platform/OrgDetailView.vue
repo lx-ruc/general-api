@@ -111,6 +111,29 @@ async function saveMonthly() {
 }
 const monthlySaving = ref(false)
 
+// 客户折扣（千分比售价系数：1000=不打折，600=6折）——按「折」录入，作用于该客户
+// 全部模型的最终售价（默认价或客户覆盖价之后），成本核算价不受影响；全局价调整自动联动
+const discount = ref(10)
+function syncDiscount() {
+  discount.value = (org.value?.discount_permille ?? 1000) / 100
+}
+onMounted(syncDiscount)
+watch(() => org.value?.discount_permille, syncDiscount)
+const discountSaving = ref(false)
+async function saveDiscount() {
+  if (discount.value < 0.1 || discount.value > 10) {
+    ElMessage.warning('折扣取值 0.1 ~ 10 折')
+    return
+  }
+  discountSaving.value = true
+  try {
+    await apiUpdateOrg(Number(route.params.id), { discount_permille: Math.round(discount.value * 100) })
+    ElMessage.success(discount.value === 10 ? '已恢复不打折' : `折扣已设置为 ${discount.value} 折`)
+  } finally {
+    discountSaving.value = false
+  }
+}
+
 // 月度账单（平台视角）
 const stMonth = ref(dayjs().format('YYYY-MM'))
 const st = ref<any>(null)
@@ -210,6 +233,16 @@ async function exportStatementCSV() {
             <el-input-number v-model="monthly" :min="0" :precision="2" :step="100" size="small" style="width: 140px" />
             <span class="dim">元</span>
             <el-button size="small" :loading="monthlySaving" @click="saveMonthly">保存</el-button>
+          </div>
+        </div>
+        <div class="pool-alert">
+          <el-tooltip content="客户折扣作用于该客户全部模型的最终售价（千分比，1000=不打折，如 6 折=600）；成本核算价不受影响。设一次全模型自动跟随，调整全局价后折扣自动联动" placement="top">
+            <span class="pool-label">客户折扣<span v-if="discount < 10" class="dim">（{{ discount }} 折）</span></span>
+          </el-tooltip>
+          <div class="pool-alert-input">
+            <el-input-number v-model="discount" :min="0.1" :max="10" :precision="1" :step="0.5" size="small" style="width: 90px" />
+            <span class="dim">折</span>
+            <el-button size="small" :loading="discountSaving" @click="saveDiscount">保存</el-button>
           </div>
         </div>
       </div>

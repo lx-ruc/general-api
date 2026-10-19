@@ -6,7 +6,49 @@ import {
   apiListOrgModelPrices, apiSetOrgModelPrice, apiDeleteOrgModelPrice, apiListOrgs,
   type MModel, type OrgModelPriceRow,
 } from '../../api/platform'
-import { yuan1KToPoints, pointsToYuan1K } from '../../utils/format'
+import { yuan1KToPoints, pointsToYuan1K, yuan1MToPoints, pointsToYuan1M } from '../../utils/format'
+import { usePpy } from '../../composables/usePpy'
+
+const ppy = usePpy()
+
+// ---- 定价录入单位（元/1K ↔ 元/1M，存储口径不变仍是点/百万token，仅录入/回显换算）----
+const unit = ref<'1k' | '1m'>('1k')
+const unitLabel = computed(() => (unit.value === '1k' ? '1K' : '1M'))
+const unitStep = computed(() => (unit.value === '1k' ? 0.001 : 0.1))
+const unitPrecision = computed(() => (unit.value === '1k' ? 6 : 4))
+
+// 点数 → 当前单位显示值（回显）
+function toDisplay(points: number): number {
+  return unit.value === '1k'
+    ? pointsToYuan1K(points, ppy.value)
+    : pointsToYuan1M(points, ppy.value)
+}
+// 当前单位显示值 → 点数（提交）
+function fromDisplay(v: number): number {
+  return unit.value === '1k'
+    ? yuan1KToPoints(v, ppy.value)
+    : yuan1MToPoints(v, ppy.value)
+}
+
+// 切换单位：表单三价与客户价草稿/快照同批 ×1000 或 ÷1000（快照同口径换算，避免浮点误差误判 dirty）
+function onUnitChange() {
+  const f = unit.value === '1k' ? (v: number) => v / 1000 : (v: number) => v * 1000
+  const conv = (v: number) => Number((f(v || 0)).toFixed(10))
+  form.input_price = conv(form.input_price)
+  form.output_price = conv(form.output_price)
+  form.input_cache_hit_price = conv(form.input_cache_hit_price)
+  for (const k of Object.keys(drafts)) {
+    const id = Number(k)
+    drafts[id] = {
+      in: conv(drafts[id].in), out: conv(drafts[id].out), cache: conv(drafts[id].cache),
+    }
+    if (snapshots[id]) {
+      snapshots[id] = {
+        in: conv(snapshots[id].in), out: conv(snapshots[id].out), cache: conv(snapshots[id].cache),
+      }
+    }
+  }
+}
 
 const list = ref<MModel[]>([])
 const loading = ref(false)
@@ -45,9 +87,9 @@ const form = reactive({
 async function openPricing(m: MModel) {
   Object.assign(form, {
     id: m.id, name: m.name, display_name: m.display_name, vendor: m.vendor,
-    // 表单按元/1K 编辑，入库前换算回点（¥1/1K = ¥1000/M；1 元 = 1,000,000 点）
-    input_price: pointsToYuan1K(m.input_price), output_price: pointsToYuan1K(m.output_price),
-    input_cache_hit_price: pointsToYuan1K(m.input_cache_hit_price),
+    // 表单按当前单位（元/1K 或 元/1M）编辑，入库前换算回点（存储口径不变：点/百万token）
+    input_price: toDisplay(m.input_price), output_price: toDisplay(m.output_price),
+    input_cache_hit_price: toDisplay(m.input_cache_hit_price),
     cost_input_price: m.cost_input_price, cost_output_price: m.cost_output_price,
     status: m.status, remark: m.remark,
   })
@@ -58,8 +100,8 @@ async function openPricing(m: MModel) {
 async function submit() {
   await apiUpdateModel(form.id, {
     display_name: form.display_name, vendor: form.vendor,
-    input_price: yuan1KToPoints(form.input_price), output_price: yuan1KToPoints(form.output_price),
-    input_cache_hit_price: yuan1KToPoints(form.input_cache_hit_price),
+    input_price: fromDisplay(form.input_price), output_price: fromDisplay(form.output_price),
+    input_cache_hit_price: fromDisplay(form.input_cache_hit_price),
     cost_input_price: form.cost_input_price, cost_output_price: form.cost_output_price,
     status: form.status, remark: form.remark,
   })
@@ -106,8 +148,8 @@ const candidateOrgs = computed(() => {
   return allOrgs.value.filter((o) => !listed.has(o.id))
 })
 
-// 客户价改为手动保存：编辑先落在 drafts（元/1K），点「保存客户价」才逐客户 upsert。
-// snapshots 是打开弹窗时的原始值（同样元/1K，与 drafts 同口径换算避免浮点误差误判 dirty）
+// 客户价改为手动保存：编辑先落在 drafts（当前单位），点「保存客户价」才逐客户 upsert。
+// snapshots 是打开弹窗时的原始值（与 drafts 同单位同口径换算避免浮点误差误判 dirty）
 type OrgDraft = { in: number; out: number; cache: number }
 const drafts = reactive<Record<number, OrgDraft>>({})
 const snapshots = reactive<Record<number, OrgDraft>>({})
@@ -117,8 +159,8 @@ function seedDrafts() {
   for (const k of Object.keys(snapshots)) delete snapshots[k]
   for (const r of orgPrices.value) {
     const d = {
-      in: pointsToYuan1K(r.input_price), out: pointsToYuan1K(r.output_price),
-      cache: pointsToYuan1K(r.input_cache_hit_price),
+      in: toDisplay(r.input_price), out: toDisplay(r.output_price),
+      cache: toDisplay(r.input_cache_hit_price),
     }
     drafts[r.org_id] = { ...d }
     snapshots[r.org_id] = { ...d }
@@ -145,9 +187,9 @@ async function saveOrgPrices() {
       const d = drafts[r.org_id]
       await apiSetOrgModelPrice(form.name, {
         org_id: r.org_id,
-        input_price: yuan1KToPoints(d.in || 0),
-        output_price: yuan1KToPoints(d.out || 0),
-        input_cache_hit_price: yuan1KToPoints(d.cache || 0),
+        input_price: fromDisplay(d.in || 0),
+        output_price: fromDisplay(d.out || 0),
+        input_cache_hit_price: fromDisplay(d.cache || 0),
       })
       n++
     }
@@ -177,8 +219,8 @@ function addOrgPrice() {
     },
   ]
   const d = {
-    in: pointsToYuan1K(m.input_price), out: pointsToYuan1K(m.output_price),
-    cache: pointsToYuan1K(m.input_cache_hit_price),
+    in: toDisplay(m.input_price), out: toDisplay(m.output_price),
+    cache: toDisplay(m.input_cache_hit_price),
   }
   drafts[orgId] = { ...d }
   snapshots[orgId] = { ...d }
@@ -201,7 +243,7 @@ async function resetOrgPrice(row: OrgModelPriceRow) {
   <el-card shadow="never">
     <template #header>
       <div class="card-header">
-        <span>模型定价（点「定价」设置模型默认价与各客户差异化价格；单价单位为「元 / 1K token」，即每 1K token 收多少元）</span>
+        <span>模型定价（点「定价」设置模型默认价与各客户差异化价格；录入单位可选「元 / 1K token」或「元 / 1M token」，在定价弹窗顶部切换）</span>
         <div class="header-actions">
           <el-checkbox v-model="onlyLive">只看已接通（{{ liveCount }}/{{ list.length }}）</el-checkbox>
         </div>
@@ -257,21 +299,27 @@ async function resetOrgPrice(row: OrgModelPriceRow) {
 
   <el-dialog v-model="pricingVisible" :title="`定价：${form.name}`" width="1000px" top="6vh">
     <el-form label-width="155px">
-      <div class="section-title">模型默认价（未单独定价的客户按此计费，单位：元 / 1K token）</div>
+      <div class="section-title">
+        模型默认价（未单独定价的客户按此计费）
+        <el-radio-group v-model="unit" size="small" @change="onUnitChange" class="unit-switch">
+          <el-radio-button value="1k">元 / 1K token</el-radio-button>
+          <el-radio-button value="1m">元 / 1M token</el-radio-button>
+        </el-radio-group>
+      </div>
       <el-row :gutter="12">
         <el-col :span="12">
-          <el-form-item label="输入单价（元/1K token）">
-            <el-input-number v-model="form.input_price" :min="0" :step="0.001" :precision="6" />
+          <el-form-item :label="`输入单价（元/${unitLabel} token）`">
+            <el-input-number v-model="form.input_price" :min="0" :step="unitStep" :precision="unitPrecision" />
           </el-form-item>
         </el-col>
         <el-col :span="12">
-          <el-form-item label="输出单价（元/1K token）">
-            <el-input-number v-model="form.output_price" :min="0" :step="0.001" :precision="6" />
+          <el-form-item :label="`输出单价（元/${unitLabel} token）`">
+            <el-input-number v-model="form.output_price" :min="0" :step="unitStep" :precision="unitPrecision" />
           </el-form-item>
         </el-col>
       </el-row>
-      <el-form-item label="缓存命中单价（元/1K token）">
-        <el-input-number v-model="form.input_cache_hit_price" :min="0" :step="0.001" :precision="6" />
+      <el-form-item :label="`缓存命中单价（元/${unitLabel} token）`">
+        <el-input-number v-model="form.input_cache_hit_price" :min="0" :step="unitStep" :precision="unitPrecision" />
         <span class="tip">提示缓存命中的输入 tokens 按此价计；0 = 同输入单价</span>
       </el-form-item>
       <el-row :gutter="12">
@@ -311,21 +359,21 @@ async function resetOrgPrice(row: OrgModelPriceRow) {
       <el-table-column label="已授权子账号" width="110" align="center">
         <template #default="{ row: r }">{{ r.member_count }} 人</template>
       </el-table-column>
-      <el-table-column label="输入单价（元/1K token）" width="195" align="center">
+      <el-table-column :label="`输入单价（元/${unitLabel} token）`" width="195" align="center">
         <template #default="{ row: r }">
-          <el-input-number v-model="drafts[r.org_id].in" :min="0" :step="0.001" :precision="6"
+          <el-input-number v-model="drafts[r.org_id].in" :min="0" :step="unitStep" :precision="unitPrecision"
             size="small" style="width: 130px" :controls="false" />
         </template>
       </el-table-column>
-      <el-table-column label="输出单价（元/1K token）" width="195" align="center">
+      <el-table-column :label="`输出单价（元/${unitLabel} token）`" width="195" align="center">
         <template #default="{ row: r }">
-          <el-input-number v-model="drafts[r.org_id].out" :min="0" :step="0.001" :precision="6"
+          <el-input-number v-model="drafts[r.org_id].out" :min="0" :step="unitStep" :precision="unitPrecision"
             size="small" style="width: 130px" :controls="false" />
         </template>
       </el-table-column>
-      <el-table-column label="缓存命中（元/1K token，0=同输入）" width="220" align="center">
+      <el-table-column :label="`缓存命中（元/${unitLabel} token，0=同输入）`" width="220" align="center">
         <template #default="{ row: r }">
-          <el-input-number v-model="drafts[r.org_id].cache" :min="0" :step="0.001" :precision="6"
+          <el-input-number v-model="drafts[r.org_id].cache" :min="0" :step="unitStep" :precision="unitPrecision"
             size="small" style="width: 130px" :controls="false" />
         </template>
       </el-table-column>
@@ -358,6 +406,7 @@ async function resetOrgPrice(row: OrgModelPriceRow) {
 .custom-name { color: #7c3aed; font-weight: 600; }
 /* 弹窗分区 */
 .section-title { font-weight: 600; margin-bottom: 12px; display: flex; align-items: baseline; gap: 8px; }
+.unit-switch { margin-left: auto; }
 .dialog-actions { text-align: right; margin-bottom: 4px; }
 .org-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .def-tag { margin-left: 6px; }

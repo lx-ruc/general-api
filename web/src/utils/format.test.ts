@@ -8,6 +8,8 @@ import {
   fmtPrice1K,
   yuan1KToPoints,
   pointsToYuan1K,
+  yuan1MToPoints,
+  pointsToYuan1M,
   fmtYuan,
   fmtTime,
   fmtDate,
@@ -152,6 +154,26 @@ describe('yuan1KToPoints / pointsToYuan1K：定价表单（元/1K token）↔点
     for (const yuan of [0.002, 0.02, 0.00007, 0.015]) {
       expect(pointsToYuan1K(yuan1KToPoints(yuan))).toBeCloseTo(yuan, 10)
     }
+  })
+})
+
+describe('yuan1MToPoints / pointsToYuan1M：定价表单（元/1M token）↔点换算', () => {
+  it('常见 1M 元价换算为整点（¥2/M）', () => {
+    expect(yuan1MToPoints(2)).toBe(2_000_000)
+    expect(yuan1MToPoints(0.5)).toBe(500_000)
+    expect(yuan1MToPoints(0)).toBe(0)
+  })
+
+  it('小数 1M 元价四舍五入取整点', () => {
+    expect(yuan1MToPoints(2.0000004)).toBe(2_000_000) // 不足 1 点舍去
+    expect(yuan1MToPoints(0.0000004)).toBe(0) // 不足 1 点归零
+  })
+
+  it('点→元/1M 回显，与元/1K 口径互洽（×1000）', () => {
+    expect(pointsToYuan1M(2_000_000)).toBe(2)
+    expect(pointsToYuan1M(500_000)).toBe(0.5)
+    // 同一价两口径互洽：元/1K × 1000 = 元/1M
+    expect(pointsToYuan1K(2_000_000) * 1000).toBeCloseTo(pointsToYuan1M(2_000_000), 10)
   })
 })
 

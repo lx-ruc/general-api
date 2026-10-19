@@ -1112,6 +1112,76 @@ func TestOrgModelPriceOverrideBilling(t *testing.T) {
 	}
 }
 
+// 客户折扣：orgs.discount_permille（千分比售价系数，1000=不打折）作用于最终售价三价
+// （默认价或客户覆盖价之后），成本价 cost_* 与 vendor_cost 不打折；usage_logs 快照
+// 锚定折后价；0 零值视为不打折（Playground 合成身份/历史数据守卫）
+func TestOrgDiscountBilling(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(okBody))
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, nil, 1)
+	// 成本价 1M/2M：vendor_cost = ceil((7*1M+3*2M)/1M) = 13，折扣前后都不变
+	mustExec(t, e.f, `UPDATE models SET cost_input_price = 1000000, cost_output_price = 2000000 WHERE name = 'm1'`)
+
+	type row struct {
+		Cost           int64
+		InputPrice     int64
+		OutputPrice    int64
+		CostInputPrice int64
+		VendorCost     int64
+	}
+	snap := func(id int64) row {
+		var r row
+		if err := e.f.db.Raw(`SELECT cost, input_price, output_price, cost_input_price, vendor_cost
+			FROM usage_logs WHERE id = ?`, id).Scan(&r).Error; err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+
+	// 6 折 × 默认价 2M/8M → 售价 1.2M/4.8M → cost = ceil(7*1.2 + 3*4.8) = ceil(22.8) = 23
+	mustExec(t, e.f, `UPDATE orgs SET discount_permille = 600 WHERE id = 1`)
+	if w := e.post(chatBody("q", "")); w.Code != http.StatusOK {
+		t.Fatalf("折扣请求应 200，得 %d: %s", w.Code, w.Body)
+	}
+	if r := snap(e.lastUsage(t)); r.Cost != 23 || r.InputPrice != 1_200_000 || r.OutputPrice != 4_800_000 {
+		t.Fatalf("6 折后应按 1.2M/4.8M 计费（cost=23），得 %+v", r)
+	} else if r.CostInputPrice != 1_000_000 || r.VendorCost != 13 {
+		t.Fatalf("成本价/厂商成本不得打折（1M/13），得 %+v", r)
+	}
+
+	// 折扣 × 客户覆盖价叠加：覆盖 3M/9M 打 6 折 → 1.8M/5.4M → cost = ceil(28.8) = 29
+	now := time.Now().Unix()
+	mustExec(t, e.f, `INSERT INTO org_model_prices (org_id, model_name, input_price, output_price, created_at, updated_at)
+		VALUES (1, 'm1', 3000000, 9000000, ?, ?)`, now, now)
+	if w := e.post(chatBody("q", "")); w.Code != http.StatusOK {
+		t.Fatalf("折扣×覆盖价请求应 200，得 %d: %s", w.Code, w.Body)
+	}
+	if r := snap(e.lastUsage(t)); r.Cost != 29 || r.InputPrice != 1_800_000 || r.OutputPrice != 5_400_000 {
+		t.Fatalf("覆盖价应再打 6 折（1.8M/5.4M，cost=29），得 %+v", r)
+	}
+
+	// 恢复 1000 → 覆盖价全价 cost = 48
+	mustExec(t, e.f, `UPDATE orgs SET discount_permille = 1000 WHERE id = 1`)
+	if w := e.post(chatBody("q", "")); w.Code != http.StatusOK {
+		t.Fatalf("恢复不打折请求应 200，得 %d: %s", w.Code, w.Body)
+	}
+	if r := snap(e.lastUsage(t)); r.Cost != 48 || r.InputPrice != 3_000_000 {
+		t.Fatalf("1000 应不打折（cost=48），得 %+v", r)
+	}
+
+	// 零值守卫：0 视为不打折（Playground 合成身份/加列前历史数据）
+	mustExec(t, e.f, `UPDATE orgs SET discount_permille = 0 WHERE id = 1`)
+	if w := e.post(chatBody("q", "")); w.Code != http.StatusOK {
+		t.Fatalf("零值折扣请求应 200，得 %d: %s", w.Code, w.Body)
+	}
+	if r := snap(e.lastUsage(t)); r.Cost != 48 {
+		t.Fatalf("折扣 0 应视为不打折（cost=48），得 %+v", r)
+	}
+}
+
 // /v1/models 只宣传当前可路由的模型：已授权但承接渠道 Key 全禁用的模型
 // 不出现在列表（照列表调用只会吃到 503 channel_key_missing），Key 恢复即回归
 func TestListModelsHidesDeadUpstream(t *testing.T) {

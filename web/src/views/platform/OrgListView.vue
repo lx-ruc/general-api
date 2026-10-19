@@ -101,6 +101,15 @@ async function removeOrg(org: Org) {
         </template>
       </el-table-column>
       <el-table-column prop="member_count" label="成员" width="70" align="center" />
+      <el-table-column label="折扣" width="80" align="center"
+        title="客户折扣作用于该客户全部模型的最终售价（千分比，1000=不打折）；在客户详情页设置">
+        <template #default="{ row }">
+          <el-tag v-if="(row.discount_permille ?? 1000) < 1000" type="warning" effect="plain">
+            {{ ((row.discount_permille ?? 1000) / 100).toFixed(row.discount_permille! % 100 === 0 ? 0 : 1) }}折
+          </el-tag>
+          <span v-else class="dim">—</span>
+        </template>
+      </el-table-column>
       <el-table-column label="已用 / 上限（元）" min-width="200">
         <template #default="{ row }">
           <span class="num">{{ fmtYuan(row.quota_used, ppy) }}</span>

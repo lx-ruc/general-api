@@ -200,6 +200,7 @@ func (h *Handler) UpdateOrg(c *gin.Context) {
 		ContactPhone *string `json:"contact_phone"`
 		MonthlyQuota *int64  `json:"monthly_quota"` // 单月消费上限（点）；0=不限
 		Status       *int    `json:"status"`
+		DiscountPermille *int64 `json:"discount_permille"` // 客户折扣（千分比售价系数：1000=不打折，600=6折）
 	}
 	if !httpx.BindJSON(c, &req) {
 		return
@@ -243,6 +244,14 @@ func (h *Handler) UpdateOrg(c *gin.Context) {
 			return
 		}
 		updates["status"] = *req.Status
+	}
+	if req.DiscountPermille != nil {
+		// 1‰~1000‰：0 折（白送）与超 1000（加价）都不允许；1000=恢复不打折
+		if *req.DiscountPermille < 1 || *req.DiscountPermille > 1000 {
+			httpx.Fail(c, http.StatusBadRequest, "discount_permille 取值 1~1000（千分比，1000=不打折）")
+			return
+		}
+		updates["discount_permille"] = *req.DiscountPermille
 	}
 	if err := h.DB.Model(&model.Org{}).Where("id = ?", id).Updates(updates).Error; err != nil {
 		httpx.Fail(c, http.StatusInternalServerError, "更新失败")

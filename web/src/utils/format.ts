@@ -45,6 +45,16 @@ export function pointsToYuan1K(points: number, ppy = 1_000_000): number {
   return points / ppy / 1000
 }
 
+// 元/1M → 存储点数（¥1/1M = ppy 点）；定价表单切「元/百万token」录入时用，入库前换算，四舍五入取整点
+export function yuan1MToPoints(yuan1m: number, ppy = 1_000_000): number {
+  return Math.round(yuan1m * ppy)
+}
+
+// 存储点数 → 元/1M（表单回显用）
+export function pointsToYuan1M(points: number, ppy = 1_000_000): number {
+  return points / ppy
+}
+
 // 消耗点数 → 账单费用（元）：1 元 = ppy 点（默认 100 万点）。
 // ≥1 元保留两位小数；不足 1 元保留至多 4 位（避免小额被抹成 ¥0.00）
 export function fmtYuan(points: number, ppy = 1_000_000): string {

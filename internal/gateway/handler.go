@@ -391,6 +391,17 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			m.InputPrice, m.OutputPrice, m.InputCacheHitPrice = op.InputPrice, op.OutputPrice, op.InputCacheHitPrice
 		}
 	}
+	// 客户折扣（千分比，1000=不打折）：作用于最终售价三价（默认价或客户覆盖价之后），
+	// 成本价 cost_* 不打折（平台成本核算口径）；0 视为不打折（Playground 合成身份/
+	// 历史零值守卫）；整数向下取整对客户有利。usage_logs 价格快照锚定折后价，
+	// 账单/对账自动一致。缓存价 0=同输入价语义保持（计费层自动回落折后输入价）
+	if d := ki.DiscountPermille; d > 0 && d < 1000 {
+		m.InputPrice = m.InputPrice * d / 1000
+		m.OutputPrice = m.OutputPrice * d / 1000
+		if m.InputCacheHitPrice > 0 {
+			m.InputCacheHitPrice = m.InputCacheHitPrice * d / 1000
+		}
+	}
 
 	// 模型授权（子账号白名单）；在线体验（Playground）由管理面按角色预授权，跳过此检查
 	if !ki.Playground {
