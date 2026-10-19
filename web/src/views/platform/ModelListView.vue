@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   apiListModels, apiUpdateModel, apiDeleteModel,
-  apiListOrgModelPrices, apiSetOrgModelPrice, apiDeleteOrgModelPrice, apiListOrgs,
+  apiListOrgModelPrices, apiSetOrgModelPrice, apiDeleteOrgModelPrice, apiListOrgs, apiUpdateOrg,
   type MModel, type OrgModelPriceRow,
 } from '../../api/platform'
 import { yuan1KToPoints, pointsToYuan1K, yuan1MToPoints, pointsToYuan1M } from '../../utils/format'
@@ -122,13 +122,14 @@ async function remove(m: MModel) {
 // ---- 客户差异化定价（弹窗下半区）----
 const orgPrices = ref<OrgModelPriceRow[]>([])
 const orgPricesLoading = ref(false)
-const allOrgs = ref<{ id: number; name: string }[]>([])
+const allOrgs = ref<{ id: number; name: string; discount_permille?: number }[]>([])
 const addOrgId = ref<number | undefined>(undefined)
 
 async function loadOrgsOnce() {
   if (allOrgs.value.length > 0) return
   const resp = await apiListOrgs({ page: 1, page_size: 1000 })
-  allOrgs.value = (resp.list ?? []).map((o: any) => ({ id: o.id, name: o.name }))
+  allOrgs.value = (resp.list ?? []).map((o: any) =>
+    ({ id: o.id, name: o.name, discount_permille: o.discount_permille ?? 1000 }))
 }
 
 async function loadOrgPrices(modelName: string) {
@@ -214,6 +215,7 @@ function addOrgPrice() {
     ...orgPrices.value,
     {
       org_id: orgId, org_name: org?.name ?? `#${orgId}`, member_count: 0, override: false,
+      discount_permille: org?.discount_permille ?? 1000,
       input_price: m.input_price, output_price: m.output_price,
       input_cache_hit_price: m.input_cache_hit_price, remark: '',
     },
@@ -225,6 +227,26 @@ function addOrgPrice() {
   drafts[orgId] = { ...d }
   snapshots[orgId] = { ...d }
   addOrgId.value = undefined
+}
+
+// 客户折扣（org 级全局，作用于该客户全部模型的最终售价——非仅本模型）：
+// 定价表格就地编辑保存，实际计费 = 本表单价 × 折扣（默认价同样打折）
+const discountSaving = ref(0)
+async function saveOrgDiscount(r: OrgModelPriceRow, zhe: number | undefined) {
+  const v = zhe ?? 10
+  if (v < 0.1 || v > 10) {
+    ElMessage.warning('折扣取值 0.1 ~ 10 折')
+    return
+  }
+  discountSaving.value = r.org_id
+  try {
+    await apiUpdateOrg(r.org_id, { discount_permille: Math.round(v * 100) })
+    orgPrices.value = orgPrices.value.map((x) =>
+      x.org_id === r.org_id ? { ...x, discount_permille: Math.round(v * 100) } : x)
+    ElMessage.success(v === 10 ? `已恢复「${r.org_name}」不打折` : `「${r.org_name}」折扣已设为 ${v} 折（全模型生效）`)
+  } finally {
+    discountSaving.value = 0
+  }
 }
 
 async function resetOrgPrice(row: OrgModelPriceRow) {
@@ -297,7 +319,7 @@ async function resetOrgPrice(row: OrgModelPriceRow) {
     </el-table>
   </el-card>
 
-  <el-dialog v-model="pricingVisible" :title="`定价：${form.name}`" width="1000px" top="6vh">
+  <el-dialog v-model="pricingVisible" :title="`定价：${form.name}`" width="1120px" top="6vh">
     <el-form label-width="155px">
       <div class="section-title">
         模型默认价（未单独定价的客户按此计费）
@@ -339,7 +361,7 @@ async function resetOrgPrice(row: OrgModelPriceRow) {
 
     <div class="section-title">
       客户差异化定价
-      <span class="dim">为单个客户设价后按客户价计费，未设价的走上方默认价；修改完点右下角「保存客户价」一次提交</span>
+      <span class="dim">为单个客户设价后按客户价计费，未设价的走上方默认价；「折扣」为该客户的全局折扣，实际计费 = 本表单价 × 折扣（默认价同样打折）；单价修改完点右下角「保存客户价」一次提交</span>
     </div>
     <div class="org-toolbar" v-if="candidateOrgs.length > 0">
       <el-select v-model="addOrgId" placeholder="选择客户" size="small" style="width: 200px">
@@ -358,6 +380,21 @@ async function resetOrgPrice(row: OrgModelPriceRow) {
       </el-table-column>
       <el-table-column label="已授权子账号" width="110" align="center">
         <template #default="{ row: r }">{{ r.member_count }} 人</template>
+      </el-table-column>
+      <el-table-column width="105" align="center">
+        <template #header>
+          <el-tooltip placement="top"
+            content="客户折扣为该客户的全局设置（非仅本模型，全部模型联动）：实际计费 = 本表单价 × 折扣，走默认价同样打折；10 = 不打折。改完即时保存">
+            <span>折扣（折）</span>
+          </el-tooltip>
+        </template>
+        <template #default="{ row: r }">
+          <el-input-number :model-value="(r.discount_permille ?? 1000) / 100"
+            :min="0.1" :max="10" :precision="1" :step="0.5" size="small"
+            style="width: 78px" :controls="false"
+            :disabled="discountSaving === r.org_id"
+            @change="(v: number | undefined) => saveOrgDiscount(r, v)" />
+        </template>
       </el-table-column>
       <el-table-column :label="`输入单价（元/${unitLabel} token）`" width="195" align="center">
         <template #default="{ row: r }">

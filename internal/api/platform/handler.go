@@ -1486,6 +1486,7 @@ type orgPriceRow struct {
 	OrgName            string `json:"org_name"`
 	MemberCount        int64  `json:"member_count"` // 该客户已授权使用此模型的子账号数
 	Override           bool   `json:"override"`
+	DiscountPermille   int64  `json:"discount_permille"` // 客户折扣（千分比，1000=不打折）；org 级全局，定价处就地可改
 	InputPrice         int64  `json:"input_price"`
 	OutputPrice        int64  `json:"output_price"`
 	InputCacheHitPrice int64  `json:"input_cache_hit_price"`
@@ -1507,6 +1508,7 @@ func (h *Handler) ListOrgModelPrices(c *gin.Context) {
 		SELECT o.id AS org_id, o.name AS org_name,
 		       COALESCE(mc.cnt, 0) AS member_count,
 		       CASE WHEN p.id IS NULL THEN 0 ELSE 1 END AS override,
+		       COALESCE(o.discount_permille, 1000) AS discount_permille,
 		       COALESCE(p.input_price, ?) AS input_price,
 		       COALESCE(p.output_price, ?) AS output_price,
 		       COALESCE(p.input_cache_hit_price, ?) AS input_cache_hit_price,

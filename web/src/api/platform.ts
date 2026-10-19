@@ -159,6 +159,8 @@ export interface OrgModelPriceRow {
   /** 已授权使用该模型的子账号数 */
   member_count: number
   override: boolean
+  /** 客户折扣（千分比，1000=不打折）；org 级全局，定价处就地可改，实际计费 = 生效价 × 折扣 */
+  discount_permille: number
   input_price: number
   output_price: number
   input_cache_hit_price: number

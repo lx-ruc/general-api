@@ -181,6 +181,20 @@ func TestListOrgModelPricesIncludesGranted(t *testing.T) {
 	if !strings.Contains(w.Body.String(), "opened-only") {
 		t.Fatalf("已开通未授权客户应出现在定价面板: %s", w.Body.String())
 	}
+	// 折扣随行带出：未设置的客户回默认 1000，设了折扣的回报实际值（定价表格就地可改）
+	if !strings.Contains(w.Body.String(), `"discount_permille":1000`) {
+		t.Fatalf("未设折扣客户应回默认 1000: %s", w.Body.String())
+	}
+	if err := db.Exec(`UPDATE orgs SET discount_permille = 600 WHERE id = 9`).Error; err != nil {
+		t.Fatal(err)
+	}
+	w2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodGet, "/api/platform/model-prices/m1", nil)
+	req2.Header.Set("Authorization", "Bearer "+token)
+	engine.ServeHTTP(w2, req2)
+	if !strings.Contains(w2.Body.String(), `"discount_permille":600`) {
+		t.Fatalf("6 折客户应回报 600: %s", w2.Body.String())
+	}
 }
 
 func seedOrgWithAdmin(t *testing.T, db *gorm.DB, oid int64, name string, now int64) {
