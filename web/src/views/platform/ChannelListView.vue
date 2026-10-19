@@ -214,12 +214,17 @@ async function submit() {
 }
 
 // 创建成功后自动探活一次：粘贴接入时免去手动点「测试」；失败不影响创建结果
+// 探测发的是真实推理请求（max_tokens=1）：thinking 模型仍要先完成思考才吐出 1 个
+// token，秒级耗时反映的是上游生成速度而非网络/网关故障，>3s 附提示防误报障
+function latencyNote(ms: number): string {
+  return ms > 3000 ? '（思考型模型 3~10 秒属正常，耗时为上游生成速度）' : ''
+}
 function autoTestCreated(id: number | undefined): void {
   if (!id) return
   apiTestChannel(id)
     .then((r) => {
       if (r.ok) {
-        ElMessage.success(`渠道自动测试通过，耗时 ${r.latency_ms}ms`)
+        ElMessage.success(`渠道自动测试通过，耗时 ${r.latency_ms}ms${latencyNote(r.latency_ms)}`)
       } else {
         ElMessageBox.alert(r.error || `HTTP ${r.status}`, '自动测试未通过', { type: 'error' })
       }
@@ -234,7 +239,7 @@ async function test(ch: Channel) {
     const r = await apiTestChannel(ch.id)
     if (r.ok) {
       // 探测成功即已清除该 Key 的冷却（后端行为）：顺手刷新 Key 池角标
-      ElMessage.success(`连通正常，耗时 ${r.latency_ms}ms${r.key ? `（${r.key}）` : ''}`)
+      ElMessage.success(`连通正常，耗时 ${r.latency_ms}ms${r.key ? `（${r.key}）` : ''}${latencyNote(r.latency_ms)}`)
       if (keysVisible.value && keysChannel.value?.id === ch.id) {
         keyList.value = await apiListChannelKeys(ch.id)
       }
