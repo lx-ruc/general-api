@@ -330,19 +330,21 @@ async function resetOrgPrice(row: OrgModelPriceRow) {
       </div>
       <el-row :gutter="12">
         <el-col :span="12">
-          <el-form-item :label="`输入单价（元/${unitLabel} token）`">
+          <el-form-item label="输入单价">
             <el-input-number v-model="form.input_price" :min="0" :step="unitStep" :precision="unitPrecision" />
+            <span class="tip">元/{{ unitLabel }} token</span>
           </el-form-item>
         </el-col>
         <el-col :span="12">
-          <el-form-item :label="`输出单价（元/${unitLabel} token）`">
+          <el-form-item label="输出单价">
             <el-input-number v-model="form.output_price" :min="0" :step="unitStep" :precision="unitPrecision" />
+            <span class="tip">元/{{ unitLabel }} token</span>
           </el-form-item>
         </el-col>
       </el-row>
-      <el-form-item :label="`缓存命中单价（元/${unitLabel} token）`">
+      <el-form-item label="缓存命中单价">
         <el-input-number v-model="form.input_cache_hit_price" :min="0" :step="unitStep" :precision="unitPrecision" />
-        <span class="tip">提示缓存命中的输入 tokens 按此价计；0 = 同输入单价</span>
+        <span class="tip">元/{{ unitLabel }} token；提示缓存命中的输入 tokens 按此价计，0 = 同输入单价</span>
       </el-form-item>
       <el-row :gutter="12">
         <el-col :span="12"><el-form-item label="显示名"><el-input v-model="form.display_name" /></el-form-item></el-col>
@@ -378,7 +380,7 @@ async function resetOrgPrice(row: OrgModelPriceRow) {
           <el-tag v-if="isDirty(r.org_id)" size="small" type="warning" effect="plain" class="def-tag">未保存</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="已授权子账号" width="110" align="center">
+      <el-table-column label="已授权子账号" width="120" align="center">
         <template #default="{ row: r }">{{ r.member_count }} 人</template>
       </el-table-column>
       <el-table-column width="105" align="center">
@@ -394,19 +396,30 @@ async function resetOrgPrice(row: OrgModelPriceRow) {
             style="width: 78px" :controls="false" />
         </template>
       </el-table-column>
-      <el-table-column :label="`输入单价（元/${unitLabel} token）`" width="195" align="center">
+      <el-table-column width="160" align="center">
+        <template #header>
+          <div class="col-head">输入单价<span class="col-unit">元/{{ unitLabel }} token</span></div>
+        </template>
         <template #default="{ row: r }">
           <el-input-number v-model="drafts[r.org_id].in" :min="0" :step="unitStep" :precision="unitPrecision"
             size="small" style="width: 130px" :controls="false" />
         </template>
       </el-table-column>
-      <el-table-column :label="`输出单价（元/${unitLabel} token）`" width="195" align="center">
+      <el-table-column width="160" align="center">
+        <template #header>
+          <div class="col-head">输出单价<span class="col-unit">元/{{ unitLabel }} token</span></div>
+        </template>
         <template #default="{ row: r }">
           <el-input-number v-model="drafts[r.org_id].out" :min="0" :step="unitStep" :precision="unitPrecision"
             size="small" style="width: 130px" :controls="false" />
         </template>
       </el-table-column>
-      <el-table-column :label="`缓存命中（元/${unitLabel} token，0=同输入）`" width="220" align="center">
+      <el-table-column width="160" align="center">
+        <template #header>
+          <el-tooltip placement="top" content="提示缓存命中的输入 tokens 按此价计；0 = 同输入单价">
+            <div class="col-head">缓存命中<span class="col-unit">元/{{ unitLabel }} token</span></div>
+          </el-tooltip>
+        </template>
         <template #default="{ row: r }">
           <el-input-number v-model="drafts[r.org_id].cache" :min="0" :step="unitStep" :precision="unitPrecision"
             size="small" style="width: 130px" :controls="false" />
@@ -445,4 +458,7 @@ async function resetOrgPrice(row: OrgModelPriceRow) {
 .dialog-actions { text-align: right; margin-bottom: 4px; }
 .org-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .def-tag { margin-left: 6px; }
+/* 两行式列头：主标题一行 + 单位小字副行——长单位文本完整显示，不在窄列中拦腰折行 */
+.col-head { display: flex; flex-direction: column; line-height: 1.4; font-weight: 600; }
+.col-unit { font-size: 11px; font-weight: 400; color: var(--tg-muted); white-space: nowrap; }
 </style>
