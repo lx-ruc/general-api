@@ -640,7 +640,8 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			}
 			cd := parseRetryAfter(resp.Header.Get("Retry-After"))
 			if cd <= 0 {
-				cd = h.KeyCooldown
+				// 上游无 Retry-After：按其限流窗口（自然分钟）对齐冷却
+				cd = minuteAlignedCooldown(time.Now(), h.KeyCooldown)
 			}
 			if cd > coolApplied {
 				coolApplied = cd
@@ -973,6 +974,21 @@ func clampRetryAfter(secs int) time.Duration {
 		return 0
 	}
 	return time.Duration(secs) * time.Second
+}
+
+// minuteAlignedCooldown 普通限流 429（上游未给 Retry-After）的冷却时长：上游
+// TPM/RPM 为自然分钟窗口，额度在下一分钟边界即恢复——冷却对齐到边界（上游窗口
+// 还剩多久就冷多久，平均比固定值省一半等待），cap（key_cooldown）保留为封顶，
+// 不新增配置；边界瞬间撞限贴边保护至少 1s，避免 0 冷却原地空转
+func minuteAlignedCooldown(now time.Time, cap time.Duration) time.Duration {
+	d := now.Truncate(time.Minute).Add(time.Minute).Sub(now)
+	if d > cap {
+		return cap
+	}
+	if d < time.Second {
+		return time.Second
+	}
+	return d
 }
 
 // quota429Codes 配额类 429 错误码（小写比较）：命中的是持久性账户配额暂停，

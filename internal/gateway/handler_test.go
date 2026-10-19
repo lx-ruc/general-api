@@ -462,6 +462,30 @@ func TestQuota429Code(t *testing.T) {
 	}
 }
 
+// 普通限流 429 的分钟对齐冷却：上游 TPM/RPM 为自然分钟窗口，额度在下一分钟边界
+// 恢复——冷却到边界即止（不固定等满 key_cooldown），key_cooldown 只作封顶
+func TestMinuteAlignedCooldown(t *testing.T) {
+	base := time.Date(2026, 10, 19, 10, 17, 0, 0, time.Local)
+	cases := []struct {
+		name string
+		now  time.Time
+		cap  time.Duration
+		want time.Duration
+	}{
+		{"分钟中段撞限冷到边界", base.Add(30 * time.Second), 60 * time.Second, 30 * time.Second},
+		{"分钟初段撞限冷满近一分钟", base.Add(1 * time.Second), 60 * time.Second, 59 * time.Second},
+		{"边界瞬间撞限贴边至少 1s", base.Add(59*time.Second + 900*time.Millisecond), 60 * time.Second, time.Second},
+		{"恰在边界撞限冷满整分钟（新窗口刚开即满）", base, 60 * time.Second, 60 * time.Second},
+		{"key_cooldown 配得小于边界剩余时封顶", base.Add(10 * time.Second), 30 * time.Second, 30 * time.Second},
+		{"key_cooldown 配得大于边界剩余时取边界", base.Add(10 * time.Second), 120 * time.Second, 50 * time.Second},
+	}
+	for _, c := range cases {
+		if got := minuteAlignedCooldown(c.now, c.cap); got != c.want {
+			t.Errorf("%s: got %v want %v", c.name, got, c.want)
+		}
+	}
+}
+
 // 上游 401 → 池内该 Key 禁用并同渠道切备用 Key：命中坏 Key 的请求本身也应成功（3.6 主 Key 报错自动切备用）
 func Test401AutoDisablesPoolKey(t *testing.T) {
 	e := newTestEnv(t)
