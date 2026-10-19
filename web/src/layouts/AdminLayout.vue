@@ -226,9 +226,9 @@ function openNotifs() {
   refreshNotifs()
 }
 
-// key_quota_cooling 的 JSON 附件：定位渠道与 Key（打码），就地「清除冷却」用
+// 配额/限流冷却通知的 JSON 附件：定位渠道与 Key（打码），就地「清除冷却」用
 function notifPayload(n: NotificationItem): KeyQuotaPayload | null {
-  if (n.type !== 'key_quota_cooling') return null
+  if (n.type !== 'key_quota_cooling' && n.type !== 'key_rate_limited') return null
   try {
     return JSON.parse(n.payload) as KeyQuotaPayload
   } catch {

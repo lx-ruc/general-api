@@ -114,6 +114,59 @@ func TestNotifyKeyQuotaCoolingThrottled(t *testing.T) {
 	}
 }
 
+// 限流冷却通知：扇出给启用管理员、payload 打码、同 Key 节流、与配额类通知互不干扰
+func TestNotifyKeyRateLimited(t *testing.T) {
+	gdb, err := database.Open(config.Database{Driver: "sqlite", Path: t.TempDir() + "/test.db"})
+	if err != nil {
+		t.Fatalf("打开测试库失败: %v", err)
+	}
+	if err := database.Migrate(gdb); err != nil {
+		t.Fatalf("迁移测试库失败: %v", err)
+	}
+	t.Cleanup(func() { sqlDB, _ := gdb.DB(); _ = sqlDB.Close() })
+	now := time.Now().Unix()
+	if err := gdb.Exec(`INSERT INTO users (id, org_id, username, password_hash, role, status, created_at, updated_at)
+		VALUES (1, NULL, 'admin', 'x', 'platform_admin', 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	raw := "sk-abcdefghijklmnopqrstuvwx"
+	if !NotifyKeyRateLimited(gdb, 9, 21, "火山通道", raw, 90*time.Second) {
+		t.Fatal("首次限流冷却应发出通知")
+	}
+	if NotifyKeyRateLimited(gdb, 9, 21, "火山通道", raw, 90*time.Second) {
+		t.Fatal("同一 Key 窗口内第二次应被节流")
+	}
+	// 限流节流不应连坐配额类通知（scope 前缀不同）
+	if !NotifyKeyQuotaCooling(gdb, 9, 21, "火山通道", raw, "SetLimitExceeded") {
+		t.Fatal("同 Key 的配额冷却通知不应被限流节流干扰")
+	}
+	var rows []struct {
+		Type    string
+		Title   string
+		Payload string
+	}
+	if err := gdb.Raw("SELECT type, title, payload FROM notifications ORDER BY id").Scan(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("限流+配额各一条，got %d", len(rows))
+	}
+	if rows[0].Type != NotifyTypeKeyRateLimited || !strings.Contains(rows[0].Title, "火山通道") {
+		t.Fatalf("第一条应为限流冷却通知，got type=%s title=%s", rows[0].Type, rows[0].Title)
+	}
+	var p KeyQuotaPayload
+	if err := json.Unmarshal([]byte(rows[0].Payload), &p); err != nil {
+		t.Fatalf("payload 应为合法 JSON: %v", err)
+	}
+	if p.ChannelID != 9 || p.KeyID != 21 || p.KeyMasked != MaskKey(raw) || strings.Contains(rows[0].Payload, raw) {
+		t.Fatalf("payload 定位信息不符或泄露明文: %+v", p)
+	}
+	if p.ErrCode != "RateLimited" {
+		t.Fatalf("限流通知 err_code 应为 RateLimited，got %q", p.ErrCode)
+	}
+}
+
 func TestMaskKey(t *testing.T) {
 	cases := map[string]string{
 		"":                  "",

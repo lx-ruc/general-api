@@ -19,6 +19,7 @@ import (
 // NotificationType 常量：前端按 type 渲染图标与就地动作
 const (
 	NotifyTypeKeyQuotaCooling = "key_quota_cooling"
+	NotifyTypeKeyRateLimited  = "key_rate_limited" // 上游限流 429（TPM/RPM 撞顶）→ Key 冷却 → 系统管理员
 	NotifyTypeRequestPending  = "request_pending" // 子账号提交额度/模型申请 → 客户管理员
 	NotifyTypeRequestHandled  = "request_handled" // 审批结果 → 子账号
 	NotifyTypeQuotaAlert      = "quota_alert"     // 额度水位/耗尽 → 客户管理员、子账号
@@ -94,8 +95,8 @@ var NotifyThrottle = 30 * time.Minute
 // notifyLast 进程内节流表：scope → 上次发出时间（多实例为 per-node，与限流器口径一致）
 var notifyLast sync.Map
 
-// KeyQuotaPayload key_quota_cooling 通知的 JSON 附件：定位到渠道与 Key，
-// key_masked 为打码形式（前 6 + … + 后 4），绝不放密钥明文/密文
+// KeyQuotaPayload 配额/限流冷却通知（key_quota_cooling / key_rate_limited）共用的 JSON 附件：
+// 定位到渠道与 Key，key_masked 为打码形式（前 6 + … + 后 4），绝不放密钥明文/密文
 type KeyQuotaPayload struct {
 	ChannelID   int64  `json:"channel_id"`
 	KeyID       int64  `json:"key_id"` // 0 = legacy 单 Key 模式（无池行，只能靠探测成功自愈）
@@ -114,6 +115,30 @@ func MaskKey(k string) string {
 		return k[:n] + "…"
 	}
 	return k[:6] + "…" + k[len(k)-4:]
+}
+
+// fanoutAdminNotification 给全部启用的系统管理员各发一条站内通知（配额/限流冷却共用扇出内核）
+func fanoutAdminNotification(db *gorm.DB, typ, title, body, payload string, now time.Time) bool {
+	var adminIDs []int64
+	if err := db.Raw(`SELECT id FROM users WHERE role = 'platform_admin' AND status = 1`).Scan(&adminIDs).Error; err != nil {
+		slog.Warn("站内通知扇出查询失败", "err", err)
+		return false
+	}
+	if len(adminIDs) == 0 {
+		return false
+	}
+	rows := make([]model.Notification, 0, len(adminIDs))
+	for _, uid := range adminIDs {
+		rows = append(rows, model.Notification{
+			UserID: uid, Type: typ, Title: title,
+			Body: body, Payload: payload, CreatedAt: now.Unix(),
+		})
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		slog.Warn("站内通知写入失败", "err", err)
+		return false
+	}
+	return true
 }
 
 // NotifyKeyQuotaCooling 给全部启用的系统管理员各发一条「Key 进入配额冷却」站内通知。
@@ -139,27 +164,45 @@ func NotifyKeyQuotaCooling(db *gorm.DB, channelID, keyID int64, channelName, raw
 		"等不及可在通知详情或渠道 Key 池里点「清除冷却」立即复用。",
 		channelName, MaskKey(rawKey), errCode)
 
-	var adminIDs []int64
-	if err := db.Raw(`SELECT id FROM users WHERE role = 'platform_admin' AND status = 1`).Scan(&adminIDs).Error; err != nil {
-		slog.Warn("站内通知扇出查询失败", "err", err)
-		return false
-	}
-	if len(adminIDs) == 0 {
-		return false
-	}
-	rows := make([]model.Notification, 0, len(adminIDs))
-	for _, uid := range adminIDs {
-		rows = append(rows, model.Notification{
-			UserID: uid, Type: NotifyTypeKeyQuotaCooling,
-			Title: fmt.Sprintf("Key 配额冷却：%s", channelName),
-			Body:  body, Payload: string(payload), CreatedAt: now.Unix(),
-		})
-	}
-	if err := db.Create(&rows).Error; err != nil {
-		slog.Warn("站内通知写入失败", "err", err)
+	if !fanoutAdminNotification(db, NotifyTypeKeyQuotaCooling,
+		fmt.Sprintf("Key 配额冷却：%s", channelName), body, string(payload), now) {
 		return false
 	}
 	slog.Warn("Key 进入配额冷却，已站内通知系统管理员",
-		"channel_id", channelID, "channel", channelName, "key_id", keyID, "code", errCode, "notified", len(rows))
+		"channel_id", channelID, "channel", channelName, "key_id", keyID, "code", errCode)
+	return true
+}
+
+// NotifyKeyRateLimited 给全部启用的系统管理员各发一条「Key 因上游限流进入冷却」站内通知。
+// 与配额冷却的差别：限流是瞬时现象（TPM/RPM 撞顶），冷却到期大概率自愈，偶发属正常削峰
+// 无需处理；持续反复触发才说明厂商侧限额已低于实际用量（应提工单扩额或配降级渠道）。
+// 节流/扇出口径与配额冷却一致（同渠道+Key 在 NotifyThrottle 窗口内只发一次，
+// scope 前缀 rl: 与配额类的 ck: 互不干扰）。调用方在数据面热路径上请用 `go` 异步调用。
+// 返回是否真正发出（节流命中返回 false，不算错误）
+func NotifyKeyRateLimited(db *gorm.DB, channelID, keyID int64, channelName, rawKey string, cooldown time.Duration) bool {
+	scope := fmt.Sprintf("rl:%d:%d", channelID, keyID)
+	now := time.Now()
+	if last, ok := notifyLast.Load(scope); ok {
+		if t, _ := last.(time.Time); now.Sub(t) < NotifyThrottle {
+			return false
+		}
+	}
+	notifyLast.Store(scope, now)
+
+	payload, _ := json.Marshal(KeyQuotaPayload{
+		ChannelID: channelID, KeyID: keyID, ChannelName: channelName,
+		KeyMasked: MaskKey(rawKey), ErrCode: "RateLimited",
+	})
+	body := fmt.Sprintf("渠道「%s」的 Key %s 因上游限流（429，TPM/RPM 撞顶）冷却 %s，到期由真实流量自动再探测。"+
+		"偶发属正常削峰无需处理；若持续触发，说明厂商侧限额已低于实际用量——"+
+		"提工单扩额或为该模型配置降级渠道。",
+		channelName, MaskKey(rawKey), cooldown.Truncate(time.Second))
+
+	if !fanoutAdminNotification(db, NotifyTypeKeyRateLimited,
+		fmt.Sprintf("Key 限流冷却：%s", channelName), body, string(payload), now) {
+		return false
+	}
+	slog.Warn("Key 因上游限流进入冷却，已站内通知系统管理员",
+		"channel_id", channelID, "channel", channelName, "key_id", keyID, "cooldown", cooldown.String())
 	return true
 }

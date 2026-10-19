@@ -635,6 +635,9 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 				coolApplied = cd
 			}
 			h.coolKeys(cands, cand, cd)
+			// 限流冷却知会系统管理员（异步，同款 30 分钟节流）：持续撞限是「厂商限额已低于
+			// 实际用量」的信号，管理员应提额或配降级渠道，而不是等用户报障才发现
+			go service.NotifyKeyRateLimited(h.DB, cand.ChannelID, cand.KeyID, cand.ChannelName, cand.UpstreamKey, cd)
 			lastErr = fmt.Sprintf("upstream %s returned %d (key %d cooling %s)",
 				cand.ChannelName, resp.StatusCode, cand.KeyID, cd)
 			authOnly, quotaOnly, timeoutOnly = false, false, false

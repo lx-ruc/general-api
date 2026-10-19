@@ -226,7 +226,7 @@ export const apiResetAdminPassword = (id: number, new_password: string) =>
   http.post<any, { message: string }>(`/api/platform/admins/${id}/reset-password`, { new_password })
 
 // ---- 站内通知（顶栏铃铛） ----
-// key_quota_cooling 的 payload：定位渠道与 Key（打码），就地「清除冷却」用
+// 配额/限流冷却通知的 payload：定位渠道与 Key（打码），就地「清除冷却」用
 export interface KeyQuotaPayload {
   channel_id: number
   key_id: number      // 0 = legacy 单 Key 模式（无池行，无清除入口）
@@ -237,7 +237,7 @@ export interface KeyQuotaPayload {
 
 export interface NotificationItem {
   id: number
-  type: string        // 'key_quota_cooling'
+  type: string        // 'key_quota_cooling' | 'key_rate_limited'
   title: string
   body: string
   payload: string     // JSON 文本，按 type 解析
