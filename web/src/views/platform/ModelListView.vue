@@ -40,11 +40,11 @@ function onUnitChange() {
   for (const k of Object.keys(drafts)) {
     const id = Number(k)
     drafts[id] = {
-      in: conv(drafts[id].in), out: conv(drafts[id].out), cache: conv(drafts[id].cache),
+      ...drafts[id], in: conv(drafts[id].in), out: conv(drafts[id].out), cache: conv(drafts[id].cache),
     }
     if (snapshots[id]) {
       snapshots[id] = {
-        in: conv(snapshots[id].in), out: conv(snapshots[id].out), cache: conv(snapshots[id].cache),
+        ...snapshots[id], in: conv(snapshots[id].in), out: conv(snapshots[id].out), cache: conv(snapshots[id].cache),
       }
     }
   }
@@ -149,9 +149,10 @@ const candidateOrgs = computed(() => {
   return allOrgs.value.filter((o) => !listed.has(o.id))
 })
 
-// 客户价改为手动保存：编辑先落在 drafts（当前单位），点「保存客户价」才逐客户 upsert。
+// 客户价与折扣均改为手动保存：编辑先落在 drafts（单价=当前单位，折扣=折数），
+// 点「保存客户价」才逐客户提交（价格 upsert + 折扣 apiUpdateOrg）。
 // snapshots 是打开弹窗时的原始值（与 drafts 同单位同口径换算避免浮点误差误判 dirty）
-type OrgDraft = { in: number; out: number; cache: number }
+type OrgDraft = { in: number; out: number; cache: number; zhe: number }
 const drafts = reactive<Record<number, OrgDraft>>({})
 const snapshots = reactive<Record<number, OrgDraft>>({})
 
@@ -162,6 +163,7 @@ function seedDrafts() {
     const d = {
       in: toDisplay(r.input_price), out: toDisplay(r.output_price),
       cache: toDisplay(r.input_cache_hit_price),
+      zhe: (r.discount_permille ?? 1000) / 100,
     }
     drafts[r.org_id] = { ...d }
     snapshots[r.org_id] = { ...d }
@@ -171,30 +173,47 @@ function seedDrafts() {
 function isDirty(orgId: number): boolean {
   const d = drafts[orgId]
   const s = snapshots[orgId]
-  return !!d && !!s && (d.in !== s.in || d.out !== s.out || d.cache !== s.cache)
+  return !!d && !!s && (d.in !== s.in || d.out !== s.out || d.cache !== s.cache || d.zhe !== s.zhe)
 }
 
 const dirtyCount = computed(() => orgPrices.value.filter((r) => isDirty(r.org_id)).length)
 const savingOrgs = ref(false)
 
-// 逐客户 upsert 有改动的行（三价一起写）；input-number 清空是 null，按 0 处理
+// 逐客户提交有改动的行：价格变化则三价一起 upsert，折扣变化则 apiUpdateOrg
+// （org 级全局折扣，非仅本模型）；input-number 清空是 null，单价按 0、折扣按 10（不打折）处理。
+// 折扣越界先整体拒绝（不产生半保存状态）
 async function saveOrgPrices() {
   if (dirtyCount.value === 0) return
+  for (const r of orgPrices.value) {
+    if (!isDirty(r.org_id)) continue
+    const zhe = drafts[r.org_id].zhe ?? 10
+    if (zhe < 0.1 || zhe > 10) {
+      ElMessage.warning(`「${r.org_name}」折扣取值 0.1 ~ 10 折`)
+      return
+    }
+  }
   savingOrgs.value = true
   try {
     let n = 0
     for (const r of orgPrices.value) {
       if (!isDirty(r.org_id)) continue
       const d = drafts[r.org_id]
-      await apiSetOrgModelPrice(form.name, {
-        org_id: r.org_id,
-        input_price: fromDisplay(d.in || 0),
-        output_price: fromDisplay(d.out || 0),
-        input_cache_hit_price: fromDisplay(d.cache || 0),
-      })
+      const s = snapshots[r.org_id]
+      if (d.in !== s.in || d.out !== s.out || d.cache !== s.cache) {
+        await apiSetOrgModelPrice(form.name, {
+          org_id: r.org_id,
+          input_price: fromDisplay(d.in || 0),
+          output_price: fromDisplay(d.out || 0),
+          input_cache_hit_price: fromDisplay(d.cache || 0),
+        })
+      }
+      const zhe = d.zhe ?? 10
+      if (zhe !== s.zhe) {
+        await apiUpdateOrg(r.org_id, { discount_permille: Math.round(zhe * 100) })
+      }
       n++
     }
-    ElMessage.success(`${form.name} 的 ${n} 家客户价已保存`)
+    ElMessage.success(`${form.name} 的 ${n} 家客户价/折扣已保存`)
     orgPrices.value = await apiListOrgModelPrices(form.name)
     seedDrafts()
   } finally {
@@ -223,30 +242,11 @@ function addOrgPrice() {
   const d = {
     in: toDisplay(m.input_price), out: toDisplay(m.output_price),
     cache: toDisplay(m.input_cache_hit_price),
+    zhe: (org?.discount_permille ?? 1000) / 100,
   }
   drafts[orgId] = { ...d }
   snapshots[orgId] = { ...d }
   addOrgId.value = undefined
-}
-
-// 客户折扣（org 级全局，作用于该客户全部模型的最终售价——非仅本模型）：
-// 定价表格就地编辑保存，实际计费 = 本表单价 × 折扣（默认价同样打折）
-const discountSaving = ref(0)
-async function saveOrgDiscount(r: OrgModelPriceRow, zhe: number | undefined) {
-  const v = zhe ?? 10
-  if (v < 0.1 || v > 10) {
-    ElMessage.warning('折扣取值 0.1 ~ 10 折')
-    return
-  }
-  discountSaving.value = r.org_id
-  try {
-    await apiUpdateOrg(r.org_id, { discount_permille: Math.round(v * 100) })
-    orgPrices.value = orgPrices.value.map((x) =>
-      x.org_id === r.org_id ? { ...x, discount_permille: Math.round(v * 100) } : x)
-    ElMessage.success(v === 10 ? `已恢复「${r.org_name}」不打折` : `「${r.org_name}」折扣已设为 ${v} 折（全模型生效）`)
-  } finally {
-    discountSaving.value = 0
-  }
 }
 
 async function resetOrgPrice(row: OrgModelPriceRow) {
@@ -361,7 +361,7 @@ async function resetOrgPrice(row: OrgModelPriceRow) {
 
     <div class="section-title">
       客户差异化定价
-      <span class="dim">为单个客户设价后按客户价计费，未设价的走上方默认价；「折扣」为该客户的全局折扣，实际计费 = 本表单价 × 折扣（默认价同样打折）；单价修改完点右下角「保存客户价」一次提交</span>
+      <span class="dim">为单个客户设价后按客户价计费，未设价的走上方默认价；「折扣」为该客户的全局折扣，实际计费 = 本表单价 × 折扣（默认价同样打折）；单价与折扣修改完点右下角「保存客户价」一次提交</span>
     </div>
     <div class="org-toolbar" v-if="candidateOrgs.length > 0">
       <el-select v-model="addOrgId" placeholder="选择客户" size="small" style="width: 200px">
@@ -384,16 +384,14 @@ async function resetOrgPrice(row: OrgModelPriceRow) {
       <el-table-column width="105" align="center">
         <template #header>
           <el-tooltip placement="top"
-            content="客户折扣为该客户的全局设置（非仅本模型，全部模型联动）：实际计费 = 本表单价 × 折扣，走默认价同样打折；10 = 不打折。改完即时保存">
+            content="客户折扣为该客户的全局设置（非仅本模型，全部模型联动）：实际计费 = 本表单价 × 折扣，走默认价同样打折；10 = 不打折。与单价一起点右下角「保存客户价」提交">
             <span>折扣（折）</span>
           </el-tooltip>
         </template>
         <template #default="{ row: r }">
-          <el-input-number :model-value="(r.discount_permille ?? 1000) / 100"
+          <el-input-number v-model="drafts[r.org_id].zhe"
             :min="0.1" :max="10" :precision="1" :step="0.5" size="small"
-            style="width: 78px" :controls="false"
-            :disabled="discountSaving === r.org_id"
-            @change="(v: number | undefined) => saveOrgDiscount(r, v)" />
+            style="width: 78px" :controls="false" />
         </template>
       </el-table-column>
       <el-table-column :label="`输入单价（元/${unitLabel} token）`" width="195" align="center">
