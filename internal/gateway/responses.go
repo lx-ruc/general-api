@@ -332,6 +332,15 @@ func encodeResponsesResponse(data []byte, fallbackModel string) ([]byte, *Usage,
 	output := []map[string]any{}
 	if len(r.Choices) > 0 {
 		msg := r.Choices[0].Message
+		// 思考型模型的思考正文先于回答输出（Responses 协议的 reasoning item）；
+		// 丢弃会让 Codex 拿不到思考阶段且计费口径缺一块
+		if msg.ReasoningContent != "" {
+			output = append(output, map[string]any{
+				"id": "rs_0", "type": "reasoning", "status": "completed",
+				"summary": []any{},
+				"content": []map[string]any{{"type": "reasoning_text", "text": msg.ReasoningContent}},
+			})
+		}
 		var text string
 		if len(msg.Content) > 0 {
 			_ = json.Unmarshal(msg.Content, &text)
@@ -406,13 +415,14 @@ type respStreamTranslator struct {
 	started bool
 
 	openIdx  int    // 当前打开 output 下标；-1=无
-	openKind string // "message" | "function_call"
+	openKind string // "message" | "function_call" | "reasoning"
 	nextOut  int
 	toolSeen map[int]bool // 上游 tool_calls index → 是否已开过 item（repeat-id 分片判续流用）
 
 	msgID, fcID    string // item id
 	callID, fcName string
 	textBuf        strings.Builder
+	rsBuf          strings.Builder // 思考正文累计（reasoning item）
 	argsBuf        strings.Builder
 
 	output []map[string]any
@@ -466,6 +476,19 @@ func (t *respStreamTranslator) closeItem() error {
 	idx, kind := t.openIdx, t.openKind
 	t.openIdx, t.openKind = -1, ""
 	switch kind {
+	case "reasoning":
+		text := t.rsBuf.String()
+		if err := t.emit("response.reasoning_text.done", map[string]any{
+			"item_id": t.msgID, "output_index": idx, "content_index": 0, "text": text,
+		}); err != nil {
+			return err
+		}
+		item := map[string]any{
+			"id": t.msgID, "type": "reasoning", "status": "completed",
+			"summary": []any{}, "content": []map[string]any{{"type": "reasoning_text", "text": text}},
+		}
+		t.output = append(t.output, item)
+		return t.emit("response.output_item.done", map[string]any{"output_index": idx, "item": item})
 	case "message":
 		text := t.textBuf.String()
 		part := map[string]any{"type": "output_text", "text": text, "annotations": []any{}}
@@ -500,6 +523,32 @@ func (t *respStreamTranslator) closeItem() error {
 		t.output = append(t.output, item)
 		return t.emit("response.output_item.done", map[string]any{"output_index": idx, "item": item})
 	}
+}
+
+// openReasoning 开思考 item：思考型模型（火山 doubao/DeepSeek-R 系/智谱 GLM 等）流式
+// 期间上游逐块推 reasoning_content——若静默丢弃，客户端在思考数十秒里收不到任何事件，
+// Codex 等会判空闲超时主动断连（usage_logs 记 499）。转成 Responses 的 reasoning 事件
+// 增量转发：连接上持续有事件流动，客户端可展示思考过程且不再误判挂死
+func (t *respStreamTranslator) openReasoning() error {
+	if err := t.ensureStart(); err != nil {
+		return err
+	}
+	if t.openKind == "reasoning" {
+		return nil
+	}
+	if err := t.closeItem(); err != nil {
+		return err
+	}
+	t.openIdx, t.openKind, t.nextOut = t.nextOut, "reasoning", t.nextOut+1
+	t.msgID = fmt.Sprintf("rs_%d", t.openIdx)
+	t.rsBuf.Reset()
+	return t.emit("response.output_item.added", map[string]any{
+		"output_index": t.openIdx,
+		"item": map[string]any{
+			"id": t.msgID, "type": "reasoning", "status": "in_progress",
+			"summary": []any{},
+		},
+	})
 }
 
 func (t *respStreamTranslator) openMessage() error {
@@ -563,6 +612,18 @@ func (t *respStreamTranslator) handle(chunk oaiChunk) error {
 	for _, ch := range chunk.Choices {
 		if ch.FinishReason == "length" {
 			t.status = "incomplete"
+		}
+		if ch.Delta.Reasoning != "" {
+			if err := t.openReasoning(); err != nil {
+				return err
+			}
+			t.rsBuf.WriteString(ch.Delta.Reasoning)
+			if err := t.emit("response.reasoning_text.delta", map[string]any{
+				"item_id": t.msgID, "output_index": t.openIdx,
+				"content_index": 0, "delta": ch.Delta.Reasoning,
+			}); err != nil {
+				return err
+			}
 		}
 		if ch.Delta.Content != "" {
 			if err := t.openMessage(); err != nil {

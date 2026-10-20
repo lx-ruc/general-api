@@ -292,6 +292,40 @@ func runRespPipe(t *testing.T, upstream string) (string, *Usage) {
 	return sb.String(), usage
 }
 
+// 思考型模型（火山 doubao/DeepSeek-R 系等）流式：reasoning_content 增量必须翻译成
+// reasoning 事件——静默丢弃会让 Codex 在思考数十秒里收不到事件，空闲超时主动断连（499）
+func TestResponsesPipeSSEReasoning(t *testing.T) {
+	out, _ := runRespPipe(t,
+		"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"先想\"}}]}\n\n"+
+			"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"清楚再答\"}}]}\n\n"+
+			"data: {\"choices\":[{\"delta\":{\"content\":\"答案是 42\"}}]}\n\n"+
+			"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"+
+			"data: [DONE]\n\n")
+	for _, want := range []string{
+		"event: response.output_item.added",
+		`"id":"rs_0","status":"in_progress","summary":[],"type":"reasoning"`,
+		"event: response.reasoning_text.delta",
+		"event: response.reasoning_text.done",
+		"event: response.output_text.delta",
+		`"delta":"答案是 42"`,
+		"event: response.completed",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("思考流翻译缺少 %q:\n%s", want, out)
+		}
+	}
+	// 思考只开一个 item；思考→正文切换时各自恰好一次 done
+	if strings.Count(out, `"id":"rs_0","status":"in_progress","summary":[],"type":"reasoning"`) != 1 {
+		t.Fatalf("连续思考 delta 不应重复开 item:\n%s", out)
+	}
+	if strings.Count(out, "event: response.reasoning_text.done") != 1 {
+		t.Fatalf("reasoning item 应恰好一个 done 事件:\n%s", out)
+	}
+	if strings.Count(out, "event: response.output_item.done") != 2 {
+		t.Fatalf("思考+正文应各有一个 output_item.done:\n%s", out)
+	}
+}
+
 func TestResponsesPipeSSEText(t *testing.T) {
 	out, usage := runRespPipe(t, "data: {\"model\":\"m1\",\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n\n"+
 		"data: {\"model\":\"m1\",\"choices\":[{\"delta\":{\"content\":\"好\"}}]}\n\n"+

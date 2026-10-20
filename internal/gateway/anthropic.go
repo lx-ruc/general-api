@@ -336,7 +336,10 @@ type oaiResponse struct {
 	Choices []struct {
 		Message struct {
 			Content   json.RawMessage `json:"content"` // string | null
-			ToolCalls []oaiToolCall   `json:"tool_calls"`
+			// 思考型模型的思考正文（火山/DeepSeek/智谱等国内厂商统一走此字段）；
+			// Responses 翻译转成 reasoning item，Anthropic 侧无对应语义继续忽略
+			ReasoningContent string         `json:"reasoning_content"`
+			ToolCalls        []oaiToolCall  `json:"tool_calls"`
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
@@ -484,6 +487,7 @@ type oaiChunk struct {
 	Choices []struct {
 		Delta struct {
 			Content   string             `json:"content"`
+			Reasoning string             `json:"reasoning_content"` // 思考增量（Responses 翻译用；Anthropic 翻译忽略）
 			ToolCalls []oaiChunkToolCall `json:"tool_calls"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
