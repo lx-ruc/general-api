@@ -396,7 +396,12 @@ function codexModelEntry(model) {
   };
 }
 
-function writeCodexModelsJson(modelsPath, model) {
+// 写入模型元数据：model 为单个 slug 或数组。默认增量式（清同 slug/本站标记旧条目后追加），
+// opts.replaceAll 为真时整体重建为本站可用列表——model_catalog_json 一经设置 Codex 的可选模型
+// 就完全来自这个文件，历史遗留的它家死条目（如旧版智谱 coding-helper 写入的）会让选择器
+// 列出网关上已不存在的模型，refresh 时需要整体清换。
+function writeCodexModelsJson(modelsPath, model, opts = {}) {
+  const models = Array.isArray(model) ? model : [model];
   let config = { models: [] };
   try {
     if (existsSync(modelsPath)) {
@@ -404,9 +409,13 @@ function writeCodexModelsJson(modelsPath, model) {
       if (parsed && Array.isArray(parsed.models)) config = parsed;
     }
   } catch { /* 损坏文件按空配置重建 */ }
-  // 去掉同 slug 旧条目与历史遗留的本站标记条目（换模型重装时旧条目一并清理）
-  config.models = config.models.filter((m) => m.slug !== model && m.description !== CODEX_MODEL_MARKER);
-  config.models.push(codexModelEntry(model));
+  if (opts.replaceAll) {
+    config.models = models.map(codexModelEntry);
+  } else {
+    // 去掉同 slug 旧条目与历史遗留的本站标记条目（换模型重装时旧条目一并清理）
+    config.models = config.models.filter((m) => !models.includes(m.slug) && m.description !== CODEX_MODEL_MARKER);
+    config.models.push(...models.map(codexModelEntry));
+  }
   writeAtomic(modelsPath, JSON.stringify(config, null, 2) + '\n');
 }
 
@@ -428,6 +437,9 @@ function removeCodexModelsJson(modelsPath) {
 function agentDefs(ctx) {
   const home = ctx.home;
   const { base, key, model } = ctx;
+  // ctx.models：网关可用全列表（可选）。有它时 Codex catalog 全量重建为可用列表，
+  // 选择器只列真可用的模型；没有时退回单条目（密钥校验失败等场景）
+  const models = ctx.models && ctx.models.length > 0 ? ctx.models : [model];
   const chatBase = `${base}/v1`;
   return {
     'claude-code': {
@@ -534,7 +546,8 @@ function agentDefs(ctx) {
         const p = join(home, '.codex', 'config.toml');
         const text = existsSync(p) ? readFileSync(p, 'utf-8') : '';
         writeAtomic(p, installCodexToml(text, { base, key, model }));
-        writeCodexModelsJson(join(home, '.codex', 'models.json'), model); // 桌面端 Codex 识别模型用
+        // catalog 全量重建（有可用列表时）：Codex 选择器只列真可用的模型，清掉历史死条目
+        writeCodexModelsJson(join(home, '.codex', 'models.json'), models, { replaceAll: !!ctx.models });
       },
       uninstall() {
         const p = join(home, '.codex', 'config.toml');
@@ -703,18 +716,19 @@ function resolveBase(flags) {
   return base;
 }
 
+// 返回 { model, models }：model 为选中的模型，models 为拉到的可用全列表（供 catalog 全量重建）
 async function resolveModel(flags, base, key) {
-  if (flags.model) return flags.model;
+  if (flags.model) return { model: flags.model, models: [flags.model] };
   let models = [];
   try {
     models = await fetchModels(base, key);
   } catch (e) {
     warn(`${e.message}，模型列表不可用`);
   }
-  if (models.length === 0) return askOne('模型名（如 deepseek-v4-flash）: ');
-  if (flags.yes) return models[0]; // 免交互：默认取第一个
+  if (models.length === 0) return { model: await askOne('模型名（如 deepseek-v4-flash）: '), models: [] };
+  if (flags.yes) return { model: models[0], models }; // 免交互：默认取第一个
   const pick = await keySelect({ title: '选择默认模型：', items: models.map((m) => ({ label: m })) });
-  return pick === null ? null : models[pick];
+  return pick === null ? { model: null, models } : { model: models[pick], models };
 }
 
 // refresh：把已接入 agent 的模型名同步为网关当前可用模型。
@@ -750,13 +764,16 @@ async function refreshCodex(flags, baseArg) {
     return; // 网关不可达时不阻塞 codex 启动
   }
   if (models.length === 0) { warn('该密钥当前无可用模型'); return; }
+  const modelsPath = join(homedir(), '.codex', 'models.json');
+  // catalog 整体重建为网关可用列表：选择器只列真可用的模型，历史死条目一并清掉
   const current = codexHeadModel(text);
   let next;
   if (flags.model) {
     if (!models.includes(flags.model)) die(`模型 ${flags.model} 不在可用列表：${models.join(' / ')}`);
     next = flags.model;
   } else if (current && models.includes(current)) {
-    if (!flags.quiet) ok(`✓ 模型 ${current} 可用，无需更新（共 ${models.length} 个）`);
+    writeCodexModelsJson(modelsPath, models, { replaceAll: true });
+    if (!flags.quiet) ok(`✓ 模型 ${current} 可用，无需更新（网关可用 ${models.length} 个）`);
     return;
   } else if (flags.yes || flags.quiet || !process.stdin.isTTY) {
     next = models[0];
@@ -766,16 +783,16 @@ async function refreshCodex(flags, baseArg) {
     next = models[pick];
   }
   writeAtomic(p, rewriteCodexHeadModel(text, next));
-  writeCodexModelsJson(join(homedir(), '.codex', 'models.json'), next); // 桌面端 Codex 识别模型用
+  writeCodexModelsJson(modelsPath, models, { replaceAll: true });
   ok(`✓ Codex 模型已更新${current && current !== next ? `：${current} → ${next}` : `：${next}`}（网关可用 ${models.length} 个）`);
 }
 
 async function cmdInstall(flags, agents, base) {
   const key = flags.key || process.env.HUIMU_API_KEY;
   if (!key || !key.startsWith('sk-')) die('缺少有效密钥：请用 --key sk-... 指定（或设置 HUIMU_API_KEY 环境变量）');
-  const model = await resolveModel(flags, base, key);
+  const { model, models } = await resolveModel(flags, base, key);
   if (!model) { warn('未选择模型，已取消。'); return; }
-  const defs = agentDefs({ home: homedir(), base, key, model });
+  const defs = agentDefs({ home: homedir(), base, key, model, models });
   log('');
   for (const id of agents) {
     const d = defs[id];
@@ -878,7 +895,7 @@ async function wizard(flags, base) {
         if (!model) { warn('未输入模型，返回。'); await sleep(800); continue; }
       }
     }
-    const adefs = agentDefs({ home: homedir(), base, key, model });
+    const adefs = agentDefs({ home: homedir(), base, key, model, models: models || undefined });
     log('');
     let hadFail = false;
     for (const i of picks) {
@@ -994,6 +1011,22 @@ function selftest() {
   expect('refresh 未接入时 provider 信息为空', codexProviderInfo('') === null);
   const rt3 = rewriteCodexHeadModel('model_reasoning_effort = "max"\nmodel = "old"\n', 'm-9');
   expect('refresh 相邻顶层键不误伤', rt3 === 'model_reasoning_effort = "max"\nmodel = "m-9"\n');
+
+  // catalog 全量重建：replaceAll 清他人条目与旧标记条目、列表全量写入
+  writeFileSync(join(home, '.codex', 'models.json'),
+    JSON.stringify({ models: [
+      { slug: 'foreign', display_name: 'Foreign', description: 'user own' },
+      { slug: 'stale', description: 'Huimu Engine model' },
+    ] }));
+  writeCodexModelsJson(join(home, '.codex', 'models.json'), ['m-a', 'm-b'], { replaceAll: true });
+  const rj1 = readJSON(join(home, '.codex', 'models.json'));
+  expect('catalog 全量重建（清他人与旧条目）', rj1.models.length === 2 && rj1.models[0].slug === 'm-a' && rj1.models[1].slug === 'm-b'
+    && rj1.models.every((m) => m.description === 'Huimu Engine model'));
+  const dAll = agentDefs({ home, base: ctx.base, key: ctx.key, model: 'm-a', models: ['m-a', 'm-b'] });
+  dAll['codex'].install();
+  const rj2 = readJSON(join(home, '.codex', 'models.json'));
+  expect('install 带 models 时 catalog 全量重建', rj2.models.length === 2 && rj2.models.some((m) => m.slug === 'm-b'));
+  expect('install 顶层 model 仍为选中值', readFileSync(join(home, '.codex', 'config.toml'), 'utf-8').includes('model = "m-a"'));
   // models.json 只剩本站条目时，卸载删除整个文件
   unlinkSync(join(home, '.codex', 'models.json'));
   defs['codex'].install();
