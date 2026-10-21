@@ -35,6 +35,7 @@ function parseArgs(argv) {
     else if (a === '--key') flags.key = argv[++i];
     else if (a === '--model') flags.model = argv[++i];
     else if (a === '--yes') flags.yes = true;
+    else if (a === '--quiet') flags.quiet = true;
     else if (a.startsWith('-')) { /* 忽略未知 flag */ }
     else flags._.push(a);
   }
@@ -288,6 +289,40 @@ function removeTopLevelTomlKeys(text, keys) {
   return out.join('\n');
 }
 
+// ---------------- Codex refresh：模型名同步的定位/改写（纯函数，selftest 覆盖） ----------------
+
+// 顶层 model 键在第一个表头之前；安装路径写的顶层键即当前生效模型
+function codexHeadModel(text) {
+  const head = text.split(/\n\s*\[/)[0];
+  const m = head.match(/^\s*model\s*=\s*"([^"]+)"/m);
+  return m ? m[1] : null;
+}
+
+// 从 [model_providers.huimu] 表提取接入信息（token + 去 /v1 的根地址）
+function codexProviderInfo(text) {
+  const start = text.search(/^\[model_providers\.huimu\]\s*$/m);
+  if (start < 0) return null;
+  const next = text.indexOf('\n[', start + 1); // 下一表头（-1 = 到文件尾）
+  const seg = text.slice(start, next < 0 ? text.length : next);
+  const tok = seg.match(/^\s*experimental_bearer_token\s*=\s*"([^"]+)"/m);
+  const url = seg.match(/^\s*base_url\s*=\s*"([^"]+)"/m);
+  return {
+    token: tok ? tok[1] : null,
+    baseUrl: url ? url[1].replace(/\/+$/, '').replace(/\/v1$/, '') : null,
+  };
+}
+
+// 只替换顶层 model 行（无则在文件头插入），其余内容原样保留
+function rewriteCodexHeadModel(text, model) {
+  const line = `model = "${model}"`;
+  const idx = text.search(/^\s*model\s*=/m);
+  const headEnd = text.search(/\n\s*\[/);
+  if (idx >= 0 && (headEnd < 0 || idx < headEnd)) {
+    return text.replace(/^[ \t]*model[ \t]*=[ \t]*"[^"]*"/m, line);
+  }
+  return line + '\n' + text;
+}
+
 function installCodexToml(text, { base, key, model }) {
   let t = removeTomlTable(text, `model_providers.${PROVIDER}`);
   t = removeTopLevelTomlKeys(t, ['model_provider', 'model', 'model_reasoning_effort', 'model_catalog_json']);
@@ -511,10 +546,8 @@ function agentDefs(ctx) {
         if (!existsSync(p)) return '未配置';
         const t = readFileSync(p, 'utf-8');
         if (!t.includes(`[model_providers.${PROVIDER}]`)) return '未配置';
-        // 顶层 model 键在第一个表头之前；安装路径写的顶层键即当前生效模型
-        const head = t.split(/\n\s*\[/)[0];
-        const m = head.match(/^\s*model\s*=\s*"([^"]+)"/m);
-        return m ? `已接入（模型 ${m[1]}）` : '已接入';
+        const m = codexHeadModel(t);
+        return m ? `已接入（模型 ${m}）` : '已接入';
       },
       installed() {
         const p = join(home, '.codex', 'config.toml');
@@ -682,6 +715,59 @@ async function resolveModel(flags, base, key) {
   if (flags.yes) return models[0]; // 免交互：默认取第一个
   const pick = await keySelect({ title: '选择默认模型：', items: models.map((m) => ({ label: m })) });
   return pick === null ? null : models[pick];
+}
+
+// refresh：把已接入 agent 的模型名同步为网关当前可用模型。
+// 场景：网关模型换代后 config 里的旧模型名 403/404，客户端配置停在安装时刻。
+// 用法：helper.mjs refresh [codex] [--model x] [--yes] [--quiet]，
+// 常配 shell 别名在启动前自动跑（--yes 自动取第一个可用，--quiet 已最新时静默）。
+async function cmdRefresh(flags, baseArg) {
+  const agents = flags._.filter((a) => AGENT_IDS.includes(a));
+  const bad = flags._.filter((a) => !AGENT_IDS.includes(a));
+  if (bad.length) warn(`忽略不支持的 agent：${bad.join(', ')}（支持：codex）`);
+  const targets = agents.length > 0 ? agents : ['codex'];
+  for (const id of targets) {
+    if (id !== 'codex') { warn(`${id} 暂不支持自动刷新模型，请重跑 install 重新选择`); continue; }
+    await refreshCodex(flags, baseArg);
+  }
+}
+
+async function refreshCodex(flags, baseArg) {
+  const p = join(homedir(), '.codex', 'config.toml');
+  if (!existsSync(p)) { warn('未找到 ~/.codex/config.toml（尚未接入 Codex）'); return; }
+  const text = readFileSync(p, 'utf-8');
+  const info = codexProviderInfo(text);
+  if (!info) { warn('Codex 未接入本站（config.toml 无 huimu provider）'); return; }
+  const key = flags.key || info.token;
+  if (!key) { warn('config.toml 中无密钥，请用 --key sk-... 指定'); return; }
+  // 地址优先级：显式 --base > 安装时写进 config 的地址（与 token 配套）> 入口注入地址
+  const base = flags.base || info.baseUrl || baseArg;
+  let models;
+  try {
+    models = await fetchModels(base, key);
+  } catch (e) {
+    warn(`模型列表拉取失败：${e.message}（保持现状）`);
+    return; // 网关不可达时不阻塞 codex 启动
+  }
+  if (models.length === 0) { warn('该密钥当前无可用模型'); return; }
+  const current = codexHeadModel(text);
+  let next;
+  if (flags.model) {
+    if (!models.includes(flags.model)) die(`模型 ${flags.model} 不在可用列表：${models.join(' / ')}`);
+    next = flags.model;
+  } else if (current && models.includes(current)) {
+    if (!flags.quiet) ok(`✓ 模型 ${current} 可用，无需更新（共 ${models.length} 个）`);
+    return;
+  } else if (flags.yes || flags.quiet || !process.stdin.isTTY) {
+    next = models[0];
+  } else {
+    const pick = await keySelect({ title: `当前模型 ${current || '（未设置）'} 已不可用，选择替代：`, items: models.map((m) => ({ label: m })) });
+    if (pick === null) { warn('未选择，保持现状。'); return; }
+    next = models[pick];
+  }
+  writeAtomic(p, rewriteCodexHeadModel(text, next));
+  writeCodexModelsJson(join(homedir(), '.codex', 'models.json'), next); // 桌面端 Codex 识别模型用
+  ok(`✓ Codex 模型已更新${current && current !== next ? `：${current} → ${next}` : `：${next}`}（网关可用 ${models.length} 个）`);
 }
 
 async function cmdInstall(flags, agents, base) {
@@ -891,6 +977,23 @@ function selftest() {
   writeFileSync(join(home, '.codex', 'config.toml'), 'model = "keep-me"\n');
   defs['codex'].uninstall();
   expect('codex 用户 model 保留', readFileSync(join(home, '.codex', 'config.toml'), 'utf-8').includes('keep-me'));
+
+  // refresh：provider 信息提取、顶层 model 定位与改写（纯函数）
+  const rt0 = 'model_provider = "huimu"\nmodel = "m-alpha"\nmodel_reasoning_effort = "max"\n\n'
+    + '[model_providers.huimu]\nname = "huimu"\nbase_url = "http://gw.test:8080/v1"\n'
+    + 'experimental_bearer_token = "sk-test-0001"\nwire_api = "responses"\n\n'
+    + '[projects."/x"]\nmodel = "in-table"\ntrust_level = "trusted"\n';
+  const ri0 = codexProviderInfo(rt0);
+  expect('refresh 提取 provider 信息', ri0 && ri0.token === 'sk-test-0001' && ri0.baseUrl === 'http://gw.test:8080');
+  expect('refresh 顶层 model 定位（表内同名键不干扰）', codexHeadModel(rt0) === 'm-alpha');
+  const rt1 = rewriteCodexHeadModel(rt0, 'm-beta');
+  expect('refresh 只改顶层 model', rt1.includes('model = "m-beta"') && !rt1.includes('"m-alpha"')
+    && rt1.includes('[model_providers.huimu]') && rt1.includes('model = "in-table"'));
+  const rt2 = rewriteCodexHeadModel('# 用户注释\nuser_key = 1\n\n[t]\nmodel = "in-t"\n', 'm-new');
+  expect('refresh 无顶层 model 时前置插入', rt2.startsWith('model = "m-new"\n') && rt2.includes('# 用户注释'));
+  expect('refresh 未接入时 provider 信息为空', codexProviderInfo('') === null);
+  const rt3 = rewriteCodexHeadModel('model_reasoning_effort = "max"\nmodel = "old"\n', 'm-9');
+  expect('refresh 相邻顶层键不误伤', rt3 === 'model_reasoning_effort = "max"\nmodel = "m-9"\n');
   // models.json 只剩本站条目时，卸载删除整个文件
   unlinkSync(join(home, '.codex', 'models.json'));
   defs['codex'].install();
@@ -971,6 +1074,8 @@ async function main() {
   try {
     if (command === 'status') return cmdStatus(base);
 
+    if (command === 'refresh') return cmdRefresh(flags, base);
+
     if (command === 'install') {
       const agents = flags._.filter((a) => AGENT_IDS.includes(a));
       if (agents.length === 0) die(`请指定要接入的 agent：${AGENT_IDS.join(' / ')}（或多个空格分隔）`);
@@ -984,7 +1089,7 @@ async function main() {
       if (agents.length === 0) die(`请指定要卸载的 agent：${AGENT_IDS.join(' / ')}，或 uninstall all`);
       return cmdUninstall(agents);
     }
-    if (command && command !== 'wizard') die(`未知命令：${command}\n用法：helper.mjs [install|uninstall|status|selftest] [agent...] [--base --key --model --yes]`);
+    if (command && command !== 'wizard') die(`未知命令：${command}\n用法：helper.mjs [install|uninstall|refresh|status|selftest] [agent...] [--base --key --model --yes --quiet]`);
     return await wizard(flags, base);
   } finally {
     askClose();

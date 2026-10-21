@@ -4,6 +4,8 @@
 #   sh -c "$(curl -fsSL __HUIMU_BASE__/agent-helper)"
 # 带参数（非交互安装）：
 #   sh -c "$(curl -fsSL __HUIMU_BASE__/agent-helper)" install claude-code --model <模型名> --key sk-...
+# 同步网关最新可用模型（模型下线后自动换，可配 shell 别名在启动前跑）：
+#   node ~/.huimu/helper.mjs refresh codex --yes --quiet
 set -e
 
 BASE='__HUIMU_BASE__'
@@ -26,7 +28,7 @@ fi
 
 # sh -c "脚本" 首参数会落到 $0（不进 "$@"），这里把被吞掉的子命令找回来
 case "$0" in
-  install|uninstall|status|selftest|wizard) set -- "$0" "$@" ;;
+  install|uninstall|status|selftest|wizard|refresh) set -- "$0" "$@" ;;
 esac
 
 exec node "$DIR/helper.mjs" --base "$BASE" "$@"
