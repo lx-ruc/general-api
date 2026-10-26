@@ -21,7 +21,6 @@ CREATE TABLE IF NOT EXISTS orgs (
   alert_since         INTEGER NOT NULL DEFAULT 0,  -- 进入当前档位的时间
   alert_balance       INTEGER NOT NULL DEFAULT 0,  -- 剩余额度预警阈值（点；0=关闭。与百分比档正交：任一命中即告警）
   alert_balance_hit   INTEGER NOT NULL DEFAULT 0,  -- 金额档命中时刻（0=未命中；边沿状态机，拨备回落惰性复位）
-  discount_permille   INTEGER NOT NULL DEFAULT 1000, -- 客户折扣（千分比售价系数：1000=不打折，600=6折；作用于售卖三价，成本价 cost_* 不打折）
   created_at          INTEGER NOT NULL,
   updated_at          INTEGER NOT NULL
 );

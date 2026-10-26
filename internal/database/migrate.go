@@ -103,12 +103,22 @@ func migrateAll(db *gorm.DB) error {
 		{"quota_requests", "kind", "TEXT NOT NULL DEFAULT 'quota'"},
 		{"quota_requests", "model_names", "TEXT NOT NULL DEFAULT ''"},
 		{"users", "is_super", "INTEGER NOT NULL DEFAULT 0"},
-		{"orgs", "discount_permille", "INTEGER NOT NULL DEFAULT 1000"},
 	}
 	for _, a := range alters {
 		if !columnExists(db, a[0], a[1]) {
 			if err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", a[0], a[1], a[2])).Error; err != nil {
 				return fmt.Errorf("alter %s.%s: %w", a[0], a[1], err)
+			}
+		}
+	}
+	// 已下线功能的存量列幂等删除（打折功能 orgs.discount_permille 已整体移除）
+	drops := [][2]string{
+		{"orgs", "discount_permille"},
+	}
+	for _, d := range drops {
+		if columnExists(db, d[0], d[1]) {
+			if err := db.Exec(fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", d[0], d[1])).Error; err != nil {
+				return fmt.Errorf("drop %s.%s: %w", d[0], d[1], err)
 			}
 		}
 	}

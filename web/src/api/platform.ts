@@ -13,7 +13,6 @@ export interface Org {
   monthly_cost: number    // 当前账期累计（monthly_period 为当前月时有效）
   monthly_period: string
   status: number          // 1启用 0停用 2欠费停服（自动）
-  discount_permille?: number // 客户折扣（千分比售价系数：1000/缺省=不打折，600=6折；详情页设置）
   created_at: number
   member_count?: number
 }
@@ -159,8 +158,6 @@ export interface OrgModelPriceRow {
   /** 已授权使用该模型的子账号数 */
   member_count: number
   override: boolean
-  /** 客户折扣（千分比，1000=不打折）；org 级全局，定价处就地可改，实际计费 = 生效价 × 折扣 */
-  discount_permille: number
   input_price: number
   output_price: number
   input_cache_hit_price: number

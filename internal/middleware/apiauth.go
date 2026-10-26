@@ -28,7 +28,6 @@ type KeyInfo struct {
 	UserUsed     int64  `json:"user_used"`
 	OrgLimit     int64  `json:"org_limit"`
 	OrgUsed      int64  `json:"org_used"`
-	DiscountPermille int64 `json:"discount_permille"` // 客户折扣（千分比售价系数：1000=不打折；计费时作用于最终售价三价，成本价不打折）
 
 	// Playground 管理台「在线体验」注入的合成身份标记：模型授权已由管理面按角色校验
 	// （见 api/playground），此处跳过子账号白名单检查；系统管理员（OrgID=0）无额度语义，
@@ -60,8 +59,7 @@ func APIKeyAuth(db *gorm.DB) gin.HandlerFunc {
 			       u.id AS user_id, u.username, u.role AS user_role, u.status AS user_status,
 			       u.quota_limit AS user_limit, u.quota_used AS user_used,
 			       o.id AS org_id, o.name AS org_name, o.status AS org_status,
-			       o.quota_limit AS org_limit, o.quota_used AS org_used,
-			       COALESCE(o.discount_permille, 1000) AS discount_permille
+			       o.quota_limit AS org_limit, o.quota_used AS org_used
 			FROM api_keys k
 			JOIN users u ON u.id = k.user_id
 			JOIN orgs o  ON o.id = k.org_id

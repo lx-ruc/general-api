@@ -469,41 +469,6 @@ func TestCreateOrgRejectNegativeQuota(t *testing.T) {
 	}
 }
 
-// 客户折扣参数校验：越界（0 / 1001 / 负数）拒 400 且不落库；合法值 600 落库生效
-func TestUpdateOrgDiscountValidation(t *testing.T) {
-	engine, db, token := newPlatformEnv(t)
-	now := time.Now().Unix()
-	if err := db.Exec(`INSERT INTO orgs (id, name, quota_limit, status, created_at, updated_at)
-		VALUES (1, 'd-org', 1000000, 1, ?, ?)`, now, now).Error; err != nil {
-		t.Fatal(err)
-	}
-	put := func(body string) int {
-		req := httptest.NewRequest(http.MethodPut, "/api/platform/orgs/1", strings.NewReader(body))
-		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		engine.ServeHTTP(w, req)
-		return w.Code
-	}
-	for _, bad := range []string{`{"discount_permille":0}`, `{"discount_permille":1001}`, `{"discount_permille":-5}`} {
-		if code := put(bad); code != http.StatusBadRequest {
-			t.Fatalf("越界折扣 %s 应 400，得 %d", bad, code)
-		}
-	}
-	var d int64
-	_ = db.Raw(`SELECT discount_permille FROM orgs WHERE id = 1`).Scan(&d).Error
-	if d != 1000 {
-		t.Fatalf("拒绝后应保持默认 1000，得 %d", d)
-	}
-	if code := put(`{"discount_permille":600}`); code != 200 {
-		t.Fatalf("合法折扣应 200，得 %d", code)
-	}
-	_ = db.Raw(`SELECT discount_permille FROM orgs WHERE id = 1`).Scan(&d).Error
-	if d != 600 {
-		t.Fatalf("6 折（600‰）应落库，得 %d", d)
-	}
-}
-
 // 定价页可用渠道标注：channel_count 只计「启用且有可用密钥」的渠道
 // （池内启用 Key 或 legacy 密文），无密钥 / 渠道停用 / 池 Key 全禁用均不计
 func TestListModelsChannelCount(t *testing.T) {

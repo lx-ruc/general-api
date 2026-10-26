@@ -122,14 +122,13 @@ async function remove(m: MModel) {
 // ---- 客户差异化定价（弹窗下半区）----
 const orgPrices = ref<OrgModelPriceRow[]>([])
 const orgPricesLoading = ref(false)
-const allOrgs = ref<{ id: number; name: string; discount_permille?: number }[]>([])
+const allOrgs = ref<{ id: number; name: string }[]>([])
 const addOrgId = ref<number | undefined>(undefined)
 
 async function loadOrgsOnce() {
   if (allOrgs.value.length > 0) return
   const resp = await apiListOrgs({ page: 1, page_size: 1000 })
-  allOrgs.value = (resp.list ?? []).map((o: any) =>
-    ({ id: o.id, name: o.name, discount_permille: o.discount_permille ?? 1000 }))
+  allOrgs.value = (resp.list ?? []).map((o: any) => ({ id: o.id, name: o.name }))
 }
 
 async function loadOrgPrices(modelName: string) {
@@ -149,10 +148,10 @@ const candidateOrgs = computed(() => {
   return allOrgs.value.filter((o) => !listed.has(o.id))
 })
 
-// 客户价与折扣均改为手动保存：编辑先落在 drafts（单价=当前单位，折扣=折数），
-// 点「保存客户价」才逐客户提交（价格 upsert + 折扣 apiUpdateOrg）。
+// 客户价改为手动保存：编辑先落在 drafts（单价=当前单位），
+// 点「保存客户价」才逐客户提交（价格 upsert）。
 // snapshots 是打开弹窗时的原始值（与 drafts 同单位同口径换算避免浮点误差误判 dirty）
-type OrgDraft = { in: number; out: number; cache: number; zhe: number }
+type OrgDraft = { in: number; out: number; cache: number }
 const drafts = reactive<Record<number, OrgDraft>>({})
 const snapshots = reactive<Record<number, OrgDraft>>({})
 
@@ -163,7 +162,6 @@ function seedDrafts() {
     const d = {
       in: toDisplay(r.input_price), out: toDisplay(r.output_price),
       cache: toDisplay(r.input_cache_hit_price),
-      zhe: (r.discount_permille ?? 1000) / 100,
     }
     drafts[r.org_id] = { ...d }
     snapshots[r.org_id] = { ...d }
@@ -173,25 +171,16 @@ function seedDrafts() {
 function isDirty(orgId: number): boolean {
   const d = drafts[orgId]
   const s = snapshots[orgId]
-  return !!d && !!s && (d.in !== s.in || d.out !== s.out || d.cache !== s.cache || d.zhe !== s.zhe)
+  return !!d && !!s && (d.in !== s.in || d.out !== s.out || d.cache !== s.cache)
 }
 
 const dirtyCount = computed(() => orgPrices.value.filter((r) => isDirty(r.org_id)).length)
 const savingOrgs = ref(false)
 
-// 逐客户提交有改动的行：价格变化则三价一起 upsert，折扣变化则 apiUpdateOrg
-// （org 级全局折扣，非仅本模型）；input-number 清空是 null，单价按 0、折扣按 10（不打折）处理。
-// 折扣越界先整体拒绝（不产生半保存状态）
+// 逐客户提交有改动的行：价格变化则三价一起 upsert；
+// input-number 清空是 null，单价按 0 处理
 async function saveOrgPrices() {
   if (dirtyCount.value === 0) return
-  for (const r of orgPrices.value) {
-    if (!isDirty(r.org_id)) continue
-    const zhe = drafts[r.org_id].zhe ?? 10
-    if (zhe < 0.1 || zhe > 10) {
-      ElMessage.warning(`「${r.org_name}」折扣取值 0.1 ~ 10 折`)
-      return
-    }
-  }
   savingOrgs.value = true
   try {
     let n = 0
@@ -207,13 +196,9 @@ async function saveOrgPrices() {
           input_cache_hit_price: fromDisplay(d.cache || 0),
         })
       }
-      const zhe = d.zhe ?? 10
-      if (zhe !== s.zhe) {
-        await apiUpdateOrg(r.org_id, { discount_permille: Math.round(zhe * 100) })
-      }
       n++
     }
-    ElMessage.success(`${form.name} 的 ${n} 家客户价/折扣已保存`)
+    ElMessage.success(`${form.name} 的 ${n} 家客户价已保存`)
     orgPrices.value = await apiListOrgModelPrices(form.name)
     seedDrafts()
   } finally {
@@ -234,7 +219,6 @@ function addOrgPrice() {
     ...orgPrices.value,
     {
       org_id: orgId, org_name: org?.name ?? `#${orgId}`, member_count: 0, override: false,
-      discount_permille: org?.discount_permille ?? 1000,
       input_price: m.input_price, output_price: m.output_price,
       input_cache_hit_price: m.input_cache_hit_price, remark: '',
     },
@@ -242,7 +226,6 @@ function addOrgPrice() {
   const d = {
     in: toDisplay(m.input_price), out: toDisplay(m.output_price),
     cache: toDisplay(m.input_cache_hit_price),
-    zhe: (org?.discount_permille ?? 1000) / 100,
   }
   drafts[orgId] = { ...d }
   snapshots[orgId] = { ...d }
@@ -363,7 +346,7 @@ async function resetOrgPrice(row: OrgModelPriceRow) {
 
     <div class="section-title">
       客户差异化定价
-      <span class="dim">为单个客户设价后按客户价计费，未设价的走上方默认价；「折扣」为该客户的全局折扣，实际计费 = 本表单价 × 折扣（默认价同样打折）；单价与折扣修改完点右下角「保存客户价」一次提交</span>
+      <span class="dim">为单个客户设价后按客户价计费，未设价的走上方默认价；单价修改完点右下角「保存客户价」一次提交</span>
     </div>
     <div class="org-toolbar" v-if="candidateOrgs.length > 0">
       <el-select v-model="addOrgId" placeholder="选择客户" size="small" style="width: 200px">
@@ -382,19 +365,6 @@ async function resetOrgPrice(row: OrgModelPriceRow) {
       </el-table-column>
       <el-table-column label="已授权子账号" width="120" align="center">
         <template #default="{ row: r }">{{ r.member_count }} 人</template>
-      </el-table-column>
-      <el-table-column width="105" align="center">
-        <template #header>
-          <el-tooltip placement="top"
-            content="客户折扣为该客户的全局设置（非仅本模型，全部模型联动）：实际计费 = 本表单价 × 折扣，走默认价同样打折；10 = 不打折。与单价一起点右下角「保存客户价」提交">
-            <span>折扣（折）</span>
-          </el-tooltip>
-        </template>
-        <template #default="{ row: r }">
-          <el-input-number v-model="drafts[r.org_id].zhe"
-            :min="0.1" :max="10" :precision="1" :step="0.5" size="small"
-            style="width: 78px" :controls="false" />
-        </template>
       </el-table-column>
       <el-table-column width="160" align="center">
         <template #header>

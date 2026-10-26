@@ -200,7 +200,6 @@ func (h *Handler) UpdateOrg(c *gin.Context) {
 		ContactPhone *string `json:"contact_phone"`
 		MonthlyQuota *int64  `json:"monthly_quota"` // 单月消费上限（点）；0=不限
 		Status       *int    `json:"status"`
-		DiscountPermille *int64 `json:"discount_permille"` // 客户折扣（千分比售价系数：1000=不打折，600=6折）
 	}
 	if !httpx.BindJSON(c, &req) {
 		return
@@ -244,14 +243,6 @@ func (h *Handler) UpdateOrg(c *gin.Context) {
 			return
 		}
 		updates["status"] = *req.Status
-	}
-	if req.DiscountPermille != nil {
-		// 1‰~1000‰：0 折（白送）与超 1000（加价）都不允许；1000=恢复不打折
-		if *req.DiscountPermille < 1 || *req.DiscountPermille > 1000 {
-			httpx.Fail(c, http.StatusBadRequest, "discount_permille 取值 1~1000（千分比，1000=不打折）")
-			return
-		}
-		updates["discount_permille"] = *req.DiscountPermille
 	}
 	if err := h.DB.Model(&model.Org{}).Where("id = ?", id).Updates(updates).Error; err != nil {
 		httpx.Fail(c, http.StatusInternalServerError, "更新失败")
@@ -1486,7 +1477,6 @@ type orgPriceRow struct {
 	OrgName            string `json:"org_name"`
 	MemberCount        int64  `json:"member_count"` // 该客户已授权使用此模型的子账号数
 	Override           bool   `json:"override"`
-	DiscountPermille   int64  `json:"discount_permille"` // 客户折扣（千分比，1000=不打折）；org 级全局，定价处就地可改
 	InputPrice         int64  `json:"input_price"`
 	OutputPrice        int64  `json:"output_price"`
 	InputCacheHitPrice int64  `json:"input_cache_hit_price"`
@@ -1508,7 +1498,6 @@ func (h *Handler) ListOrgModelPrices(c *gin.Context) {
 		SELECT o.id AS org_id, o.name AS org_name,
 		       COALESCE(mc.cnt, 0) AS member_count,
 		       CASE WHEN p.id IS NULL THEN 0 ELSE 1 END AS override,
-		       COALESCE(o.discount_permille, 1000) AS discount_permille,
 		       COALESCE(p.input_price, ?) AS input_price,
 		       COALESCE(p.output_price, ?) AS output_price,
 		       COALESCE(p.input_cache_hit_price, ?) AS input_cache_hit_price,
