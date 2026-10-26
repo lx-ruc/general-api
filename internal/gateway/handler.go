@@ -742,8 +742,9 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		if ct == "" {
 			ct = "application/json"
 		}
-		// 模型映射：缓存与客户端拿到的都是外部名（缓存回放不泄漏上游名）
-		data = rewriteModel(data, modelSwap)
+		// 模型映射：缓存与客户端拿到的都是外部名（缓存回放不泄漏上游名）；
+		// 同时剥掉空 reasoning_content 字段（见 scrubEmptyReasoning 注释）
+		data = scrubEmptyReasoning(rewriteModel(data, modelSwap))
 		if resp.StatusCode >= 400 {
 			// 上游错误体：提取 message 记日志；Anthropic 端点包成 Anthropic 错误形状再透传。
 			// 透传前消毒——部分厂商错误体里带文档链接，且 usage_logs 的 error 列客户管理员可见
@@ -932,6 +933,29 @@ func swapModelBytes(data []byte, swap [2]string) []byte {
 	return bytes.ReplaceAll(data,
 		[]byte(`"model": "`+swap[0]+`"`),
 		[]byte(`"model": "`+swap[1]+`"`))
+}
+
+// scrubEmptyReasoning 剥掉响应块中空串 "reasoning_content":"" 字段（含相邻逗号，
+// 紧凑与带空格两种序列化形态都覆盖）。DeepSeek v4 系上游在正文阶段每个流式
+// chunk 都带该空字段，零信息量，但旧版 cc-switch 等第三方 OpenAI→Anthropic
+// 转换器见到字段即重置文本块状态，把每个增量渲染成独立列表项；非空思考
+// 内容保留不动（/v1/responses 等客户端依赖 reasoning 增量）。不含该字段的
+// 块原样返回（零开销快速路径）。
+func scrubEmptyReasoning(data []byte) []byte {
+	if !bytes.Contains(data, []byte(`"reasoning_content"`)) {
+		return data
+	}
+	for _, pat := range [...][2][]byte{
+		{[]byte(`,"reasoning_content":""`), nil},
+		{[]byte(`,"reasoning_content": ""`), nil},
+		{[]byte(`"reasoning_content":"",`), nil},
+		{[]byte(`"reasoning_content": "",`), nil},
+		{[]byte(`{"reasoning_content":""}`), []byte(`{}`)},
+		{[]byte(`{"reasoning_content": ""}`), []byte(`{}`)},
+	} {
+		data = bytes.ReplaceAll(data, pat[0], pat[1])
+	}
+	return data
 }
 
 // writeRetryAfter 输出 Retry-After 响应头（至少 1 秒，向上取整）

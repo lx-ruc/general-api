@@ -64,6 +64,10 @@ func pipeSSE(w io.Writer, ctx context.Context, body io.Reader, modelSwap [2]stri
 		if modelSwap[0] != "" {
 			out = swapModelBytes(out, modelSwap)
 		}
+		// 剥掉空 reasoning_content 字段：DeepSeek v4 系每块都带该空字段，
+		// 会触发部分第三方 OpenAI→Anthropic 转换器的逐块重置 bug（见
+		// scrubEmptyReasoning 注释）；不含字段的块零开销直通
+		out = scrubEmptyReasoning(out)
 		_, _ = gw.Write(out)
 		gw.Flush()
 		event.Reset()
