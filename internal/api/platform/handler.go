@@ -1588,6 +1588,61 @@ func (h *Handler) DeleteOrgModelPrice(c *gin.Context) {
 	httpx.OK(c, gin.H{"message": "已恢复默认价"})
 }
 
+// orgModelPriceRow 客户详情页定价表的模型行（以客户为中心的视图）：
+// override=该客户对此模型是否设了覆盖价；def_* 为模型默认价（未覆盖时对照展示），
+// 生效三价 = 覆盖价（有）或默认价（无）；缓存价 0 = 同输入价（全库统一语义）
+type orgModelPriceRow struct {
+	ModelName               string `json:"model_name"`
+	DisplayName             string `json:"display_name"`
+	ModelStatus             int    `json:"model_status"` // 1启用 0停用（停用但有覆盖价的仍返回，供管理/清除）
+	Override                bool   `json:"override"`
+	DefInputPrice           int64  `json:"def_input_price"`
+	DefOutputPrice          int64  `json:"def_output_price"`
+	DefInputCacheHitPrice   int64  `json:"def_input_cache_hit_price"`
+	InputPrice              int64  `json:"input_price"`
+	OutputPrice             int64  `json:"output_price"`
+	InputCacheHitPrice      int64  `json:"input_cache_hit_price"`
+	Remark                  string `json:"remark"`
+}
+
+// ListOrgModelPricesByOrg GET /api/platform/orgs/:id/model-prices：该客户视角的
+// 全模型定价视图——启用模型全量 ∪ 停用但已设覆盖价的模型，附默认价与生效价对照。
+// 写操作复用 /model-prices/:name 的 PUT/DELETE（本接口只读）
+func (h *Handler) ListOrgModelPricesByOrg(c *gin.Context) {
+	orgID, ok := httpx.PathID(c)
+	if !ok {
+		return
+	}
+	var o model.Org
+	if err := h.DB.Where("id = ?", orgID).First(&o).Error; err != nil {
+		httpx.Fail(c, http.StatusNotFound, "客户不存在")
+		return
+	}
+	var rows []orgModelPriceRow
+	if err := h.DB.Raw(`
+		SELECT m.name AS model_name, COALESCE(m.display_name, '') AS display_name,
+		       m.status AS model_status,
+		       CASE WHEN p.id IS NULL THEN 0 ELSE 1 END AS override,
+		       m.input_price AS def_input_price, m.output_price AS def_output_price,
+		       m.input_cache_hit_price AS def_input_cache_hit_price,
+		       COALESCE(p.input_price, m.input_price) AS input_price,
+		       COALESCE(p.output_price, m.output_price) AS output_price,
+		       COALESCE(p.input_cache_hit_price, m.input_price) AS input_cache_hit_price,
+		       COALESCE(p.remark, '') AS remark
+		FROM models m
+		LEFT JOIN org_model_prices p ON p.model_name = m.name AND p.org_id = ?
+		WHERE m.status = 1 OR p.id IS NOT NULL
+		ORDER BY m.name`, orgID).
+		Scan(&rows).Error; err != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "查询客户定价失败")
+		return
+	}
+	if rows == nil {
+		rows = []orgModelPriceRow{}
+	}
+	httpx.OK(c, rows)
+}
+
 // ---------------- 统计与日志 ----------------
 
 // StatsOverview GET /api/platform/stats/overview

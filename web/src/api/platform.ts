@@ -166,6 +166,25 @@ export interface OrgModelPriceRow {
 
 export const apiListOrgModelPrices = (modelName: string) =>
   http.get<any, OrgModelPriceRow[]>(`/api/platform/model-prices/${encodeURIComponent(modelName)}`)
+
+// 客户详情页定价视图：某客户视角的全模型定价（启用模型全量 ∪ 停用但已设覆盖价的模型）。
+// override=false 时生效三价为回填的模型默认价；写操作复用 apiSetOrgModelPrice / apiDeleteOrgModelPrice
+export interface OrgModelPriceByOrgRow {
+  model_name: string
+  display_name: string
+  model_status: number
+  override: boolean
+  def_input_price: number
+  def_output_price: number
+  def_input_cache_hit_price: number
+  input_price: number
+  output_price: number
+  input_cache_hit_price: number
+  remark: string
+}
+
+export const apiListOrgModelPricesByOrg = (orgId: number) =>
+  http.get<any, OrgModelPriceByOrgRow[]>(`/api/platform/orgs/${orgId}/model-prices`)
 export const apiSetOrgModelPrice = (modelName: string, data: {
   org_id: number; input_price: number; output_price: number; input_cache_hit_price?: number; remark?: string,
 }) => http.put<any, any>(`/api/platform/model-prices/${encodeURIComponent(modelName)}`, data)

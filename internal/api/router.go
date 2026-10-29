@@ -217,6 +217,8 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		plat.PUT("/model-requests/:id", ph.HandleModelRequest)
 		plat.GET("/orgs/:id/models", ph.GetOrgModels)
 		plat.PUT("/orgs/:id/models", ph.SetOrgModels)
+		// 客户详情页定价视图（只读；写复用上方 /model-prices/:name 的 PUT/DELETE）
+		plat.GET("/orgs/:id/model-prices", ph.ListOrgModelPricesByOrg)
 
 		plat.GET("/stats/overview", ph.StatsOverview)
 		plat.GET("/usage", ph.ListUsage)

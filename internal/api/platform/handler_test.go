@@ -889,6 +889,81 @@ func TestOrgModelPriceZeroAllowed(t *testing.T) {
 	}
 }
 
+// 客户维度定价视图：该客户视角的全模型定价——启用模型全量 ∪ 停用但已设覆盖价的模型，
+// 无覆盖行生效价=默认价，覆盖行生效价=覆盖价；客户不存在 404
+func TestListOrgModelPricesByOrg(t *testing.T) {
+	engine, db, token := newPlatformEnv(t)
+	cipher, _ := crypto.NewCipher("")
+	h := NewHandler(db, cipher, &http.Client{}, nil, nil)
+	pg := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
+	pg.GET("/orgs/:id/model-prices", h.ListOrgModelPricesByOrg)
+
+	now := time.Now().Unix()
+	// 两个启用模型 + 一个停用模型（停用的一个挂覆盖价、一个不挂）
+	_ = db.Exec(`INSERT INTO models (name, input_price, output_price, input_cache_hit_price, status, created_at, updated_at)
+		VALUES ('glm-5.2', 2000000, 8000000, 500000, 1, ?, ?),
+		       ('kimi-k3', 4000000, 16000000, 0, 1, ?, ?),
+		       ('old-model', 1000000, 2000000, 0, 0, ?, ?),
+		       ('dead-priced', 1000000, 1000000, 0, 0, ?, ?)`, now, now, now, now, now, now, now, now).Error
+	_ = db.Exec(`INSERT INTO orgs (id, name, quota_limit, status, created_at, updated_at)
+		VALUES (1, 'acme', 0, 1, ?, ?)`, now, now).Error
+	// glm-5.2 覆盖 3M/9M、缓存 0（=同覆盖输入价）；dead-priced 停用但挂覆盖
+	_ = db.Exec(`INSERT INTO org_model_prices (org_id, model_name, input_price, output_price, input_cache_hit_price, created_at, updated_at)
+		VALUES (1, 'glm-5.2', 3000000, 9000000, 0, ?, ?), (1, 'dead-priced', 500000, 500000, 0, ?, ?)`, now, now, now, now).Error
+
+	call := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+		return w
+	}
+	w := call("/api/platform/orgs/1/model-prices")
+	if w.Code != http.StatusOK {
+		t.Fatalf("应 200，得 %d: %s", w.Code, w.Body.String())
+	}
+	var resp []struct {
+		ModelName          string `json:"model_name"`
+		ModelStatus        int    `json:"model_status"`
+		Override           bool   `json:"override"`
+		DefInputPrice      int64  `json:"def_input_price"`
+		InputPrice         int64  `json:"input_price"`
+		OutputPrice        int64  `json:"output_price"`
+		InputCacheHitPrice int64  `json:"input_cache_hit_price"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]int{}
+	for i, r := range resp {
+		byName[r.ModelName] = i
+	}
+	// 启用模型全量 + 停用但挂覆盖的 dead-priced；不挂覆盖的停用 old-model 不出现
+	if len(resp) != 3 {
+		t.Fatalf("应返回 3 行（2 启用 + 1 停用带覆盖），得 %d: %s", len(resp), w.Body.String())
+	}
+	if _, ok := byName["old-model"]; ok {
+		t.Fatal("停用且无覆盖价的模型不应出现")
+	}
+	kimi := resp[byName["kimi-k3"]]
+	if kimi.Override || kimi.InputPrice != 4_000_000 || kimi.OutputPrice != 16_000_000 {
+		t.Fatalf("无覆盖行生效价应=默认价，得 %+v", kimi)
+	}
+	glm := resp[byName["glm-5.2"]]
+	if !glm.Override || glm.InputPrice != 3_000_000 || glm.OutputPrice != 9_000_000 ||
+		glm.InputCacheHitPrice != 0 || glm.DefInputPrice != 2_000_000 {
+		t.Fatalf("覆盖行生效价应=覆盖价（缓存价存 0=同覆盖输入价，计费层回落），得 %+v", glm)
+	}
+	dead := resp[byName["dead-priced"]]
+	if !dead.Override || dead.ModelStatus != 0 || dead.InputPrice != 500_000 {
+		t.Fatalf("停用带覆盖模型应返回且 override=true，得 %+v", dead)
+	}
+	// 客户不存在
+	if w := call("/api/platform/orgs/99/model-prices"); w.Code != http.StatusNotFound {
+		t.Fatalf("客户不存在应 404，得 %d", w.Code)
+	}
+}
+
 func TestOrgModelPrices(t *testing.T) {
 	engine, db, token := newPlatformEnv(t)
 	cipher, _ := crypto.NewCipher("")

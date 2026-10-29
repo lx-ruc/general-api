@@ -1,15 +1,20 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import dayjs from 'dayjs'
 import {
   apiGetOrg, apiUpdateOrg, apiOrgDetailStats, apiResetOrgAdminPassword, apiUpdateOrgAlertLevels,
   apiOrgStatement, downloadOrgStatementCSVPlatform,
+  apiListOrgModelPricesByOrg, apiSetOrgModelPrice, apiDeleteOrgModelPrice,
+  type OrgModelPriceByOrgRow,
 } from '../../api/platform'
 import LineChart from '../../components/LineChart.vue'
 import { trendOptions, barOption } from '../../utils/chart'
-import { fmtTime, fmtNum, fmtYuan, yuanToPoints, pointsToYuan, roleNames } from '../../utils/format'
+import {
+  fmtTime, fmtNum, fmtYuan, yuanToPoints, pointsToYuan, roleNames,
+  yuan1KToPoints, pointsToYuan1K, yuan1MToPoints, pointsToYuan1M,
+} from '../../utils/format'
 import { usePpy } from '../../composables/usePpy'
 
 const route = useRoute()
@@ -110,6 +115,120 @@ async function saveMonthly() {
   }
 }
 const monthlySaving = ref(false)
+
+// ---- 模型定价（该客户在各模型上的单独价——客户维度的管理入口）----
+// 读走 GET /orgs/:id/model-prices；写复用模型维度的 PUT/DELETE /model-prices/:name
+// （与模型列表定价弹窗同一数据源、同一审计口径，两边入口等价）
+const orgPricing = ref<OrgModelPriceByOrgRow[]>([])
+const pricingLoading = ref(false)
+const pricingSearch = ref('')
+const pricingSaving = ref(false)
+
+// 定价录入单位（元/1K ↔ 元/1M；存储口径不变仍是点/百万token，仅录入/回显换算）
+const unit = ref<'1k' | '1m'>('1k')
+const unitLabel = computed(() => (unit.value === '1k' ? '1K' : '1M'))
+const unitStep = computed(() => (unit.value === '1k' ? 0.001 : 0.1))
+const unitPrecision = computed(() => (unit.value === '1k' ? 6 : 4))
+function toDisplay(points: number): number {
+  return unit.value === '1k'
+    ? pointsToYuan1K(points, ppy.value)
+    : pointsToYuan1M(points, ppy.value)
+}
+function fromDisplay(v: number): number {
+  return unit.value === '1k'
+    ? yuan1KToPoints(v, ppy.value)
+    : yuan1MToPoints(v, ppy.value)
+}
+// 切换单位：草稿/快照同批 ×1000 或 ÷1000（快照同口径换算，避免浮点误差误判 dirty）
+function onUnitChange() {
+  const f = unit.value === '1k' ? (v: number) => v / 1000 : (v: number) => v * 1000
+  const conv = (v: number) => Number((f(v || 0)).toFixed(10))
+  for (const k of Object.keys(drafts)) {
+    drafts[k] = { ...drafts[k], in: conv(drafts[k].in), out: conv(drafts[k].out), cache: conv(drafts[k].cache) }
+    if (snapshots[k]) {
+      snapshots[k] = { ...snapshots[k], in: conv(snapshots[k].in), out: conv(snapshots[k].out), cache: conv(snapshots[k].cache) }
+    }
+  }
+}
+
+// 客户价改为手动保存：编辑先落在 drafts，点「保存客户价」才逐模型提交；
+// snapshots 是加载时的原始值（与 drafts 同单位同口径换算，避免浮点误差误判 dirty）
+type PriceDraft = { in: number; out: number; cache: number }
+const drafts = reactive<Record<string, PriceDraft>>({})
+const snapshots = reactive<Record<string, PriceDraft>>({})
+
+function seedDrafts() {
+  for (const k of Object.keys(drafts)) delete drafts[k]
+  for (const k of Object.keys(snapshots)) delete snapshots[k]
+  for (const r of orgPricing.value) {
+    const d = {
+      in: toDisplay(r.input_price), out: toDisplay(r.output_price),
+      cache: toDisplay(r.input_cache_hit_price),
+    }
+    drafts[r.model_name] = { ...d }
+    snapshots[r.model_name] = { ...d }
+  }
+}
+
+async function loadPricing() {
+  pricingLoading.value = true
+  try {
+    orgPricing.value = await apiListOrgModelPricesByOrg(Number(route.params.id))
+    seedDrafts()
+  } finally {
+    pricingLoading.value = false
+  }
+}
+onMounted(loadPricing)
+
+const filteredPricing = computed(() => {
+  const q = pricingSearch.value.trim().toLowerCase()
+  if (!q) return orgPricing.value
+  return orgPricing.value.filter((r) =>
+    r.model_name.toLowerCase().includes(q) || (r.display_name || '').toLowerCase().includes(q))
+})
+
+function isDirty(modelName: string): boolean {
+  const d = drafts[modelName]
+  const s = snapshots[modelName]
+  return !!d && !!s && (d.in !== s.in || d.out !== s.out || d.cache !== s.cache)
+}
+const dirtyCount = computed(() => orgPricing.value.filter((r) => isDirty(r.model_name)).length)
+
+// 逐模型提交有改动的行；input-number 清空是 null，单价按 0 处理（缓存价 0=同输入价）
+async function savePricing() {
+  if (dirtyCount.value === 0) return
+  pricingSaving.value = true
+  try {
+    const orgId = Number(route.params.id)
+    let n = 0
+    for (const r of orgPricing.value) {
+      if (!isDirty(r.model_name)) continue
+      const d = drafts[r.model_name]
+      await apiSetOrgModelPrice(r.model_name, {
+        org_id: orgId,
+        input_price: fromDisplay(d.in || 0),
+        output_price: fromDisplay(d.out || 0),
+        input_cache_hit_price: fromDisplay(d.cache || 0),
+      })
+      n++
+    }
+    ElMessage.success(`已保存 ${n} 个模型的客户价`)
+    await loadPricing()
+  } finally {
+    pricingSaving.value = false
+  }
+}
+
+async function resetModelPrice(row: OrgModelPriceByOrgRow) {
+  await ElMessageBox.confirm(
+    `恢复 ${row.display_name || row.model_name} 使用模型默认价？`, '恢复默认',
+    { type: 'warning' },
+  )
+  await apiDeleteOrgModelPrice(row.model_name, Number(route.params.id))
+  ElMessage.success('已恢复默认价')
+  await loadPricing()
+}
 
 // 月度账单（平台视角）
 const stMonth = ref(dayjs().format('YYYY-MM'))
@@ -212,6 +331,84 @@ async function exportStatementCSV() {
             <el-button size="small" :loading="monthlySaving" @click="saveMonthly">保存</el-button>
           </div>
         </div>
+      </div>
+    </el-card>
+
+    <!-- 模型定价（该客户在各模型上的单独价） -->
+    <el-card shadow="never">
+      <template #header>
+        <div class="card-head">
+          <span>模型定价<span class="unit">（未单独设价的模型按全局默认价计费）</span></span>
+          <el-radio-group v-model="unit" size="small" @change="onUnitChange">
+            <el-radio-button value="1k">元/1K</el-radio-button>
+            <el-radio-button value="1m">元/1M</el-radio-button>
+          </el-radio-group>
+        </div>
+      </template>
+      <div class="pricing-toolbar">
+        <el-input v-model="pricingSearch" placeholder="按模型名搜索" size="small" clearable style="width: 220px" />
+        <span class="dim">缓存命中价 0 = 同输入价；停用模型仅在有单独价时列出</span>
+      </div>
+      <el-table :data="filteredPricing" v-loading="pricingLoading" size="small" max-height="420"
+        empty-text="暂无模型（先在渠道接入模型）">
+        <el-table-column label="模型" min-width="210">
+          <template #default="{ row: r }">
+            <div class="model-cell" :class="{ 'model-off': r.model_status === 0 }">
+              <span>{{ r.display_name || r.model_name }}</span>
+              <el-tag v-if="r.override" size="small" type="warning" effect="plain">单独价</el-tag>
+              <el-tag v-else size="small" type="info" effect="plain">默认</el-tag>
+              <el-tag v-if="r.model_status === 0" size="small" type="danger" effect="plain">停用</el-tag>
+              <el-tag v-if="isDirty(r.model_name)" size="small" type="warning" effect="plain">未保存</el-tag>
+            </div>
+            <div v-if="r.display_name && r.display_name !== r.model_name" class="dim">{{ r.model_name }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column width="200" align="center">
+          <template #header>
+            <div class="col-head">默认价<span class="col-unit">输入 / 输出（元/{{ unitLabel }} token）</span></div>
+          </template>
+          <template #default="{ row: r }">
+            <span class="dim">{{ toDisplay(r.def_input_price) }} / {{ toDisplay(r.def_output_price) }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column width="150" align="center">
+          <template #header>
+            <div class="col-head">客户价<span class="col-unit">输入（元/{{ unitLabel }}）</span></div>
+          </template>
+          <template #default="{ row: r }">
+            <el-input-number v-model="drafts[r.model_name].in" :min="0" :step="unitStep" :precision="unitPrecision"
+              size="small" style="width: 120px" :controls="false" />
+          </template>
+        </el-table-column>
+        <el-table-column width="150" align="center">
+          <template #header>
+            <div class="col-head">客户价<span class="col-unit">输出（元/{{ unitLabel }}）</span></div>
+          </template>
+          <template #default="{ row: r }">
+            <el-input-number v-model="drafts[r.model_name].out" :min="0" :step="unitStep" :precision="unitPrecision"
+              size="small" style="width: 120px" :controls="false" />
+          </template>
+        </el-table-column>
+        <el-table-column width="150" align="center">
+          <template #header>
+            <div class="col-head">客户价<span class="col-unit">缓存命中（元/{{ unitLabel }}）</span></div>
+          </template>
+          <template #default="{ row: r }">
+            <el-input-number v-model="drafts[r.model_name].cache" :min="0" :step="unitStep" :precision="unitPrecision"
+              size="small" style="width: 120px" :controls="false" />
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="110" align="center">
+          <template #default="{ row: r }">
+            <el-button v-if="r.override" size="small" @click="resetModelPrice(r)">恢复默认</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div class="pricing-actions">
+        <span v-if="dirtyCount > 0" class="dim">{{ dirtyCount }} 个模型未保存</span>
+        <el-button type="primary" size="small" :loading="pricingSaving" :disabled="dirtyCount === 0" @click="savePricing">
+          保存客户价
+        </el-button>
       </div>
     </el-card>
 
@@ -478,4 +675,11 @@ async function exportStatementCSV() {
 .st-title { margin: 18px 0 8px; font-size: 13.5px; }
 .st-warn { color: var(--el-color-warning); font-weight: 600; }
 .st-more { font-size: 12px; margin-top: 8px; }
+
+.pricing-toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+.pricing-actions { display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 12px; }
+.model-cell { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.model-off { opacity: 0.55; }
+.col-head { display: flex; flex-direction: column; line-height: 1.4; font-weight: 600; }
+.col-unit { font-size: 11px; font-weight: 400; color: var(--tg-muted); white-space: nowrap; }
 </style>
