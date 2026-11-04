@@ -79,14 +79,22 @@ onMounted(load)
 // 模型不在此手动新建：只能经「渠道管理」配密钥从上游获取后自动登记（此处只改价/状态/备注）
 const pricingVisible = ref(false)
 const form = reactive({
-  id: 0, name: '', display_name: '', vendor: '',
+  id: 0, name: '', display_name: '', vendor: '', type: 'chat',
   input_price: 0, output_price: 0, input_cache_hit_price: 0,
   cost_input_price: 0, cost_output_price: 0, status: 1, remark: '',
 })
 
+// 模型类型：决定客户端走哪个端点（视频模型只走任务式端点）与渠道探测形态
+const typeMeta: Record<string, { label: string; tag: 'info' | 'success' | 'warning' }> = {
+  chat: { label: '对话', tag: 'info' },
+  embedding: { label: '向量', tag: 'success' },
+  video: { label: '视频', tag: 'warning' },
+}
+const typeOf = (t: string) => typeMeta[t || 'chat'] || typeMeta.chat
+
 async function openPricing(m: MModel) {
   Object.assign(form, {
-    id: m.id, name: m.name, display_name: m.display_name, vendor: m.vendor,
+    id: m.id, name: m.name, display_name: m.display_name, vendor: m.vendor, type: m.type || 'chat',
     // 表单按当前单位（元/1K 或 元/1M）编辑，入库前换算回点（存储口径不变：点/百万token）
     input_price: toDisplay(m.input_price), output_price: toDisplay(m.output_price),
     input_cache_hit_price: toDisplay(m.input_cache_hit_price),
@@ -99,7 +107,7 @@ async function openPricing(m: MModel) {
 
 async function submit() {
   await apiUpdateModel(form.id, {
-    display_name: form.display_name, vendor: form.vendor,
+    display_name: form.display_name, vendor: form.vendor, type: form.type,
     input_price: fromDisplay(form.input_price), output_price: fromDisplay(form.output_price),
     input_cache_hit_price: fromDisplay(form.input_cache_hit_price),
     cost_input_price: form.cost_input_price, cost_output_price: form.cost_output_price,
@@ -261,6 +269,11 @@ async function resetOrgPrice(row: OrgModelPriceRow) {
       </el-table-column>
       <el-table-column prop="display_name" label="显示名" min-width="140" />
       <el-table-column prop="vendor" label="厂商" width="90" />
+      <el-table-column label="类型" width="80" align="center">
+        <template #default="{ row }">
+          <el-tag size="small" :type="typeOf(row.type).tag" effect="plain">{{ typeOf(row.type).label }}</el-tag>
+        </template>
+      </el-table-column>
       <el-table-column label="可用渠道" width="110" align="center"
         title="已接通（启用且有可用密钥）的渠道数；点击查看具体是哪些渠道">
         <template #default="{ row }">
@@ -332,6 +345,14 @@ async function resetOrgPrice(row: OrgModelPriceRow) {
       <el-row :gutter="12">
         <el-col :span="12"><el-form-item label="显示名"><el-input v-model="form.display_name" /></el-form-item></el-col>
         <el-col :span="12"><el-form-item label="厂商"><el-input v-model="form.vendor" /></el-form-item></el-col>
+        <el-col :span="12">
+          <el-form-item label="类型">
+            <el-select v-model="form.type">
+              <el-option v-for="(meta, key) in typeMeta" :key="key" :value="key" :label="meta.label" />
+            </el-select>
+            <span class="tip" v-if="form.type === 'video'">视频模型走 POST /v1/videos/generations/tasks（任务式）</span>
+          </el-form-item>
+        </el-col>
       </el-row>
       <el-form-item label="状态">
         <el-switch v-model="form.status" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="停用" />

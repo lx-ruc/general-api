@@ -122,6 +122,8 @@ export interface MModel {
   name: string
   display_name: string
   vendor: string
+  /** chat/embedding/video：video 走 /v1/videos/generations/tasks 任务式端点 */
+  type: string
   input_price: number
   output_price: number
   /** 缓存命中输入单价（点/M）；0=同 input_price */

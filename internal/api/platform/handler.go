@@ -1259,6 +1259,7 @@ type modelReq struct {
 	Name                   string `json:"name" binding:"required"`
 	DisplayName            string `json:"display_name"`
 	Vendor                 string `json:"vendor"`
+	Type                   string `json:"type"` // chat/embedding/video；缺省 chat
 	InputPrice             int64  `json:"input_price"`
 	OutputPrice            int64  `json:"output_price"`
 	InputCacheHitPrice     int64  `json:"input_cache_hit_price"` // 缓存命中输入单价；0=同输入价
@@ -1267,6 +1268,11 @@ type modelReq struct {
 	CostInputCacheHitPrice int64  `json:"cost_input_cache_hit_price"` // 0=同成本输入价
 	Status                 *int   `json:"status"`
 	Remark                 string `json:"remark"`
+}
+
+// validModelType 模型类型白名单（决定端点路由：video 只走 /v1/videos/generations/tasks）
+func validModelType(t string) bool {
+	return t == "chat" || t == "embedding" || t == "video"
 }
 
 // modelOrgPriceCounts 每个模型已设客户覆盖价的客户数：默认价为 0 但有客户价时，
@@ -1296,6 +1302,7 @@ func (h *Handler) ListModels(c *gin.Context) {
 	for _, m := range models {
 		list = append(list, gin.H{
 			"id": m.ID, "name": m.Name, "display_name": m.DisplayName, "vendor": m.Vendor,
+			"type": m.Type,
 			"input_price": m.InputPrice, "output_price": m.OutputPrice,
 			"input_cache_hit_price": m.InputCacheHitPrice,
 			"cost_input_price":      m.CostInputPrice, "cost_output_price": m.CostOutputPrice,
@@ -1350,6 +1357,13 @@ func (h *Handler) CreateModel(c *gin.Context) {
 		httpx.Fail(c, http.StatusBadRequest, "价格不能为负")
 		return
 	}
+	if req.Type != "" && !validModelType(req.Type) {
+		httpx.Fail(c, http.StatusBadRequest, "类型必须是 chat / embedding / video")
+		return
+	}
+	if req.Type == "" {
+		req.Type = "chat"
+	}
 	var cnt int64
 	_ = h.DB.Model(&model.Model{}).Where("name = ?", req.Name).Count(&cnt).Error
 	if cnt > 0 {
@@ -1361,7 +1375,7 @@ func (h *Handler) CreateModel(c *gin.Context) {
 		status = *req.Status
 	}
 	m := model.Model{
-		Name: req.Name, DisplayName: req.DisplayName, Vendor: req.Vendor,
+		Name: req.Name, DisplayName: req.DisplayName, Vendor: req.Vendor, Type: req.Type,
 		InputPrice: req.InputPrice, OutputPrice: req.OutputPrice,
 		InputCacheHitPrice: req.InputCacheHitPrice,
 		CostInputPrice:     req.CostInputPrice, CostOutputPrice: req.CostOutputPrice,
@@ -1389,6 +1403,7 @@ func (h *Handler) UpdateModel(c *gin.Context) {
 	var req struct {
 		DisplayName            *string `json:"display_name"`
 		Vendor                 *string `json:"vendor"`
+		Type                   *string `json:"type"`
 		InputPrice             *int64  `json:"input_price" binding:"required,min=0"`
 		OutputPrice            *int64  `json:"output_price" binding:"required,min=0"`
 		InputCacheHitPrice     *int64  `json:"input_cache_hit_price" binding:"omitempty,min=0"`
@@ -1401,6 +1416,10 @@ func (h *Handler) UpdateModel(c *gin.Context) {
 	if !httpx.BindJSON(c, &req) {
 		return
 	}
+	if req.Type != nil && !validModelType(*req.Type) {
+		httpx.Fail(c, http.StatusBadRequest, "类型必须是 chat / embedding / video")
+		return
+	}
 	// 指针语义：未传的字段不修改——部分更新（如仅改 status）不得抹空 display_name/vendor/remark
 	updates := map[string]any{
 		"input_price": *req.InputPrice, "output_price": *req.OutputPrice,
@@ -1411,6 +1430,9 @@ func (h *Handler) UpdateModel(c *gin.Context) {
 	}
 	if req.Vendor != nil {
 		updates["vendor"] = *req.Vendor
+	}
+	if req.Type != nil {
+		updates["type"] = *req.Type
 	}
 	if req.Remark != nil {
 		updates["remark"] = *req.Remark

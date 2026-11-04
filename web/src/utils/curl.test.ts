@@ -164,6 +164,21 @@ describe('parseCurl：端点方言归一化', () => {
     expect(r!.path).toBe('/chat/completions')
   })
 
+  it('视频生成任务端点：path 原样保留并警告仅可挂视频模型', () => {
+    const r = parseCurl(
+      `curl --location 'https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks' ` +
+        `--header "Authorization: Bearer ark-video-key-001" ` +
+        `--header 'Content-Type: application/json' ` +
+        `--data '{"model": "doubao-seedance-1", "content": [{"type": "text", "text": "小猫跳舞"}]}'`,
+    )
+    expect(r!.baseUrl).toBe('https://ark.cn-beijing.volces.com/api/v3')
+    expect(r!.path).toBe('/contents/generations/tasks')
+    expect(r!.model).toBe('doubao-seedance-1')
+    expect(r!.apiKey).toBe('ark-video-key-001')
+    expect(r!.vendor).toBe('volces')
+    expect(r!.warnings.some((w) => w.includes('视频'))).toBe(true)
+  })
+
   it('/chat/completions 优先于 /completions 匹配，完整端点不被误归一化', () => {
     const r = parseCurl('https://api.example.com/v1/chat/completions')
     expect(r!.path).toBe('/chat/completions')

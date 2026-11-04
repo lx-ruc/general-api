@@ -9,6 +9,7 @@ import AccountDoc from './AccountDoc.vue'
 import AgentHelperDoc from './AgentHelperDoc.vue'
 import ApiAuthDoc from './ApiAuthDoc.vue'
 import ApiChatDoc from './ApiChatDoc.vue'
+import ApiVideoDoc from './ApiVideoDoc.vue'
 import ApiModelsDoc from './ApiModelsDoc.vue'
 
 // 文档中心外壳：分组侧栏 + 内容区 + 上一页/下一页（导航结构对照 docs.newapi.ai）
@@ -39,6 +40,7 @@ const groups: { label: string; items: DocPage[] }[] = [
     items: [
       { key: 'api-auth', title: '鉴权与错误码', component: markRaw(ApiAuthDoc) },
       { key: 'api-chat', title: '对话补全', component: markRaw(ApiChatDoc) },
+      { key: 'api-video', title: '视频生成', component: markRaw(ApiVideoDoc) },
       { key: 'api-models', title: '模型列表', component: markRaw(ApiModelsDoc) },
     ],
   },

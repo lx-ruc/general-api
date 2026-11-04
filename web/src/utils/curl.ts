@@ -4,6 +4,8 @@
 
 /** Chat Completions 方言端点后缀：原样保留为渠道 path */
 const ENDPOINT_SUFFIXES = ['/chat/completions', '/embeddings']
+/** 视频生成任务端点后缀：原样保留为渠道 path（该渠道只能挂视频模型） */
+const VIDEO_ENDPOINT_SUFFIX = '/contents/generations/tasks'
 /** 非 Chat Completions 方言端点后缀：剥离后改用同目录 /chat/completions（网关不做方言转换） */
 const DIALECT_SUFFIXES = ['/responses', '/completions']
 /** 与推理无关的端点后缀：剥离后按裸 URL 启发式处理 */
@@ -193,7 +195,14 @@ export function parseCurl(text: string): ParsedCurl | null {
   // 拆 base + path：保证 baseUrl + path 拼出的上游 URL 是 Chat Completions 端点
   let baseUrl = url
   let path = ''
+  // 视频生成任务端点优先识别：path 原样保留（视频渠道专用，不能归一化到 chat 路径）
+  if (url.endsWith(VIDEO_ENDPOINT_SUFFIX)) {
+    baseUrl = url.slice(0, url.length - VIDEO_ENDPOINT_SUFFIX.length)
+    path = VIDEO_ENDPOINT_SUFFIX
+    warnings.push('识别到视频生成任务端点：该渠道仅供视频模型使用（模型类型需设为「视频」），不能挂对话模型')
+  }
   for (const suffix of ENDPOINT_SUFFIXES) {
+    if (path !== '') break
     if (url.endsWith(suffix)) {
       baseUrl = url.slice(0, url.length - suffix.length)
       path = suffix

@@ -375,6 +375,66 @@ func TestUpsertVendorBillConcurrent(t *testing.T) {
 	}
 }
 
+// 模型类型字段：创建缺省 chat、非法值 400、更新可改、列表输出 type
+func TestModelTypeField(t *testing.T) {
+	engine, db, token := newPlatformEnv(t)
+	h := NewHandler(db, nil, nil, nil, nil)
+	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
+	g.POST("/models", h.CreateModel)
+	g.PUT("/models/:id", h.UpdateModel)
+	g.GET("/models", h.ListModels)
+
+	do := func(method, url, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, url, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		engine.ServeHTTP(w, req)
+		return w
+	}
+	// 非法类型 400
+	if w := do(http.MethodPost, "/api/platform/models",
+		`{"name":"bad","type":"image","input_price":1,"output_price":1}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("非法 type 应 400，got %d body=%s", w.Code, w.Body)
+	}
+	// 缺省 chat
+	if w := do(http.MethodPost, "/api/platform/models",
+		`{"name":"v-test","input_price":1,"output_price":1}`); w.Code != http.StatusOK {
+		t.Fatalf("创建应 200，got %d body=%s", w.Code, w.Body)
+	}
+	var typ string
+	_ = db.Raw(`SELECT type FROM models WHERE name = 'v-test'`).Scan(&typ).Error
+	if typ != "chat" {
+		t.Fatalf("缺省应为 chat，got %q", typ)
+	}
+	// 更新为 video；再验证列表输出
+	if w := do(http.MethodPut, "/api/platform/models/1",
+		`{"input_price":1,"output_price":1,"type":"video"}`); w.Code != http.StatusOK {
+		t.Fatalf("更新 type 应 200，got %d body=%s", w.Code, w.Body)
+	}
+	wList := do(http.MethodGet, "/api/platform/models", "")
+	if wList.Code != http.StatusOK {
+		t.Fatalf("列表应 200，got %d", wList.Code)
+	}
+	var list []struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(wList.Body.Bytes(), &list); err != nil {
+		t.Fatalf("解析列表失败: %v", err)
+	}
+	for _, m := range list {
+		if m.Name == "v-test" && m.Type != "video" {
+			t.Fatalf("列表应输出 type=video，got %q", m.Type)
+		}
+	}
+	// 更新非法值 400
+	if w := do(http.MethodPut, "/api/platform/models/1",
+		`{"input_price":1,"output_price":1,"type":"audio"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("更新非法 type 应 400，got %d", w.Code)
+	}
+}
+
 // 成本价（cost_input/output_price）与售卖价同样不允许为负
 func TestModelCostPriceRejectsNegative(t *testing.T) {
 	engine, db, token := newPlatformEnv(t)
