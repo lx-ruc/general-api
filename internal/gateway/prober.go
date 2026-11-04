@@ -215,10 +215,8 @@ func ProbeChannel(db *gorm.DB, cipher *crypto.Cipher, client *http.Client, cd co
 	if err := db.Where("id = ?", channelID).First(&ch).Error; err != nil {
 		return ProbeResult{Err: "channel not found: " + err.Error()}
 	}
-	var ab model.ChannelAbility
-	// 优先挑 chat 模型探测：embedding 模型不吃 messages，用 chat 请求探测必然 400，
-	// 会把健康渠道误判为故障（体检误杀）。渠道全是 embedding 模型时改发 embeddings 请求
-	ab, isEmbed, err := PickProbeAbility(db, channelID)
+	// 探测形态按模型类型分派：chat/embedding 发真实小请求，video 只读 GET（不发真任务）
+	ab, kind, err := PickProbeAbility(db, channelID)
 	if err != nil {
 		return ProbeResult{Err: "渠道未配置模型，无法探测"}
 	}
@@ -262,7 +260,7 @@ func ProbeChannel(db *gorm.DB, cipher *crypto.Cipher, client *http.Client, cd co
 	quotaCnt := 0
 	var last ProbeResult
 	for _, ak := range alive {
-		last = probeOnce(db, ch, ab, isEmbed, client, cd, keyCooldown, ak)
+		last = probeOnce(db, ch, ab, kind, client, cd, keyCooldown, ak)
 		if last.OK {
 			if len(skips) > 0 { // 成功也要让管理员看见被跳过的坏 Key
 				last.KeyDesc += "（已跳过失效 Key：" + strings.Join(skips, "；") + "）"
@@ -298,24 +296,35 @@ func ProbeChannel(db *gorm.DB, cipher *crypto.Cipher, client *http.Client, cd co
 
 // probeOnce 用指定 Key 实发一次探测请求：2xx 清冷却回池；配额类 429 就地退避冷却
 // （同渠道其它 Key 不连坐）并发站内通知；其余失败原样返回，由调用方分类换 Key 或终止
-func probeOnce(db *gorm.DB, ch model.Channel, ab model.ChannelAbility, isEmbed bool, client *http.Client,
+func probeOnce(db *gorm.DB, ch model.Channel, ab model.ChannelAbility, kind probeKind, client *http.Client,
 	cd coord.Coordinator, keyCooldown time.Duration, ak probeKey) ProbeResult {
 	upModel := ab.ModelName
 	if ab.UpstreamModelName != nil && *ab.UpstreamModelName != "" {
 		upModel = *ab.UpstreamModelName
 	}
-	var body string
-	if isEmbed {
-		body = fmt.Sprintf(`{"model":%q,"input":"ping"}`, upModel)
+	var req *http.Request
+	var err error
+	if kind == probeVideo {
+		// 视频渠道只读探测：GET 一个必不存在的任务 id——404/400 说明鉴权通过、
+		// 端点正确（链路健康即证明渠道通 + Key 有效）。绝不能 POST 真实创建请求
+		// （会真的建视频任务并计费），也发不了 chat body（任务端点必 400 被体检误杀）
+		req, err = http.NewRequest(http.MethodGet,
+			endpointURL(ch.BaseURL, ch.Path, videoTaskPath)+"/cgt-probe-0000000000000000", nil)
 	} else {
-		// 流式探测：思考型模型的耗时大头在「思考+完整生成」（非流式要等全部结束
-		// 才有响应，实测 6s+）；stream 模式下首个 SSE 数据块到达即证明渠道通、
-		// Key 有效、模型开始应答——探测语义到此已满足，立刻断开不等生成，
-		// 耗时从「整次生成」降到「排队+首 token」。上游忽略 stream 参数
-		// 回普通 JSON 时自动落回非流式判定，兼容无碍
-		body = fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":1,"stream":true}`, upModel)
+		var body string
+		if kind == probeEmbedding {
+			body = fmt.Sprintf(`{"model":%q,"input":"ping"}`, upModel)
+		} else {
+			// 流式探测：思考型模型的耗时大头在「思考+完整生成」（非流式要等全部结束
+			// 才有响应，实测 6s+）；stream 模式下首个 SSE 数据块到达即证明渠道通、
+			// Key 有效、模型开始应答——探测语义到此已满足，立刻断开不等生成，
+			// 耗时从「整次生成」降到「排队+首 token」。上游忽略 stream 参数
+			// 回普通 JSON 时自动落回非流式判定，兼容无碍
+			body = fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":1,"stream":true}`, upModel)
+		}
+		req, err = http.NewRequest(http.MethodPost,
+			strings.TrimRight(ch.BaseURL, "/")+probePath(ch.Path, kind == probeEmbedding), strings.NewReader(body))
 	}
-	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(ch.BaseURL, "/")+probePath(ch.Path, isEmbed), strings.NewReader(body))
 	if err != nil {
 		return ProbeResult{Err: err.Error(), KeyDesc: ak.desc}
 	}
@@ -333,13 +342,16 @@ func probeOnce(db *gorm.DB, ch model.Channel, ab model.ChannelAbility, isEmbed b
 	}
 	// 流式探测的响应侧：2xx + SSE 时读到首个数据块即成功断开（不等思考/生成跑完）；
 	// 上游忽略 stream 参数回普通 JSON 时不进此分支，落回原非流式判定
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 && !isEmbed &&
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 && kind == probeChat &&
 		strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
 		return probeStreamFirstChunk(resp, cd, ak.scope, ak.desc, start)
 	}
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	_ = resp.Body.Close()
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	// 视频只读探测的放行口径：404（任务不存在）/400（id 非法）都说明鉴权已通过、
+	// 端点正确——链路健康即成功；其余形态维持 2xx 判定
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 ||
+		(kind == probeVideo && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusBadRequest)) {
 		if ak.scope != "" {
 			cd.ClearCooldown(ak.scope) // 探测成功即证明可用：立即回池（配额恢复后的手动自愈入口）
 		}
@@ -409,16 +421,49 @@ func probePath(path string, embed bool) string {
 	return endpointURL("", path, "/embeddings")
 }
 
-// PickProbeAbility 选探测用模型（管理台「渠道测试」与体检/自动恢复共用）：
-// 优先挑非 embedding 的 chat 模型（embedding 模型不吃 messages，用 chat 请求
-// 探测必然 400，会把健康渠道误判为故障）；返回 (能力, 是否按 embeddings 协议探测)
-func PickProbeAbility(db *gorm.DB, channelID int64) (model.ChannelAbility, bool, error) {
-	var ab model.ChannelAbility
-	if err := db.Where("channel_id = ? AND model_name NOT LIKE '%embedding%'", channelID).
-		Order("model_name").First(&ab).Error; err != nil {
-		if err2 := db.Where("channel_id = ?", channelID).Order("model_name").First(&ab).Error; err2 != nil || ab.ModelName == "" {
-			return ab, false, fmt.Errorf("渠道未配置模型")
-		}
+// probeKind 探测请求形态：按渠道所挂模型的类型分派
+type probeKind int
+
+const (
+	probeChat      probeKind = iota // chat 小请求（流式首块即成功）
+	probeEmbedding                  // embeddings ping 请求
+	probeVideo                      // 视频任务端点只读 GET（绝不发真创建请求）
+)
+
+// PickProbeAbility 选探测用模型与请求形态（管理台「渠道测试」与体检/自动恢复共用）：
+// 优先挑 chat 模型（chat 请求探测 embedding/video 端点必然 400，会把健康渠道误判为
+// 故障——体检误杀），全为 embedding 时改发 embeddings 请求，全为 video 时走只读 GET。
+// 类型取自 models.type（存量模型默认 chat）；模型已删但 ability 残留（JOIN 不中）时
+// 按旧版名字启发式兜底
+func PickProbeAbility(db *gorm.DB, channelID int64) (model.ChannelAbility, probeKind, error) {
+	var rows []struct {
+		ID                int64
+		ChannelID         int64
+		ModelName         string
+		UpstreamModelName *string
+		Type              string
 	}
-	return ab, isEmbeddingModel(ab.ModelName), nil
+	if err := db.Raw(`SELECT a.id, a.channel_id, a.model_name, a.upstream_model_name,
+			COALESCE(m.type, '') AS type
+		FROM channel_abilities a LEFT JOIN models m ON m.name = a.model_name
+		WHERE a.channel_id = ?
+		ORDER BY CASE COALESCE(m.type, 'chat') WHEN 'chat' THEN 0 WHEN 'embedding' THEN 1 ELSE 2 END,
+			CASE WHEN lower(a.model_name) LIKE '%embedding%' THEN 1 ELSE 0 END,
+			a.model_name`, channelID).Scan(&rows).Error; err != nil || len(rows) == 0 {
+		return model.ChannelAbility{}, probeChat, fmt.Errorf("渠道未配置模型")
+	}
+	r := rows[0]
+	ab := model.ChannelAbility{ID: r.ID, ChannelID: r.ChannelID,
+		ModelName: r.ModelName, UpstreamModelName: r.UpstreamModelName}
+	switch r.Type {
+	case "embedding":
+		return ab, probeEmbedding, nil
+	case "video":
+		return ab, probeVideo, nil
+	default:
+		if isEmbeddingModel(ab.ModelName) { // JOIN 不中的残留行：旧版启发式兜底
+			return ab, probeEmbedding, nil
+		}
+		return ab, probeChat, nil
+	}
 }

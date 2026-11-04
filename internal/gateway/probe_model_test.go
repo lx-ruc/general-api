@@ -1,10 +1,12 @@
 package gateway
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 )
 
 // 探活选模：渠道带 embedding 模型时必须挑 chat 模型发 chat 请求
@@ -64,5 +66,66 @@ func TestProbeEmbeddingsOnlyChannel(t *testing.T) {
 	}
 	if gotBody != `{"model":"text-embedding-v4","input":"ping"}` {
 		t.Fatalf("embedding 探测请求体不符，got %s", gotBody)
+	}
+}
+
+// 视频渠道探测：GET 不存在的任务 id（绝不 POST 真创建请求——会真的建任务计费）；
+// 404 = 鉴权通过端点正确 → 健康。回归旧逻辑：chat body POST 打任务端点必 400 被体检误杀
+func TestProbeVideoChannelGet(t *testing.T) {
+	e := newTestEnv(t)
+	var mu sync.Mutex
+	var gotMethod, gotPath, gotBody string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		gotMethod, gotPath, gotBody = r.Method, r.URL.Path, string(b)
+		mu.Unlock()
+		// Ark 对不存在的任务 id 回 404（鉴权已通过）
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"message":"task not found"}}`))
+	}))
+	defer up.Close()
+	now := time.Now().Unix()
+	mustExec(t, e.f, `INSERT INTO models (name, type, status, created_at, updated_at)
+		VALUES ('seedance-1', 'video', 1, ?, ?)`, now, now)
+	mustExec(t, e.f, `INSERT INTO channels (id,name,base_url,path,upstream_key_enc,weight,priority,status,created_at,updated_at)
+		VALUES (1,'video-ch',?, '/contents/generations/tasks', 'legacy-key', 1, 10, 1, ?, ?)`, up.URL, now, now)
+	mustExec(t, e.f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (1, 'seedance-1')`)
+
+	res := ProbeChannel(e.h.DB, e.h.Cipher, e.h.Client, e.h.Coord, e.h.KeyCooldown, 1)
+	if !res.OK || res.Err != "" {
+		t.Fatalf("视频渠道 404 探测应判健康，got ok=%v err=%s", res.OK, res.Err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if gotMethod != http.MethodGet || gotBody != "" {
+		t.Fatalf("视频探测应为 GET 无 body，got %s %q", gotMethod, gotBody)
+	}
+	if gotPath != "/contents/generations/tasks/cgt-probe-0000000000000000" {
+		t.Fatalf("视频探测应打到任务端点+假任务 id，got %s", gotPath)
+	}
+}
+
+// 视频 Key 失效（401）：走既有禁 Key 分类（可换池内下一把），不放行为健康
+func TestProbeVideoKeyRejected(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"invalid api key"}}`))
+	}))
+	defer up.Close()
+	now := time.Now().Unix()
+	mustExec(t, e.f, `INSERT INTO models (name, type, status, created_at, updated_at)
+		VALUES ('seedance-1', 'video', 1, ?, ?)`, now, now)
+	mustExec(t, e.f, `INSERT INTO channels (id,name,base_url,path,upstream_key_enc,weight,priority,status,created_at,updated_at)
+		VALUES (1,'video-ch',?, '/contents/generations/tasks', 'legacy-key', 1, 10, 1, ?, ?)`, up.URL, now, now)
+	mustExec(t, e.f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (1, 'seedance-1')`)
+
+	res := ProbeChannel(e.h.DB, e.h.Cipher, e.h.Client, e.h.Coord, e.h.KeyCooldown, 1)
+	if res.OK {
+		t.Fatal("401 Key 失效不得判健康")
+	}
+	if res.Status != http.StatusUnauthorized {
+		t.Fatalf("应保留上游 401 状态，got %d", res.Status)
 	}
 }
