@@ -49,6 +49,7 @@ gateway:
                                 # 连续失败达阈值自动禁用（写系统标记，恢复后可被自动探测拉起）+ 邮件告警
                                 # ——低流量哑渠道的故障不再依赖业务流量触发熔断才被发现
   channel_probe_fail_threshold: 3  # 体检连续失败多少次自动禁用渠道
+  video_task_sweep_interval: 2m # 视频任务补偿扫描：客户创建后从不查询的漏单兜底（查上游并结算）；0=关闭
 
 redis:                     # Key 冷却/并发闸门/缓存 的全局协调；addr 留空 = 进程内存（单机部署零依赖）
   addr: ""                 # 如 redis:6379；ENV: TG_REDIS_ADDR

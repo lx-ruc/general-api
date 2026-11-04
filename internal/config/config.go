@@ -97,6 +97,7 @@ type Gateway struct {
 	// ---- 运维自主化 ----
 	ChannelTestInterval       Duration `yaml:"channel_test_interval"`        // 定时渠道体检间隔；0=关闭（建议 30m，低流量渠道故障不再依赖业务流量暴露）
 	ChannelProbeFailThreshold int      `yaml:"channel_probe_fail_threshold"` // 体检连续失败多少次自动禁用渠道；默认 3
+	VideoTaskSweepInterval    Duration `yaml:"video_task_sweep_interval"`    // 视频任务补偿扫描间隔（客户建后不查的漏单兜底）；0=关闭
 }
 
 // Redis 协调器（key 冷却/并发闸门/缓存 全局共享）；addr 为空 = 全部回退进程内存（单机/无依赖部署）
@@ -168,6 +169,7 @@ func defaultConfig() *Config {
 			RetryChannelCodes:         []string{"5xx"},
 			ChannelTestInterval:       Duration{0},
 			ChannelProbeFailThreshold: 3,
+			VideoTaskSweepInterval:    Duration{2 * time.Minute},
 		},
 		Log: Log{Level: "info"},
 		Billing: Billing{
@@ -267,6 +269,7 @@ func applyEnv(cfg *Config) {
 	setDuration("TG_AUTO_PROBE_INTERVAL", &cfg.Gateway.AutoProbeInterval)
 	setDuration("TG_CHANNEL_TEST_INTERVAL", &cfg.Gateway.ChannelTestInterval)
 	setInt("TG_CHANNEL_PROBE_FAIL_THRESHOLD", &cfg.Gateway.ChannelProbeFailThreshold)
+	setDuration("TG_VIDEO_TASK_SWEEP_INTERVAL", &cfg.Gateway.VideoTaskSweepInterval)
 	setStrList := func(key string, dst *[]string) {
 		if v := os.Getenv(key); v != "" {
 			*dst = strings.Split(v, ",")

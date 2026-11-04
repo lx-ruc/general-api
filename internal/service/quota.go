@@ -86,8 +86,6 @@ func Precheck(db *gorm.DB, userID int64) error {
 // cost>0 时同事务双记账（总额 + 月累计，跨月首笔原子重置）+ 欠费检查：
 // 客户总额度耗尽 → 自动置 status=2 欠费停服（仅从 1 迁移；手动停用 0 不受影响）。
 func Settle(db *gorm.DB, rec *model.UsageLog) error {
-	now := time.Now().Unix()
-	period := currentPeriod()
 	// 落库前消毒 error 列：客户管理员在调用日志里可见，不得携带上游 URL/主机
 	// （网络类错误的原始文本只保留在服务端 slog）；拷贝不改调用方的 rec
 	if rec.Error != "" {
@@ -96,28 +94,37 @@ func Settle(db *gorm.DB, rec *model.UsageLog) error {
 		rec = &cp
 	}
 	return db.Transaction(func(tx *gorm.DB) error {
-		if rec.Cost > 0 {
-			if err := tx.Exec(`UPDATE users SET quota_used = quota_used + ?,
-					monthly_cost = CASE WHEN monthly_period = ? THEN monthly_cost + ? ELSE ? END,
-					monthly_period = ?, updated_at = ?
-				WHERE id = ?`, rec.Cost, period, rec.Cost, rec.Cost, period, now, rec.UserID).Error; err != nil {
-				return err
-			}
-			if err := tx.Exec(`UPDATE orgs SET quota_used = quota_used + ?,
-					monthly_cost = CASE WHEN monthly_period = ? THEN monthly_cost + ? ELSE ? END,
-					monthly_period = ?, updated_at = ?
-				WHERE id = ?`, rec.Cost, period, rec.Cost, rec.Cost, period, now, rec.OrgID).Error; err != nil {
-				return err
-			}
-			// 欠费停服：额度耗尽即停（不影响管理台登录，数据面由鉴权层拦截）
-			if err := tx.Exec(`UPDATE orgs SET status = 2, updated_at = ?
-				WHERE id = ? AND status = 1 AND quota_limit > 0 AND quota_used >= quota_limit`,
-				now, rec.OrgID).Error; err != nil {
-				return err
-			}
-		}
-		return tx.Create(rec).Error
+		return SettleTx(tx, rec)
 	})
+}
+
+// SettleTx Settle 的事务体：cost>0 时双记账（总额 + 月累计，跨月首笔原子重置）
+// + 欠费停服 + 写 usage_logs。导出供需要「先抢占再记账」同事务的调用方复用
+// （如视频任务结算：UPDATE video_tasks … WHERE billed=0 抢到后才执行本函数）
+func SettleTx(tx *gorm.DB, rec *model.UsageLog) error {
+	now := time.Now().Unix()
+	period := currentPeriod()
+	if rec.Cost > 0 {
+		if err := tx.Exec(`UPDATE users SET quota_used = quota_used + ?,
+				monthly_cost = CASE WHEN monthly_period = ? THEN monthly_cost + ? ELSE ? END,
+				monthly_period = ?, updated_at = ?
+			WHERE id = ?`, rec.Cost, period, rec.Cost, rec.Cost, period, now, rec.UserID).Error; err != nil {
+			return err
+		}
+		if err := tx.Exec(`UPDATE orgs SET quota_used = quota_used + ?,
+				monthly_cost = CASE WHEN monthly_period = ? THEN monthly_cost + ? ELSE ? END,
+				monthly_period = ?, updated_at = ?
+			WHERE id = ?`, rec.Cost, period, rec.Cost, rec.Cost, period, now, rec.OrgID).Error; err != nil {
+			return err
+		}
+		// 欠费停服：额度耗尽即停（不影响管理台登录，数据面由鉴权层拦截）
+		if err := tx.Exec(`UPDATE orgs SET status = 2, updated_at = ?
+			WHERE id = ? AND status = 1 AND quota_limit > 0 AND quota_used >= quota_limit`,
+			now, rec.OrgID).Error; err != nil {
+			return err
+		}
+	}
+	return tx.Create(rec).Error
 }
 
 // AddOrgQuota 平台给客户追加限额（带审计流水）；amount 可为负用于回收。

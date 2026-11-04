@@ -85,6 +85,8 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 	go gateway.AutoProbeLoop(cfg.Gateway.AutoProbeInterval.Duration, gw)
 	// 定时渠道体检：周期探活启用中的渠道，连续失败自动禁用（低流量哑渠道故障主动发现）
 	go gateway.ChannelTestLoop(cfg.Gateway.ChannelTestInterval.Duration, cfg.Gateway.ChannelProbeFailThreshold, gw)
+	// 视频任务补偿扫描：客户创建任务后从不查询的漏单兜底（查上游并结算，幂等）
+	go gateway.VideoTaskSweepLoop(cfg.Gateway.VideoTaskSweepInterval.Duration, gw)
 	v1 := r.Group("/v1", middleware.APIKeyAuth(db))
 	{
 		v1.POST("/chat/completions", gw.ChatCompletions)
@@ -94,6 +96,9 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		// OpenAI Responses 协议：Codex CLI 0.142+ 等客户端直连（wire_api="responses"）
 		v1.POST("/responses", gw.Responses)
 		v1.GET("/models", gw.ListModels)
+		// 视频生成任务（火山 Ark 原生透传）：创建 + 轮询查询，计费发生在查询到 succeeded 时
+		v1.POST("/videos/generations/tasks", gw.VideoCreateTask)
+		v1.GET("/videos/generations/tasks/:task_id", gw.VideoTaskQuery)
 	}
 
 	// ---- 管理台 /api ----

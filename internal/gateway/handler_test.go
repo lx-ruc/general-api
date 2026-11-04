@@ -103,6 +103,8 @@ func newTestEnv(t *testing.T) *testEnv {
 	v1.POST("/messages", h.Messages)
 	v1.POST("/responses", h.Responses)
 	v1.GET("/models", h.ListModels)
+	v1.POST("/videos/generations/tasks", h.VideoCreateTask)
+	v1.GET("/videos/generations/tasks/:task_id", h.VideoTaskQuery)
 	return &testEnv{f: f, h: h, cd: cd, m: m, engine: engine, apiKey: apiKey, userID: 1, orgID: 1, cfg: cfg}
 }
 

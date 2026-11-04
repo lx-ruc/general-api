@@ -227,11 +227,17 @@ const (
 // （限流→解析→授权→预检→选渠道→闸门→转发→分类→结算），chat 行为零变化
 type relaySpec struct {
 	allowStream bool     // 是否支持流式（embeddings 不支持）
-	fixedPath   string   // 非空 → 出站路径最后一段替换为该值（如 /embeddings）
+	fixedPath   string   // 非空 → 出站路径改写为该值（如 /embeddings；见 endpointURL）
 	require     []string // 除 model 外的必填请求体字段
 	// 非 OpenAI 协议端点：入站翻译为 OpenAI 格式、出站（响应/SSE/错误形状）
 	// 翻译回该协议形状；翻译只发生在边界（见 anthropic.go / responses.go）
 	proto relayProto
+	// 模型类型 gate："video" = 本端点只收视频模型；空 = 拒绝视频模型（chat 系端点）。
+	// 错端点在网关就拦下（清晰报错），不打上游——chat body 打到任务端点只会得到
+	// 上游 400，视频 body 打到 chat 端点更是语义错误
+	modelType string
+	// videoCapture：非流式 2xx 后捕获 {"id"} 落 video_tasks（视频创建端点专用）
+	videoCapture bool
 }
 
 // ChatCompletions POST /v1/chat/completions
@@ -374,6 +380,21 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		rec.Status, rec.Error = http.StatusNotFound, "model not found: "+truncateStr(modelName, 100)
 		werr(c, http.StatusNotFound, "invalid_request_error",
 			fmt.Sprintf("model %q does not exist or is not available", modelName))
+		return
+	}
+	// 模型类型 gate：视频模型只走任务式端点，任务端点只收视频模型（存量模型默认
+	// chat，此 gate 对现有四端点零行为变化）
+	if spec.modelType == "video" {
+		if m.Type != "video" {
+			rec.Status, rec.Error = http.StatusBadRequest, "not a video model: "+truncateStr(modelName, 100)
+			werr(c, http.StatusBadRequest, "invalid_request_error",
+				fmt.Sprintf("model %q is not a video generation model", modelName))
+			return
+		}
+	} else if m.Type == "video" {
+		rec.Status, rec.Error = http.StatusBadRequest, "video model on wrong endpoint: "+truncateStr(modelName, 100)
+		werr(c, http.StatusBadRequest, "invalid_request_error",
+			fmt.Sprintf("model %q is a video generation model, use POST /v1/videos/generations/tasks", modelName))
 		return
 	}
 	// 客户差异化定价：该客户对该模型设了覆盖价则改写售卖三价（UNIQUE(org_id, model_name)
@@ -804,6 +825,9 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		}
 		h.Breaker.RecordSuccess(cand.ChannelID) // 2xx 且读全体成功
 		applyUsage(rec, usage, m)
+		if spec.videoCapture {
+			h.captureVideoTask(rec, data, m) // 视频创建：捕获 {"id"} 登记（失败不影响已发出的 2xx）
+		}
 		logHarvest(rec, usage, modelName, cand.ChannelName)
 		return attemptDone
 	}
@@ -902,9 +926,10 @@ func logHarvest(rec *model.UsageLog, u *Usage, modelName, channelName string) {
 // endpointURL 出站完整地址 = base_url + path；fixed 非空时改写端点段：
 // OpenAI 兼容约定 chat={base}/chat/completions、embeddings={base}/embeddings，
 // 故 /chat/completions 后缀整体替换（/v1/chat/completions → /v1/embeddings）；
-// 自定义 path 退化为替换最后一段
+// 自定义 path 退化为替换最后一段。path 已以 fixed 结尾（如视频专用渠道
+// path=/contents/generations/tasks）则原样保留——继续走改写会把路径拼成双重
 func endpointURL(baseURL, path, fixed string) string {
-	if fixed != "" {
+	if fixed != "" && !strings.HasSuffix(path, fixed) {
 		if strings.HasSuffix(path, "/chat/completions") {
 			path = strings.TrimSuffix(path, "/chat/completions") + fixed
 		} else if idx := strings.LastIndex(path, "/"); idx >= 0 {
