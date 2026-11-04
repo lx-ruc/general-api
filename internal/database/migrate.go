@@ -103,6 +103,7 @@ func migrateAll(db *gorm.DB) error {
 		{"quota_requests", "kind", "TEXT NOT NULL DEFAULT 'quota'"},
 		{"quota_requests", "model_names", "TEXT NOT NULL DEFAULT ''"},
 		{"users", "is_super", "INTEGER NOT NULL DEFAULT 0"},
+		{"models", "type", "TEXT NOT NULL DEFAULT 'chat'"},
 	}
 	for _, a := range alters {
 		if !columnExists(db, a[0], a[1]) {
@@ -149,6 +150,12 @@ func migrateAll(db *gorm.DB) error {
 	if err := db.Exec(`UPDATE models SET remark = replace(remark, '元/百万token', '元/M token')
 		WHERE remark LIKE '%元/百万token%'`).Error; err != nil {
 		return fmt.Errorf("fix models remark: %w", err)
+	}
+	// 类型回填（幂等）：存量库引入 models.type 时按名字启发把向量模型标出来；
+	// 回填后行 type≠'chat'，WHERE 不再命中即 no-op。chat/video 由管理员在管理台设置
+	if err := db.Exec(`UPDATE models SET type = 'embedding'
+		WHERE type = 'chat' AND lower(name) LIKE '%embedding%'`).Error; err != nil {
+		return fmt.Errorf("backfill models.type: %w", err)
 	}
 	return nil
 }

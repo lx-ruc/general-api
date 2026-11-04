@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS models (
   name         TEXT    NOT NULL UNIQUE,
   display_name TEXT    NOT NULL DEFAULT '',
   vendor       TEXT    NOT NULL DEFAULT '',
+  type         TEXT    NOT NULL DEFAULT 'chat', -- chat/embedding/video：决定端点路由与探测形态
   input_price  INTEGER NOT NULL DEFAULT 0,
   output_price INTEGER NOT NULL DEFAULT 0,
   input_cache_hit_price  INTEGER NOT NULL DEFAULT 0,  -- 缓存命中输入单价（0=同 input_price）
@@ -377,3 +378,25 @@ CREATE TABLE IF NOT EXISTS notifications (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read_at, id);
+
+-- 视频生成任务登记：创建时快照归属/渠道/价格，客户查询或补偿扫描到 succeeded 时结算。
+-- billed 是结算幂等抢占位：UPDATE … WHERE billed=0 的行数判定保证双网关并发只结一次
+CREATE TABLE IF NOT EXISTS video_tasks (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id        TEXT    NOT NULL UNIQUE,       -- 上游任务 id（Ark cgt-…）；结算幂等锚点
+  org_id         INTEGER NOT NULL,
+  user_id        INTEGER NOT NULL,              -- 结算锚定创建者（非查询者）
+  api_key_id     INTEGER NOT NULL,
+  cost_center_id INTEGER,                       -- 创建时快照，结算进 usage_logs
+  channel_id     INTEGER NOT NULL,              -- 查询按此取渠道配置与密钥（无外键，同 usage_logs 口径）
+  model_name     TEXT    NOT NULL DEFAULT '',   -- 对外模型名
+  status         TEXT    NOT NULL DEFAULT '',   -- 最近观测的上游状态（''=创建后未查询过）
+  billed         INTEGER NOT NULL DEFAULT 0,    -- 1=已结算
+  completion_tokens INTEGER NOT NULL DEFAULT 0, -- 结算时 usage 快照（对账用）
+  output_price   INTEGER NOT NULL DEFAULT 0,    -- 创建时售卖价快照（已含客户覆盖价）
+  cost_output_price INTEGER NOT NULL DEFAULT 0, -- 创建时成本价快照
+  create_request_id TEXT NOT NULL DEFAULT '',   -- 关联创建那条 cost=0 的 usage_log
+  created_at     INTEGER NOT NULL,
+  updated_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_video_tasks_sweep ON video_tasks(billed, created_at);

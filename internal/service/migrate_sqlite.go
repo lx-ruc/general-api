@@ -21,7 +21,7 @@ var migrateTables = []string{
 	"user_model_grants", "cost_centers", "api_keys", "access_tokens", "usage_logs",
 	"quota_grants", "quota_requests", "recharge_requests",
 	"org_model_prices", "org_model_grants", "org_model_requests", "notifications",
-	"audit_logs", "period_balances", "vendor_bills", "settings",
+	"audit_logs", "period_balances", "vendor_bills", "settings", "video_tasks",
 }
 
 // 刻意不迁的瞬态表：分钟级时效（验证码/重置令牌），迁移停机窗口内必然过期，
