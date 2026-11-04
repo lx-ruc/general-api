@@ -2021,7 +2021,17 @@ func (h *Handler) SetOrgModels(c *gin.Context) {
 		httpx.Fail(c, http.StatusNotFound, "客户不存在")
 		return
 	}
-	// 去重去空 + 校验存在且启用（事务外快速失败）
+	// 去重去空 + 校验存在且启用（事务外快速失败）。
+	// 幽灵开通自愈：名字已在该客户开通名单、但模型已不存在/停用（历史遗留、模型下线或
+	// 改名）时不整单报错——这类名字在勾选界面上看不见（列表只显示启用模型），整单报错
+	// 会让该客户的开通管理永远保存不了；静默剔除，让它落出 newSet 走回收级联清理。
+	// 只有「新增」的不存在/停用名字才拦（防手滑输错名）
+	var old []string
+	_ = h.DB.Model(&model.OrgModelGrant{}).Where("org_id = ?", id).Pluck("model_name", &old).Error
+	oldSet := map[string]bool{}
+	for _, n := range old {
+		oldSet[n] = true
+	}
 	seen := map[string]bool{}
 	dedup := make([]string, 0, len(req.Models))
 	for _, name := range req.Models {
@@ -2031,6 +2041,9 @@ func (h *Handler) SetOrgModels(c *gin.Context) {
 		var mc int64
 		_ = h.DB.Model(&model.Model{}).Where("name = ? AND status = 1", name).Count(&mc).Error
 		if mc == 0 {
+			if oldSet[name] {
+				continue // 幽灵行：剔除后按回收级联清理（含子账号授权）
+			}
 			httpx.Fail(c, http.StatusBadRequest, "模型不存在或未启用: "+name)
 			return
 		}
@@ -2038,12 +2051,6 @@ func (h *Handler) SetOrgModels(c *gin.Context) {
 		dedup = append(dedup, name)
 	}
 	// diff 出新增/回收（整体替换的增量语义，避免删全量重插造成 source 归一）
-	var old []string
-	_ = h.DB.Model(&model.OrgModelGrant{}).Where("org_id = ?", id).Pluck("model_name", &old).Error
-	oldSet := map[string]bool{}
-	for _, n := range old {
-		oldSet[n] = true
-	}
 	newSet := map[string]bool{}
 	for _, n := range dedup {
 		newSet[n] = true

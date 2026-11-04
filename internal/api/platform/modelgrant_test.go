@@ -145,6 +145,54 @@ func TestSetOrgModelsRecycleCascade(t *testing.T) {
 	}
 }
 
+// T6.5 幽灵开通自愈：客户名下已有「模型表不存在」的开通行（历史遗留/模型下线）时，
+// 保存不得整单报错——界面勾选列表只显示启用模型，这类名字看不见也删不掉，整单 400
+// 会让该客户的开通管理永远保存不了；应静默剔除并按回收级联清理子账号授权。
+// 新增的不存在名字仍然拦（防手滑输错名）
+func TestSetOrgModelsPrunesGhostGrants(t *testing.T) {
+	engine, db, token := newModelGrantEnv(t)
+	now := time.Now().Unix()
+	seedOrgWithAdmin(t, db, 9, "ghost-org", now)
+	if err := db.Exec(`INSERT INTO models (name, input_price, output_price, status, created_at, updated_at)
+		VALUES ('m1', 1000000, 1000000, 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	// 幽灵行：deepseek-flash 不在 models 表（连同子账号授权一起造出来）
+	if err := db.Exec(`INSERT INTO org_model_grants (org_id, model_name, created_at)
+		VALUES (9, 'deepseek-flash', ?), (9, 'm1', ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO users (id, org_id, username, password_hash, role, status, created_at, updated_at)
+		VALUES (92, 9, 'g-staff', 'x', 'member', 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO user_model_grants (user_id, model_name, created_at)
+		VALUES (92, 'deepseek-flash', ?)`, now).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// 提交列表带着幽灵名（前端 GetOrgModels 原样回传 granted 数组）：应 200 而非整单 400
+	body := `{"models":["m1","deepseek-flash"]}`
+	if code := putModelGrantReq(engine, token, "/api/platform/orgs/9/models", body); code != http.StatusOK {
+		t.Fatalf("含幽灵名的保存应 200（自愈剔除），得 %d", code)
+	}
+	var ghostOrg, ghostUser, m1 int64
+	_ = db.Raw(`SELECT COUNT(*) FROM org_model_grants WHERE org_id = 9 AND model_name = 'deepseek-flash'`).Scan(&ghostOrg).Error
+	_ = db.Raw(`SELECT COUNT(*) FROM user_model_grants WHERE user_id = 92`).Scan(&ghostUser).Error
+	_ = db.Raw(`SELECT COUNT(*) FROM org_model_grants WHERE org_id = 9 AND model_name = 'm1'`).Scan(&m1).Error
+	if ghostOrg != 0 || ghostUser != 0 {
+		t.Fatalf("幽灵行应被剔除并级联清理子账号授权，得 org=%d user=%d", ghostOrg, ghostUser)
+	}
+	if m1 != 1 {
+		t.Fatalf("正常模型 m1 的开通不受影响，得 %d", m1)
+	}
+
+	// 新增的不存在名字：仍然 400（防手滑）
+	if code := putModelGrantReq(engine, token, "/api/platform/orgs/9/models", `{"models":["m1","no-such-model"]}`); code != http.StatusBadRequest {
+		t.Fatalf("新增不存在名字应 400，得 %d", code)
+	}
+}
+
 // waitForModelGrantNotification 轮询等待异步站内通知落库（最多 1s）
 func waitForModelGrantNotification(t *testing.T, db *gorm.DB, userID int64) bool {
 	t.Helper()
