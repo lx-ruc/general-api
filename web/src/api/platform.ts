@@ -284,6 +284,85 @@ export const apiUpdateOrgAlertLevels = (id: number, threshold: number, alertBala
   http.put<any, any>(`/api/platform/orgs/${id}/alert-levels`,
     alertBalancePoints === undefined ? { threshold } : { threshold, alert_balance: alertBalancePoints })
 
+// ---- 厂商管理（一行一厂商：Key 池 + 端点 + 模型概览） ----
+
+export interface VendorEPModel {
+  model_name: string
+  upstream_model_name?: string | null
+}
+
+export interface VendorEndpoint {
+  id: number
+  name: string
+  base_url: string
+  path: string
+  weight: number
+  priority: number
+  status: number
+  last_test_at: number | null
+  last_test_ok: number
+  auto_disabled_at: number
+  models: VendorEPModel[]
+}
+
+export interface Vendor {
+  id: number
+  name: string
+  display_name: string
+  status: number
+  remark: string
+  has_key?: boolean
+  key_count?: number
+  key_active_count?: number
+  key_cooling_count?: number
+  model_count?: number
+  models?: string[]
+  endpoint_count?: number
+  endpoints?: VendorEndpoint[]
+  org_count?: number
+  last_test_at?: number | null
+  last_test_ok?: number
+  created_at: number
+}
+
+export const apiListVendors = () => http.get<any, Vendor[]>('/api/platform/vendors')
+export const apiCreateVendor = (data: any) => http.post<any, { id: number; message: string }>('/api/platform/vendors', data)
+export const apiGetVendor = (id: number) => http.get<any, Vendor>(`/api/platform/vendors/${id}`)
+export const apiUpdateVendor = (id: number, data: any) => http.put<any, any>(`/api/platform/vendors/${id}`, data)
+export const apiDeleteVendor = (id: number) => http.delete<any, any>(`/api/platform/vendors/${id}`)
+export const apiTestVendor = (id: number) => http.post<any, ChannelTestResult>(`/api/platform/vendors/${id}/test`)
+// 厂商 Key 池（与渠道 Key 池同形状，路径挂厂商下）
+export const apiListVendorKeys = (id: number) => http.get<any, ChannelKeyRow[]>(`/api/platform/vendors/${id}/keys`)
+export const apiAddVendorKeys = (id: number, keys: string[], weight: number) =>
+  http.post<any, any>(`/api/platform/vendors/${id}/keys`, { keys, weight })
+export const apiDeleteVendorKey = (id: number, kid: number) =>
+  http.delete<any, any>(`/api/platform/vendors/${id}/keys/${kid}`)
+export const apiVendorKeyFull = (id: number, kid: number): Promise<{ key: string }> =>
+  http.get<any, { key: string }>(`/api/platform/vendors/${id}/keys/${kid}/full`)
+export const apiUpdateVendorKeyStatus = (id: number, kid: number, status: number) =>
+  http.put<any, any>(`/api/platform/vendors/${id}/keys/${kid}/status`, { status })
+export const apiClearVendorKeyCooldown = (id: number, kid: number) =>
+  http.post<any, { message: string }>(`/api/platform/vendors/${id}/keys/${kid}/cooldown/clear`)
+
+// 客户级厂商定价（组内全部模型统一生效；模型级覆盖优先）
+export interface OrgVendorPriceRow {
+  org_id: number
+  org_name: string
+  override: boolean
+  input_price: number
+  output_price: number
+  input_cache_hit_price: number
+  remark: string
+}
+
+export const apiListOrgVendorPrices = (vendorId: number) =>
+  http.get<any, OrgVendorPriceRow[]>(`/api/platform/vendor-prices/${vendorId}`)
+export const apiSetOrgVendorPrice = (vendorId: number, data: {
+  org_id: number; input_price: number; output_price: number; input_cache_hit_price?: number; remark?: string,
+}) => http.put<any, any>(`/api/platform/vendor-prices/${vendorId}`, data)
+export const apiDeleteOrgVendorPrice = (vendorId: number, orgId: number) =>
+  http.delete<any, any>(`/api/platform/vendor-prices/${vendorId}/${orgId}`)
+
 // ---- 充值审批与收款信息 ----
 
 export interface RechargeRow {

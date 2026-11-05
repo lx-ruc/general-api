@@ -42,7 +42,8 @@ const menus = computed<MenuItem[]>(() => {
       const items: MenuItem[] = [
         { index: '/platform/dashboard', title: '数据看板', icon: 'Odometer' },
         { index: '/platform/orgs', title: '客户管理', icon: 'OfficeBuilding' },
-        { index: '/platform/channels', title: '渠道管理', icon: 'Connection' },
+        { index: '/platform/vendors', title: '厂商管理', icon: 'Connection' },
+        { index: '/platform/channels', title: '渠道管理', icon: 'Share' },
         { index: '/platform/models', title: '模型定价', icon: 'PriceTag' },
         { index: '/platform/quotas', title: '配额管理', icon: 'Coin' },
         { index: '/platform/bills', title: '账单查询', icon: 'Tickets' },

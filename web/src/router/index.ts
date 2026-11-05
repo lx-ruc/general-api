@@ -15,6 +15,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'platform/dashboard', component: () => import('../views/platform/DashboardView.vue'), meta: { roles: ['platform_admin'] } },
       { path: 'platform/orgs', component: () => import('../views/platform/OrgListView.vue'), meta: { roles: ['platform_admin'] } },
       { path: 'platform/orgs/:id', component: () => import('../views/platform/OrgDetailView.vue'), meta: { roles: ['platform_admin'] } },
+      { path: 'platform/vendors', component: () => import('../views/platform/VendorListView.vue'), meta: { roles: ['platform_admin'] } },
       { path: 'platform/channels', component: () => import('../views/platform/ChannelListView.vue'), meta: { roles: ['platform_admin'] } },
       { path: 'platform/models', component: () => import('../views/platform/ModelListView.vue'), meta: { roles: ['platform_admin'] } },
       { path: 'platform/quotas', component: () => import('../views/platform/QuotaManageView.vue'), meta: { roles: ['platform_admin'] } },
