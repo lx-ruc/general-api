@@ -1564,6 +1564,10 @@ func (h *Handler) DeleteModel(c *gin.Context) {
 		if err := tx.Where("model_name = ?", m.Name).Delete(&model.UserModelGrant{}).Error; err != nil {
 			return err
 		}
+		// 补齐历史不对称：org_model_grants 的残留行也一并清理（无记录=未开通语义）
+		if err := tx.Where("model_name = ?", m.Name).Delete(&model.OrgModelGrant{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Where("model_name = ?", m.Name).Delete(&model.OrgModelPrice{}).Error; err != nil {
 			return err
 		}
@@ -1694,6 +1698,131 @@ func (h *Handler) DeleteOrgModelPrice(c *gin.Context) {
 		return
 	}
 	httpx.OK(c, gin.H{"message": "已恢复默认价"})
+}
+
+// ---------------- 客户级厂商定价（组内全部模型统一生效；模型级覆盖优先） ----------------
+
+// ListOrgVendorPrices GET /api/platform/vendor-prices/:vendorId：某厂商下各客户的生效价。
+// override=false 时三价为回填的模型默认价对照（厂商价在模型定价弹窗按厂商行展示）
+func (h *Handler) ListOrgVendorPrices(c *gin.Context) {
+	vid, err := strconv.ParseInt(c.Param("vendorId"), 10, 64)
+	if err != nil || vid <= 0 {
+		httpx.Fail(c, http.StatusBadRequest, "invalid vendor id")
+		return
+	}
+	var v model.Vendor
+	if e := h.DB.Where("id = ?", vid).First(&v).Error; e != nil {
+		httpx.Fail(c, http.StatusNotFound, "厂商不存在")
+		return
+	}
+	var rows []struct {
+		OrgID              int64  `json:"org_id"`
+		OrgName            string `json:"org_name"`
+		Override           bool   `json:"override"`
+		InputPrice         int64  `json:"input_price"`
+		OutputPrice        int64  `json:"output_price"`
+		InputCacheHitPrice int64  `json:"input_cache_hit_price"`
+		Remark             string `json:"remark"`
+	}
+	if e := h.DB.Raw(`
+		SELECT o.id AS org_id, o.name AS org_name,
+		       CASE WHEN p.id IS NULL THEN 0 ELSE 1 END AS override,
+		       COALESCE(p.input_price, 0) AS input_price,
+		       COALESCE(p.output_price, 0) AS output_price,
+		       COALESCE(p.input_cache_hit_price, 0) AS input_cache_hit_price,
+		       COALESCE(p.remark, '') AS remark
+		FROM orgs o
+		LEFT JOIN org_vendor_prices p ON p.org_id = o.id AND p.vendor_id = ?
+		WHERE o.id IN (SELECT org_id FROM org_vendor_grants WHERE vendor_id = ?)
+		   OR p.id IS NOT NULL
+		ORDER BY o.name`, vid, vid).Scan(&rows).Error; e != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "查询客户厂商定价失败")
+		return
+	}
+	if rows == nil {
+		rows = []struct {
+			OrgID              int64  `json:"org_id"`
+			OrgName            string `json:"org_name"`
+			Override           bool   `json:"override"`
+			InputPrice         int64  `json:"input_price"`
+			OutputPrice        int64  `json:"output_price"`
+			InputCacheHitPrice int64  `json:"input_cache_hit_price"`
+			Remark             string `json:"remark"`
+		}{}
+	}
+	httpx.OK(c, rows)
+}
+
+// SetOrgVendorPrice PUT /api/platform/vendor-prices/:vendorId：设置某客户的厂商价
+// （对该客户生效于组内全部模型，模型级覆盖价优先于厂商价）
+func (h *Handler) SetOrgVendorPrice(c *gin.Context) {
+	vid, err := strconv.ParseInt(c.Param("vendorId"), 10, 64)
+	if err != nil || vid <= 0 {
+		httpx.Fail(c, http.StatusBadRequest, "invalid vendor id")
+		return
+	}
+	var req struct {
+		OrgID              int64 `json:"org_id" binding:"required,gt=0"`
+		InputPrice         *int64 `json:"input_price" binding:"required,min=0"`
+		OutputPrice        *int64 `json:"output_price" binding:"required,min=0"`
+		InputCacheHitPrice int64  `json:"input_cache_hit_price" binding:"omitempty,min=0"`
+		Remark             string `json:"remark"`
+	}
+	if !httpx.BindJSON(c, &req) {
+		return
+	}
+	var v model.Vendor
+	if e := h.DB.Where("id = ?", vid).First(&v).Error; e != nil {
+		httpx.Fail(c, http.StatusNotFound, "厂商不存在")
+		return
+	}
+	var o model.Org
+	if e := h.DB.Where("id = ?", req.OrgID).First(&o).Error; e != nil {
+		httpx.Fail(c, http.StatusNotFound, "客户不存在")
+		return
+	}
+	now := time.Now().Unix()
+	p := model.OrgVendorPrice{
+		OrgID: req.OrgID, VendorID: vid,
+		InputPrice: *req.InputPrice, OutputPrice: *req.OutputPrice,
+		InputCacheHitPrice: req.InputCacheHitPrice, Remark: req.Remark,
+	}
+	res := h.DB.Where("org_id = ? AND vendor_id = ?", req.OrgID, vid).
+		Assign(map[string]any{
+			"input_price": p.InputPrice, "output_price": p.OutputPrice,
+			"input_cache_hit_price": p.InputCacheHitPrice, "remark": p.Remark,
+			"updated_at": now,
+		}).FirstOrCreate(&p)
+	if res.Error != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "保存客户厂商定价失败")
+		return
+	}
+	httpx.OK(c, gin.H{"message": "已保存", "override": true})
+}
+
+// DeleteOrgVendorPrice DELETE /api/platform/vendor-prices/:vendorId/:orgId：
+// 删除客户厂商价，组内模型回落（模型覆盖价 > 模型默认价）
+func (h *Handler) DeleteOrgVendorPrice(c *gin.Context) {
+	vid, err := strconv.ParseInt(c.Param("vendorId"), 10, 64)
+	if err != nil || vid <= 0 {
+		httpx.Fail(c, http.StatusBadRequest, "invalid vendor id")
+		return
+	}
+	orgID, err := strconv.ParseInt(c.Param("orgId"), 10, 64)
+	if err != nil || orgID <= 0 {
+		httpx.Fail(c, http.StatusBadRequest, "invalid org id")
+		return
+	}
+	res := h.DB.Where("org_id = ? AND vendor_id = ?", orgID, vid).Delete(&model.OrgVendorPrice{})
+	if res.Error != nil {
+		httpx.Fail(c, http.StatusInternalServerError, "删除客户厂商定价失败")
+		return
+	}
+	if res.RowsAffected == 0 {
+		httpx.Fail(c, http.StatusNotFound, "该客户未设置厂商价")
+		return
+	}
+	httpx.OK(c, gin.H{"message": "已删除，组内模型回落模型级价格"})
 }
 
 // orgModelPriceRow 客户详情页定价表的模型行（以客户为中心的视图）：
@@ -1993,7 +2122,8 @@ func (h *Handler) ListModelRequests(c *gin.Context) {
 }
 
 // HandleModelRequest PUT /api/platform/model-requests/:id：审批开通申请。
-// 批准 = 同事务逐模型写 org_model_grants（UNIQUE + ON CONFLICT DO NOTHING 幂等）
+// 批准 = 同事务逐厂商写 org_vendor_grants（UNIQUE + ON CONFLICT DO NOTHING 幂等；
+// 厂商授权 = 组内全部模型可用，新模型自动继承）
 func (h *Handler) HandleModelRequest(c *gin.Context) {
 	id, ok := httpx.PathID(c)
 	if !ok {
@@ -2012,13 +2142,13 @@ func (h *Handler) HandleModelRequest(c *gin.Context) {
 		return
 	}
 	names := service.SplitModelNames(r.ModelNames)
-	// 批准时前置校验模型仍启用（事务外快速失败，窗口内下架由幂等写兜底不破坏数据）
+	// 批准时前置校验厂商仍存在（事务外快速失败，窗口内删除由幂等写兜底不破坏数据）
 	if req.Action == "approve" {
 		for _, n := range names {
 			var cnt int64
-			_ = h.DB.Raw("SELECT COUNT(*) FROM models WHERE name = ? AND status = 1", n).Scan(&cnt).Error
+			_ = h.DB.Raw("SELECT COUNT(*) FROM vendors WHERE name = ?", n).Scan(&cnt).Error
 			if cnt != 1 {
-				httpx.Fail(c, http.StatusBadRequest, "模型 "+n+" 已下架或不存在，请拒绝本次申请")
+				httpx.Fail(c, http.StatusBadRequest, "厂商 "+n+" 已删除或不存在，请拒绝本次申请")
 				return
 			}
 		}
@@ -2041,9 +2171,10 @@ func (h *Handler) HandleModelRequest(c *gin.Context) {
 		}
 		if req.Action == "approve" {
 			for _, n := range names {
-				if err := tx.Exec(`INSERT INTO org_model_grants (org_id, model_name, granted_by, source, created_at)
-					VALUES (?, ?, ?, 'grant', ?) ON CONFLICT (org_id, model_name) DO NOTHING`,
-					r.OrgID, n, operator, now).Error; err != nil {
+				if err := tx.Exec(`INSERT INTO org_vendor_grants (org_id, vendor_id, granted_by, source, created_at)
+					SELECT ?, v.id, ?, 'grant', ? FROM vendors v WHERE v.name = ?
+					ON CONFLICT (org_id, vendor_id) DO NOTHING`,
+					r.OrgID, operator, now, n).Error; err != nil {
 					return err
 				}
 			}
@@ -2062,8 +2193,8 @@ func (h *Handler) HandleModelRequest(c *gin.Context) {
 	go func() {
 		var title, body string
 		if req.Action == "approve" {
-			title = "模型开通申请已通过"
-			body = fmt.Sprintf("平台已为客户开通模型：%s。现在可在【子账号管理 → 模型授权】为成员勾选这些模型。", r.ModelNames)
+			title = "厂商开通申请已通过"
+			body = fmt.Sprintf("平台已为客户开通厂商（组内全部模型可用，新增模型自动继承）：%s。现在可在【子账号管理 → 模型授权】为成员勾选。", r.ModelNames)
 		} else {
 			title = "模型开通申请已被拒绝"
 			body = "平台拒绝了本次模型开通申请。"
@@ -2080,33 +2211,47 @@ func (h *Handler) HandleModelRequest(c *gin.Context) {
 	httpx.OK(c, gin.H{"message": "已驳回"})
 }
 
-// GetOrgModels GET /api/platform/orgs/:id/models：客户已开通模型 + 全部启用模型（手动管理勾选用）
+// GetOrgModels GET /api/platform/orgs/:id/models：客户已开通范围 + 候选。
+// granted 为双段对象：vendors = 已开通厂商（附名称）；models = 模型级例外名单
 func (h *Handler) GetOrgModels(c *gin.Context) {
 	id, ok := httpx.PathID(c)
 	if !ok {
 		return
 	}
-	var granted []string
-	_ = h.DB.Model(&model.OrgModelGrant{}).Where("org_id = ?", id).
-		Order("model_name").Pluck("model_name", &granted).Error
+	var vendors []struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	}
+	_ = h.DB.Raw(`SELECT v.id, v.name FROM org_vendor_grants g JOIN vendors v ON v.id = g.vendor_id
+		WHERE g.org_id = ? ORDER BY v.name`, id).Scan(&vendors).Error
+	var modelExcept []string
+	_ = h.DB.Raw(`SELECT model_name FROM org_model_grants WHERE org_id = ? ORDER BY model_name`, id).Scan(&modelExcept).Error
 	var available []model.Model
 	_ = h.DB.Where("status = 1").Order("name").Find(&available).Error
-	if granted == nil {
-		granted = []string{}
+	if vendors == nil {
+		vendors = []struct {
+			ID   int64  `json:"id"`
+			Name string `json:"name"`
+		}{}
 	}
-	httpx.OK(c, gin.H{"granted": granted, "available": available})
+	if modelExcept == nil {
+		modelExcept = []string{}
+	}
+	httpx.OK(c, gin.H{"granted": gin.H{"vendors": vendors, "models": modelExcept}, "available": available})
 }
 
-// SetOrgModels PUT /api/platform/orgs/:id/models：整体替换客户开通范围。
-// 回收必须级联——同事务删除该客户全部子账号对被回收模型的 user_model_grants，
-// 否则数据面（只查子账号白名单）仍会放行已回收模型
+// SetOrgModels PUT /api/platform/orgs/:id/models：整体替换客户开通范围（双段：
+// vendors = 厂商开通 id 列表；models = 模型级例外名单）。
+// 回收必须级联——同事务删除该客户全部子账号对被回收范围的授权（厂商授权 + 该厂商
+// 模型的例外授权），否则数据面（只查子账号白名单）仍会放行已回收模型
 func (h *Handler) SetOrgModels(c *gin.Context) {
 	id, ok := httpx.PathID(c)
 	if !ok {
 		return
 	}
 	var req struct {
-		Models []string `json:"models"`
+		Vendors []int64  `json:"vendors"`
+		Models  []string `json:"models"`
 	}
 	if !httpx.BindJSON(c, &req) {
 		return
@@ -2117,55 +2262,115 @@ func (h *Handler) SetOrgModels(c *gin.Context) {
 		httpx.Fail(c, http.StatusNotFound, "客户不存在")
 		return
 	}
-	// 去重去空 + 校验存在且启用（事务外快速失败）。
-	// 幽灵开通自愈：名字已在该客户开通名单、但模型已不存在/停用（历史遗留、模型下线或
-	// 改名）时不整单报错——这类名字在勾选界面上看不见（列表只显示启用模型），整单报错
-	// 会让该客户的开通管理永远保存不了；静默剔除，让它落出 newSet 走回收级联清理。
-	// 只有「新增」的不存在/停用名字才拦（防手滑输错名）
-	var old []string
-	_ = h.DB.Model(&model.OrgModelGrant{}).Where("org_id = ?", id).Pluck("model_name", &old).Error
-	oldSet := map[string]bool{}
-	for _, n := range old {
-		oldSet[n] = true
+	// ---- 厂商段：去重 + 校验存在（事务外快速失败）。
+	// 幽灵开通自愈：id 已在客户开通名单但厂商已删除时不整单报错，静默剔除走回收级联
+	var oldVids []int64
+	_ = h.DB.Raw("SELECT vendor_id FROM org_vendor_grants WHERE org_id = ?", id).Scan(&oldVids).Error
+	oldVSet := map[int64]bool{}
+	for _, v := range oldVids {
+		oldVSet[v] = true
 	}
-	seen := map[string]bool{}
-	dedup := make([]string, 0, len(req.Models))
+	seenV := map[int64]bool{}
+	vendors := make([]int64, 0, len(req.Vendors))
+	for _, vid := range req.Vendors {
+		if vid <= 0 || seenV[vid] {
+			continue
+		}
+		var exist int64
+		_ = h.DB.Raw("SELECT COUNT(*) FROM vendors WHERE id = ?", vid).Scan(&exist).Error
+		if exist == 0 {
+			if oldVSet[vid] {
+				continue // 幽灵行：剔除后按回收级联清理
+			}
+			httpx.Fail(c, http.StatusBadRequest, "厂商不存在")
+			return
+		}
+		seenV[vid] = true
+		vendors = append(vendors, vid)
+	}
+	// ---- 模型例外段：同旧逻辑（去重 + 存在校验 + 幽灵自愈）
+	var oldM []string
+	_ = h.DB.Model(&model.OrgModelGrant{}).Where("org_id = ?", id).Pluck("model_name", &oldM).Error
+	oldMSet := map[string]bool{}
+	for _, n := range oldM {
+		oldMSet[n] = true
+	}
+	seenM := map[string]bool{}
+	models := make([]string, 0, len(req.Models))
 	for _, name := range req.Models {
-		if name == "" || seen[name] {
+		if name == "" || seenM[name] {
 			continue
 		}
 		var mc int64
 		_ = h.DB.Model(&model.Model{}).Where("name = ? AND status = 1", name).Count(&mc).Error
 		if mc == 0 {
-			if oldSet[name] {
+			if oldMSet[name] {
 				continue // 幽灵行：剔除后按回收级联清理（含子账号授权）
 			}
 			httpx.Fail(c, http.StatusBadRequest, "模型不存在或未启用: "+name)
 			return
 		}
-		seen[name] = true
-		dedup = append(dedup, name)
+		seenM[name] = true
+		models = append(models, name)
 	}
-	// diff 出新增/回收（整体替换的增量语义，避免删全量重插造成 source 归一）
-	newSet := map[string]bool{}
-	for _, n := range dedup {
-		newSet[n] = true
+	// ---- diff（整体替换的增量语义，避免删全量重插造成 source 归一）
+	newVSet := map[int64]bool{}
+	for _, v := range vendors {
+		newVSet[v] = true
 	}
-	var added, removed []string
-	for _, n := range dedup {
-		if !oldSet[n] {
-			added = append(added, n)
+	newMSet := map[string]bool{}
+	for _, n := range models {
+		newMSet[n] = true
+	}
+	var addedV, removedV []int64
+	for _, v := range vendors {
+		if !oldVSet[v] {
+			addedV = append(addedV, v)
 		}
 	}
-	for _, n := range old {
-		if !newSet[n] {
-			removed = append(removed, n)
+	for _, v := range oldVids {
+		if !newVSet[v] {
+			removedV = append(removedV, v)
+		}
+	}
+	var addedM, removedM []string
+	for _, n := range models {
+		if !oldMSet[n] {
+			addedM = append(addedM, n)
+		}
+	}
+	for _, n := range oldM {
+		if !newMSet[n] {
+			removedM = append(removedM, n)
 		}
 	}
 	now := time.Now().Unix()
 	operator := middleware.GetUID(c)
 	err := h.DB.Transaction(func(tx *gorm.DB) error {
-		for _, n := range removed {
+		for _, vid := range removedV {
+			if err := tx.Where("org_id = ? AND vendor_id = ?", id, vid).
+				Delete(&model.OrgVendorGrant{}).Error; err != nil {
+				return err
+			}
+			// 级联：该客户全部子账号对该厂商的授权 + 该厂商模型的例外授权一并移除（同事务）
+			if err := tx.Exec(`DELETE FROM user_vendor_grants WHERE vendor_id = ?
+				AND user_id IN (SELECT id FROM users WHERE org_id = ?)`, vid, id).Error; err != nil {
+				return err
+			}
+			if err := tx.Exec(`DELETE FROM user_model_grants WHERE model_name IN
+				(SELECT name FROM models WHERE vendor_id = ?)
+				AND user_id IN (SELECT id FROM users WHERE org_id = ?)`, vid, id).Error; err != nil {
+				return err
+			}
+		}
+		for _, vid := range addedV {
+			if err := tx.Create(&model.OrgVendorGrant{
+				OrgID: id, VendorID: vid, GrantedBy: opID(operator), Source: "grant", CreatedAt: now,
+			}).Error; err != nil {
+				return err
+			}
+		}
+		for _, n := range removedM {
 			if err := tx.Where("org_id = ? AND model_name = ?", id, n).
 				Delete(&model.OrgModelGrant{}).Error; err != nil {
 				return err
@@ -2176,7 +2381,7 @@ func (h *Handler) SetOrgModels(c *gin.Context) {
 				return err
 			}
 		}
-		for _, n := range added {
+		for _, n := range addedM {
 			if err := tx.Create(&model.OrgModelGrant{
 				OrgID: id, ModelName: n, GrantedBy: opID(operator), Source: "grant", CreatedAt: now,
 			}).Error; err != nil {
@@ -2191,20 +2396,36 @@ func (h *Handler) SetOrgModels(c *gin.Context) {
 	}
 	// 开通/回收结果站内通知客户管理员（顶栏铃铛）
 	go func() {
-		for _, n := range added {
+		var names []string
+		_ = h.DB.Raw("SELECT name FROM vendors WHERE id IN ?", addedV).Scan(&names).Error
+		for _, n := range names {
+			service.NotifyOrgAdminsInsite(h.DB, id, service.NotifyTypeModelRequest,
+				fmt.Sprintf("厂商已开通：%s", n),
+				fmt.Sprintf("平台已为客户开通厂商「%s」（组内全部模型可用，新增模型自动继承），可在【子账号管理 → 模型授权】为成员勾选。", n))
+		}
+		names = nil
+		_ = h.DB.Raw("SELECT name FROM vendors WHERE id IN ?", removedV).Scan(&names).Error
+		for _, n := range names {
+			service.NotifyOrgAdminsInsite(h.DB, id, service.NotifyTypeModelRequest,
+				fmt.Sprintf("厂商已被回收：%s", n),
+				fmt.Sprintf("平台回收了厂商「%s」。该客户全部子账号对组内模型的授权已同步移除，相关调用将立即被拒绝。", n))
+		}
+		for _, n := range addedM {
 			service.NotifyOrgAdminsInsite(h.DB, id, service.NotifyTypeModelRequest,
 				fmt.Sprintf("模型已开通：%s", n),
 				fmt.Sprintf("平台已为客户开通模型「%s」，可在【子账号管理 → 模型授权】为成员勾选。", n))
 		}
-		for _, n := range removed {
+		for _, n := range removedM {
 			service.NotifyOrgAdminsInsite(h.DB, id, service.NotifyTypeModelRequest,
 				fmt.Sprintf("模型已被回收：%s", n),
 				fmt.Sprintf("平台回收了模型「%s」。该客户全部子账号的相应授权已同步移除，相关调用将立即被拒绝。", n))
 		}
 	}()
 	httpx.OK(c, gin.H{
-		"message": fmt.Sprintf("已更新：开通 %d 个，回收 %d 个", len(added), len(removed)),
-		"added":   added, "removed": removed,
+		"message": fmt.Sprintf("已更新：开通厂商 %d 个/回收 %d 个，模型例外 +%d/−%d",
+			len(addedV), len(removedV), len(addedM), len(removedM)),
+		"added_vendors": addedV, "removed_vendors": removedV,
+		"added_models": addedM, "removed_models": removedM,
 	})
 }
 

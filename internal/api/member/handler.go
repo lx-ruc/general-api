@@ -166,8 +166,11 @@ func (h *Handler) ListModels(c *gin.Context) {
 	var models []modelRow
 	_ = h.DB.Raw(`
 		SELECT m.name, m.display_name, m.vendor, m.input_price, m.output_price
-		FROM user_model_grants g JOIN models m ON m.name = g.model_name
-		WHERE g.user_id = ? AND m.status = 1 ORDER BY m.name`, uid(c)).Scan(&models).Error
+		FROM models m
+		WHERE m.status = 1
+		  AND (EXISTS (SELECT 1 FROM user_vendor_grants vg WHERE vg.user_id = ? AND vg.vendor_id = m.vendor_id)
+		    OR EXISTS (SELECT 1 FROM user_model_grants mg WHERE mg.user_id = ? AND mg.model_name = m.name))
+		ORDER BY m.name`, uid(c), uid(c)).Scan(&models).Error
 	if models == nil {
 		models = []modelRow{}
 	}
@@ -379,13 +382,17 @@ func (h *Handler) ListAvailableModels(c *gin.Context) {
 	var rows []row
 	_ = h.DB.Raw(`
 		SELECT m.name, m.display_name, m.vendor,
-		       CASE WHEN g.user_id IS NULL THEN 0 ELSE 1 END AS granted
+		       CASE WHEN (EXISTS (SELECT 1 FROM user_vendor_grants vg
+		                            WHERE vg.user_id = ? AND vg.vendor_id = m.vendor_id)
+		              OR EXISTS (SELECT 1 FROM user_model_grants mg
+		                          WHERE mg.user_id = ? AND mg.model_name = m.name))
+		         THEN 1 ELSE 0 END AS granted
 		FROM models m
-		LEFT JOIN user_model_grants g ON g.model_name = m.name AND g.user_id = ?
 		WHERE m.status = 1
-		  AND m.name IN (SELECT model_name FROM org_model_grants WHERE org_id = ?)
+		  AND (m.vendor_id IN (SELECT vendor_id FROM org_vendor_grants WHERE org_id = ?)
+		    OR m.name IN (SELECT model_name FROM org_model_grants WHERE org_id = ?))
 		  AND `+service.ModelHasLiveUpstream+`
-		ORDER BY m.name`, uid(c), o.ID).Scan(&rows).Error
+		ORDER BY m.name`, uid(c), uid(c), o.ID, o.ID).Scan(&rows).Error
 	if rows == nil {
 		rows = []row{}
 	}
@@ -425,46 +432,58 @@ func (h *Handler) CreateRequest(c *gin.Context) {
 	qr := model.QuotaRequest{OrgID: *u.OrgID, UserID: u.ID, Reason: req.Reason, Status: "pending"}
 	switch {
 	case len(req.Models) > 0:
-		// 模型申请：校验均为存在且启用的模型；已授权的静默剔除（前端已过滤，
-		// 这里兜底防重复申请），剔除后为空 → 视为空申请
-		names := uniqueNonEmpty(req.Models)
-		var valid []string
-		rows, err := h.DB.Raw(`SELECT name FROM models WHERE status = 1`).Rows()
-		if err != nil {
-			httpx.Fail(c, http.StatusInternalServerError, "查询模型失败")
+		// 模型申请（厂商口径，兼容旧前端提交的模型名——归并到所属厂商）：
+		// 校验厂商在客户开通范围；已授权厂商静默剔除，剔除后为空 → 视为空申请
+		var names []string
+		{
+			raw := uniqueNonEmpty(req.Models)
+			var rows []struct{ Name string }
+			_ = h.DB.Raw(`SELECT DISTINCT v.name FROM models m JOIN vendors v ON v.id = m.vendor_id
+				WHERE m.name IN ? AND m.vendor_id > 0`, raw).Scan(&rows).Error
+			for _, r := range rows {
+				names = append(names, r.Name)
+			}
+		}
+		if len(names) == 0 {
+			httpx.Fail(c, http.StatusBadRequest, "所选模型均未挂厂商，无法申请")
 			return
 		}
-		enabled := map[string]bool{}
-		for rows.Next() {
-			var n string
-			if err := rows.Scan(&n); err == nil {
-				enabled[n] = true
-			}
+		var valid []string
+		var vendorRows []struct{ ID int64; Name string }
+		_ = h.DB.Raw("SELECT id, name FROM vendors").Scan(&vendorRows).Error
+		byName := map[string]int64{}
+		for _, v := range vendorRows {
+			byName[v.Name] = v.ID
 		}
-		_ = rows.Close()
-		var granted []struct{ ModelName string }
-		_ = h.DB.Raw(`SELECT model_name FROM user_model_grants WHERE user_id = ?`, u.ID).Scan(&granted).Error
-		mine := map[string]bool{}
-		for _, g := range granted {
-			mine[g.ModelName] = true
+		var grantedVids []int64
+		_ = h.DB.Raw("SELECT vendor_id FROM user_vendor_grants WHERE user_id = ?", u.ID).Scan(&grantedVids).Error
+		mine := map[int64]bool{}
+		for _, id := range grantedVids {
+			mine[id] = true
 		}
-		orgOpen := service.OrgGrantedSet(h.DB, *u.OrgID)
+		var orgOpenVids []int64
+		_ = h.DB.Raw("SELECT vendor_id FROM org_vendor_grants WHERE org_id = ?", *u.OrgID).Scan(&orgOpenVids).Error
+		orgOpen := map[int64]bool{}
+		for _, id := range orgOpenVids {
+			orgOpen[id] = true
+		}
 		for _, n := range names {
-			if !enabled[n] {
-				httpx.Fail(c, http.StatusBadRequest, "模型不存在或已下架："+n)
+			vid, ok := byName[n]
+			if !ok {
+				httpx.Fail(c, http.StatusBadRequest, "厂商不存在："+n)
 				return
 			}
-			// 平台级白名单：客户未开通的模型不可申请（需请管理员先向平台申请开通）
-			if _, open := orgOpen[n]; !open {
-				httpx.Fail(c, http.StatusBadRequest, "模型 "+n+" 尚未在本客户开通，请联系管理员向平台申请")
+			// 平台级白名单：客户未开通的厂商不可申请（需请管理员先向平台申请开通）
+			if !orgOpen[vid] {
+				httpx.Fail(c, http.StatusBadRequest, "厂商 "+n+" 尚未在本客户开通，请联系管理员向平台申请")
 				return
 			}
-			if !mine[n] {
+			if !mine[vid] {
 				valid = append(valid, n)
 			}
 		}
 		if len(valid) == 0 {
-			httpx.Fail(c, http.StatusBadRequest, "申请的模型均已授权，无需重复申请")
+			httpx.Fail(c, http.StatusBadRequest, "申请的厂商均已授权，无需重复申请")
 			return
 		}
 		qr.Kind, qr.ModelNames = "model", strings.Join(valid, ",")
@@ -489,7 +508,7 @@ func (h *Handler) CreateRequest(c *gin.Context) {
 			who, u.Username, service.FormatYuan(h.DB, qr.Amount), qr.Reason)
 		if qr.Kind == "model" {
 			title, body = fmt.Sprintf("模型申请待审批：%s", who), fmt.Sprintf(
-				"子账号「%s」(%s) 申请使用模型：%s。\n到【申请审批】处理。",
+				"子账号「%s」(%s) 申请使用厂商（组内全部模型）：%s。\n到【申请审批】处理。",
 				who, u.Username, qr.ModelNames)
 		}
 		service.NotifyOrgAdminsInsite(h.DB, *u.OrgID, service.NotifyTypeRequestPending, title, body)

@@ -376,13 +376,20 @@ func TestCreateMemberRejectNegativeQuota(t *testing.T) {
 func TestHandleRequestModelKind(t *testing.T) {
 	e := newOrgEnv(t)
 	now := time.Now().Unix()
-	// 启用模型 m1/m2，m3 下架
+	// 厂商口径：两个厂商 v1/v2（m1 挂 v1、m2 挂 v2、m3 下架也挂 v1）
+	for _, v := range []int64{1, 2} {
+		if err := e.db.Exec(`INSERT INTO vendors (id, name, status, created_at, updated_at)
+			VALUES (?, ?, 1, ?, ?)`, v, fmt.Sprintf("v%d", v), now, now).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, m := range []struct {
 		name   string
+		vendor int64
 		status int
-	}{{"m1", 1}, {"m2", 1}, {"m3", 0}} {
-		if err := e.db.Exec(`INSERT INTO models (name, input_price, output_price, status, created_at, updated_at)
-			VALUES (?, 1000000, 1000000, ?, ?, ?)`, m.name, m.status, now, now).Error; err != nil {
+	}{{"m1", 1, 1}, {"m2", 2, 1}, {"m3", 1, 0}} {
+		if err := e.db.Exec(`INSERT INTO models (name, vendor_id, input_price, output_price, status, created_at, updated_at)
+			VALUES (?, ?, 1000000, 1000000, ?, ?, ?)`, m.name, m.vendor, m.status, now, now).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -390,17 +397,17 @@ func TestHandleRequestModelKind(t *testing.T) {
 		VALUES (10, 1, 'mem10', 'x', 'member', 1, ?, ?)`, now, now).Error; err != nil {
 		t.Fatal(err)
 	}
-	// mem10 已被授权 m1（申请里重复出现应幂等跳过）
-	if err := e.db.Exec(`INSERT INTO user_model_grants (user_id, model_name, created_at) VALUES (10, 'm1', ?)`, now).Error; err != nil {
+	// mem10 已被授权厂商 v1（申请里重复出现应幂等跳过）
+	if err := e.db.Exec(`INSERT INTO user_vendor_grants (user_id, vendor_id, created_at) VALUES (10, 1, ?)`, now).Error; err != nil {
 		t.Fatal(err)
 	}
-	// 客户已开通 m1/m2（白名单收窄后审批复查 org 范围）
-	if err := e.db.Exec(`INSERT INTO org_model_grants (org_id, model_name, created_at) VALUES (1, 'm1', ?), (1, 'm2', ?)`, now, now).Error; err != nil {
+	// 客户已开通厂商 v1/v2（白名单收窄后审批复查 org 范围）
+	if err := e.db.Exec(`INSERT INTO org_vendor_grants (org_id, vendor_id, created_at) VALUES (1, 1, ?), (1, 2, ?)`, now, now).Error; err != nil {
 		t.Fatal(err)
 	}
-	// pending 模型申请：m1（已授权，重复）+ m2（新）
+	// pending 厂商申请：v1（已授权，重复）+ v2（新）
 	if err := e.db.Exec(`INSERT INTO quota_requests (id, org_id, user_id, kind, model_names, reason, status, created_at)
-		VALUES (81, 1, 10, 'model', 'm1,m2', '项目需要', 'pending', ?)`, now).Error; err != nil {
+		VALUES (81, 1, 10, 'model', 'v1,v2', '项目需要', 'pending', ?)`, now).Error; err != nil {
 		t.Fatal(err)
 	}
 
@@ -409,15 +416,15 @@ func TestHandleRequestModelKind(t *testing.T) {
 	g.PUT("/requests/:id", h.HandleRequest)
 
 	if w := e.do(http.MethodPut, "/api/org/requests/81", `{"action":"approve"}`); w.Code != http.StatusOK {
-		t.Fatalf("审批模型申请应 200，得 %d: %s", w.Code, w.Body.String())
+		t.Fatalf("审批厂商申请应 200，得 %d: %s", w.Code, w.Body.String())
 	}
 	var cnt int64
-	_ = e.db.Raw(`SELECT COUNT(*) FROM user_model_grants WHERE user_id = 10`).Scan(&cnt).Error
+	_ = e.db.Raw(`SELECT COUNT(*) FROM user_vendor_grants WHERE user_id = 10`).Scan(&cnt).Error
 	if cnt != 2 {
-		t.Fatalf("授权应恰为 m1/m2 两行（重复的幂等跳过），得 %d", cnt)
+		t.Fatalf("授权应恰为 v1/v2 两行（重复的幂等跳过），得 %d", cnt)
 	}
 	var grantedBy *int64
-	_ = e.db.Raw(`SELECT granted_by FROM user_model_grants WHERE user_id = 10 AND model_name = 'm2'`).Scan(&grantedBy).Error
+	_ = e.db.Raw(`SELECT granted_by FROM user_vendor_grants WHERE user_id = 10 AND vendor_id = 2`).Scan(&grantedBy).Error
 	if grantedBy == nil || *grantedBy != 2 {
 		t.Fatalf("新授权 granted_by 应为审批人（org_admin id=2），得 %v", grantedBy)
 	}
@@ -434,7 +441,7 @@ func TestHandleRequestModelKind(t *testing.T) {
 	if w := e.do(http.MethodPut, "/api/org/requests/81", `{"action":"approve"}`); w.Code != http.StatusNotFound {
 		t.Fatalf("重复审批应 404，得 %d", w.Code)
 	}
-	_ = e.db.Raw(`SELECT COUNT(*) FROM user_model_grants WHERE user_id = 10`).Scan(&cnt).Error
+	_ = e.db.Raw(`SELECT COUNT(*) FROM user_vendor_grants WHERE user_id = 10`).Scan(&cnt).Error
 	if cnt != 2 {
 		t.Fatalf("重复审批不得再落授权，得 %d", cnt)
 	}

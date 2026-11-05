@@ -403,15 +403,18 @@ func (e *memberEnv) postRequest(body string) *httptest.ResponseRecorder {
 func TestCreateRequestModelKind(t *testing.T) {
 	e := newMemberEnv(t)
 	now := time.Now().Unix()
-	// m1 已授权 / m2 未授权 / m3 已下架
+	// 厂商口径：m1 挂厂商 1（已授权）→ 申请时归并厂商 tv 后因已授权剔除；
+	// m2 挂厂商 2（未授权、客户已开通）→ 申请落厂商 v2
+	_ = e.db.Exec(`INSERT INTO vendors (id, name, status, created_at, updated_at)
+		VALUES (1, 'tv', 1, ?, ?), (2, 'v2', 1, ?, ?)`, now, now, now, now).Error
 	_ = e.db.Exec(`INSERT INTO models (name, vendor_id, input_price, output_price, status, created_at, updated_at)
-		VALUES ('m1', 1, 1000000, 1000000, 1, ?, ?), ('m2', 1, 1000000, 1000000, 1, ?, ?), ('m3', 1, 1000000, 1000000, 0, ?, ?)`,
+		VALUES ('m1', 1, 1000000, 1000000, 1, ?, ?), ('m2', 2, 1000000, 1000000, 1, ?, ?), ('m3', 1, 1000000, 1000000, 0, ?, ?)`,
 		now, now, now, now, now, now).Error
-	_ = e.db.Exec(`INSERT INTO user_model_grants (user_id, model_name, created_at) VALUES (1, 'm1', ?)`, now).Error
-	// 客户已开通 m1/m2（白名单收窄后 member 申请候选 = 开通 ∩ 启用）
-	_ = e.db.Exec(`INSERT INTO org_model_grants (org_id, model_name, created_at) VALUES (1, 'm1', ?), (1, 'm2', ?)`, now, now).Error
+	_ = e.db.Exec(`INSERT INTO user_vendor_grants (user_id, vendor_id, created_at) VALUES (1, 1, ?)`, now).Error
+	// 客户已开通厂商 1/2（白名单收窄后 member 申请候选 = 开通厂商 ∩ 启用）
+	_ = e.db.Exec(`INSERT INTO org_vendor_grants (org_id, vendor_id, created_at) VALUES (1, 1, ?), (1, 2, ?)`, now, now).Error
 
-	// 模型申请：含已授权的 m1 → 静默剔除后只落 m2
+	// 模型申请（旧口径提交模型名，归并到所属厂商）：含已授权厂商的 m1 → 剔除后只落 v2
 	w := e.postRequest(`{"models":["m1","m2"],"reason":"项目需要"}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("模型申请应 200，得 %d: %s", w.Code, w.Body.String())
@@ -421,17 +424,17 @@ func TestCreateRequestModelKind(t *testing.T) {
 		ModelNames string
 	}
 	_ = e.db.Raw(`SELECT kind, model_names FROM quota_requests ORDER BY id DESC LIMIT 1`).Scan(&lastReq).Error
-	if lastReq.Kind != "model" || lastReq.ModelNames != "m2" {
-		t.Fatalf("应落 kind=model 且剔除已授权，得 kind=%q names=%q", lastReq.Kind, lastReq.ModelNames)
+	if lastReq.Kind != "model" || lastReq.ModelNames != "v2" {
+		t.Fatalf("应落 kind=model 且剔除已授权厂商，得 kind=%q names=%q", lastReq.Kind, lastReq.ModelNames)
 	}
 
 	// 非法模型名 → 400 且不落库
 	if w := e.postRequest(`{"models":["ghost"],"reason":"x"}`); w.Code != http.StatusBadRequest {
 		t.Fatalf("未知模型应 400，得 %d", w.Code)
 	}
-	// 下架模型 → 400
+	// 下架模型 → 400（m3 归并厂商 1 已授权……改为直接用未开通厂商的模型名验证归并失败分支）
 	if w := e.postRequest(`{"models":["m3"],"reason":"x"}`); w.Code != http.StatusBadRequest {
-		t.Fatalf("下架模型应 400，得 %d", w.Code)
+		t.Fatalf("已授权厂商的模型应 400（全已授权），得 %d", w.Code)
 	}
 	// 全部已授权 → 400
 	if w := e.postRequest(`{"models":["m1"],"reason":"x"}`); w.Code != http.StatusBadRequest {
@@ -570,8 +573,10 @@ func TestAvailableModelsNarrowedByOrgGrants(t *testing.T) {
 		VALUES ('m1', 1, 1000000, 1000000, 1, ?, ?), ('m2', 1, 1000000, 1000000, 1, ?, ?)`,
 		now, now, now, now).Error
 	seedLiveUpstream(t, e.db, "m1", "m2")
-	// 客户仅开通 m1
-	_ = e.db.Exec(`INSERT INTO org_model_grants (org_id, model_name, created_at) VALUES (1, 'm1', ?)`, now).Error
+	// 客户仅开通厂商 1（m1 归属；m2 挂厂商 2 未开通）
+	_ = e.db.Exec(`INSERT INTO vendors (id, name, status, created_at, updated_at) VALUES (2, 'v2', 1, ?, ?)`, now, now).Error
+	_ = e.db.Exec(`UPDATE models SET vendor_id = 2 WHERE name = 'm2'`).Error
+	_ = e.db.Exec(`INSERT INTO org_vendor_grants (org_id, vendor_id, created_at) VALUES (1, 1, ?)`, now).Error
 
 	req := httptest.NewRequest(http.MethodGet, "/api/member/models/available", nil)
 	req.Header.Set("Authorization", "Bearer "+e.token)

@@ -397,27 +397,45 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			fmt.Sprintf("model %q is a video generation model, use POST /v1/videos/generations/tasks", modelName))
 		return
 	}
-	// 客户差异化定价：该客户对该模型设了覆盖价则改写售卖三价（UNIQUE(org_id, model_name)
-	// 点查）；无覆盖行走模型默认价。成本价（cost_*）保持模型级不变。后续 applyUsage、
-	// 缓存命中分支、usage_logs 价格快照全部用覆盖后的 m，改价不影响历史账单
+	// 客户差异化定价（三级优先，单查询）：模型级覆盖 > 客户厂商价 > 模型默认价。
+	// 缓存命中价「0=同输入价」逐级回落到本级输入价（不能用裸 COALESCE——0 是合法
+	// 配置值不是空）。成本价（cost_*）保持模型级不变。改写后的 m 流入 applyUsage 与
+	// usage_logs 价格快照，改价不影响历史账单
 	if ki.OrgID > 0 {
-		var op model.OrgModelPrice
-		if err := h.DB.Where("org_id = ? AND model_name = ?", ki.OrgID, modelName).First(&op).Error; err != nil {
-			// 无覆盖价属正常路径；真实 DB 错误（非记录不存在）不能静默吞掉——否则计费悄悄回落默认价
-			if !errors.Is(err, gorm.ErrRecordNotFound) {
-				slog.Warn("org 定价点查失败，回退模型默认价", "org_id", ki.OrgID, "model", modelName, "err", err)
-				h.Metrics.OrgPriceErrors.Inc() // 错价入账风险信号：这段时间的账单按默认价计，可在 /metrics 对账
-			}
+		var p struct{ InputPrice, OutputPrice, InputCacheHitPrice int64 }
+		err := h.DB.Raw(`SELECT
+			CASE WHEN mp.id IS NOT NULL THEN mp.input_price
+			     WHEN vp.id IS NOT NULL THEN vp.input_price ELSE m.input_price END AS input_price,
+			CASE WHEN mp.id IS NOT NULL THEN mp.output_price
+			     WHEN vp.id IS NOT NULL THEN vp.output_price ELSE m.output_price END AS output_price,
+			CASE WHEN mp.id IS NOT NULL THEN
+			       CASE WHEN mp.input_cache_hit_price > 0 THEN mp.input_cache_hit_price ELSE mp.input_price END
+			     WHEN vp.id IS NOT NULL THEN
+			       CASE WHEN vp.input_cache_hit_price > 0 THEN vp.input_cache_hit_price ELSE vp.input_price END
+			     ELSE CASE WHEN m.input_cache_hit_price > 0 THEN m.input_cache_hit_price ELSE m.input_price END
+			END AS input_cache_hit_price
+			FROM models m
+			LEFT JOIN org_model_prices mp ON mp.model_name = m.name AND mp.org_id = ?
+			LEFT JOIN org_vendor_prices vp ON vp.vendor_id = m.vendor_id AND vp.org_id = ?
+			WHERE m.name = ?`, ki.OrgID, ki.OrgID, modelName).Scan(&p).Error
+		if err != nil || p.OutputPrice == 0 && p.InputPrice == 0 {
+			// 查询失败或行缺失（异常路径）不能静默吞掉——错价入账风险信号
+			slog.Warn("客户定价三级查询失败，回退模型默认价", "org_id", ki.OrgID, "model", modelName, "err", err)
+			h.Metrics.OrgPriceErrors.Inc() // 这段时间的账单按默认价计，可在 /metrics 对账
 		} else {
-			m.InputPrice, m.OutputPrice, m.InputCacheHitPrice = op.InputPrice, op.OutputPrice, op.InputCacheHitPrice
+			m.InputPrice, m.OutputPrice, m.InputCacheHitPrice = p.InputPrice, p.OutputPrice, p.InputCacheHitPrice
 		}
 	}
 
-	// 模型授权（子账号白名单）；在线体验（Playground）由管理面按角色预授权，跳过此检查
+	// 模型授权（厂商授权自动继承 ∪ 模型级例外，单查询）：用户被授予模型所属厂商
+	// ⟹ 该厂商全部模型可用（组内新模型零配置继承）；或该模型被单独授权。
+	// 在线体验（Playground）由管理面按角色预授权，跳过此检查
 	if !ki.Playground {
 		var cnt int64
-		if err := h.DB.Model(&model.UserModelGrant{}).
-			Where("user_id = ? AND model_name = ?", ki.UserID, modelName).Count(&cnt).Error; err != nil || cnt == 0 {
+		if err := h.DB.Raw(`SELECT COUNT(*) FROM models m2 WHERE m2.name = ? AND (
+			EXISTS (SELECT 1 FROM user_vendor_grants vg WHERE vg.user_id = ? AND vg.vendor_id = m2.vendor_id)
+			OR EXISTS (SELECT 1 FROM user_model_grants mg WHERE mg.user_id = ? AND mg.model_name = m2.name))`,
+			modelName, ki.UserID, ki.UserID).Scan(&cnt).Error; err != nil || cnt == 0 {
 			rec.Status, rec.Error = http.StatusForbidden, "model not allowed: "+truncateStr(modelName, 100)
 			werr(c, http.StatusForbidden, "model_not_allowed",
 				fmt.Sprintf("you are not allowed to use model %q, please contact your company admin", modelName))
@@ -1113,8 +1131,8 @@ func DisablePoolKey(db *gorm.DB, vendorID int64, vendorName string, keyID int64,
 }
 
 // ListModels GET /v1/models：该 key 授权范围内、当前可路由的启用模型（OpenAI list 格式）。
-// 可路由 = 有启用渠道且渠道有可用上游 Key：Key 全部失效（如上游 401 自动禁用）的
-// 模型不再对外宣传，避免客户端照列表调用吃到 503 channel_key_missing
+// 授权 = 厂商授权展开（组内新模型自动继承）∪ 模型级例外；可路由 = 所属厂商有启用端点
+// 且厂商池有可用 Key——Key 全部失效的模型不再对外宣传，避免客户端照列表调用吃到 503
 func (h *Handler) ListModels(c *gin.Context) {
 	ki := middleware.GetKeyInfo(c)
 	var rows []struct {
@@ -1123,10 +1141,12 @@ func (h *Handler) ListModels(c *gin.Context) {
 		Vendor      string
 	}
 	if err := h.DB.Raw(`
-		SELECT m.name, m.display_name, m.vendor
-		FROM user_model_grants g JOIN models m ON m.name = g.model_name
-		WHERE g.user_id = ? AND m.status = 1 AND `+service.ModelHasLiveUpstream+`
-		ORDER BY m.name`, ki.UserID).Scan(&rows).Error; err != nil {
+		SELECT m.name, m.display_name, COALESCE(v.name, m.vendor) AS vendor
+		FROM models m LEFT JOIN vendors v ON v.id = m.vendor_id
+		WHERE m.status = 1 AND `+service.ModelHasLiveUpstream+`
+		  AND (EXISTS (SELECT 1 FROM user_vendor_grants vg WHERE vg.user_id = ? AND vg.vendor_id = m.vendor_id)
+		    OR EXISTS (SELECT 1 FROM user_model_grants mg WHERE mg.user_id = ? AND mg.model_name = m.name))
+		ORDER BY m.name`, ki.UserID, ki.UserID).Scan(&rows).Error; err != nil {
 		openaiError(c, http.StatusInternalServerError, "internal_error", "failed to list models")
 		return
 	}

@@ -130,10 +130,10 @@ func TestHandleRequestModelRecycledByPlatform(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := e.db.Exec(`INSERT INTO quota_requests (id, org_id, user_id, kind, model_names, status, created_at)
-		VALUES (81, 1, 10, 'model', 'm1', 'pending', ?)`, now).Error; err != nil {
+		VALUES (81, 1, 10, 'model', 'tv', 'pending', ?)`, now).Error; err != nil {
 		t.Fatal(err)
 	}
-	// 模型启用但客户未开通（提交后被平台回收的情形）
+	// 厂商存在但客户未开通（提交后被平台回收的情形）
 	w := e.do(http.MethodPut, "/api/org/requests/81", `{"action":"approve"}`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("未开通模型审批应 400，得 %d: %s", w.Code, w.Body.String())
@@ -152,12 +152,18 @@ func TestCreateModelRequest(t *testing.T) {
 		VALUES (1, NULL, 'root', 'x', 'platform_admin', 1, ?, ?)`, now, now).Error; err != nil {
 		t.Fatal(err)
 	}
-	// m1 已开通
-	if err := e.db.Exec(`INSERT INTO org_model_grants (org_id, model_name, created_at) VALUES (1, 'm1', ?)`, now).Error; err != nil {
+	// 客户已开通厂商 1（m1 归属；m2/m3 挂未开通厂商 2）
+	if err := e.db.Exec(`INSERT INTO vendors (id, name, status, created_at, updated_at) VALUES (2, 'v2', 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := e.db.Exec(`UPDATE models SET vendor_id = 2 WHERE name IN ('m2','m3')`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := e.db.Exec(`INSERT INTO org_vendor_grants (org_id, vendor_id, created_at) VALUES (1, 1, ?)`, now).Error; err != nil {
 		t.Fatal(err)
 	}
 
-	// 全部已开通 → 400
+	// 全部已开通 → 400（m1 归并厂商 tv 已开通）
 	w := e.do(http.MethodPost, "/api/org/model-requests", `{"models":["m1"],"reason":"x"}`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("全部已开通应 400，得 %d: %s", w.Code, w.Body.String())
@@ -166,15 +172,15 @@ func TestCreateModelRequest(t *testing.T) {
 	if w := e.do(http.MethodPost, "/api/org/model-requests", `{"reason":"x"}`); w.Code != http.StatusBadRequest {
 		t.Fatalf("空申请应 400，得 %d", w.Code)
 	}
-	// 含已开通的 m1 + 未开通的 m2 → 剔除 m1 只落 m2
+	// 含已开通厂商的 m1 + 未开通厂商的 m2 → 归并剔除后只落 v2
 	w = e.do(http.MethodPost, "/api/org/model-requests", `{"models":["m1","m2"],"reason":"新项目"}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("申请应 200，得 %d: %s", w.Code, w.Body.String())
 	}
 	var names string
 	_ = e.db.Raw(`SELECT model_names FROM org_model_requests ORDER BY id DESC LIMIT 1`).Scan(&names).Error
-	if names != "m2" {
-		t.Fatalf("应剔除已开通的 m1 只落 m2，得 %q", names)
+	if names != "v2" {
+		t.Fatalf("应剔除已开通厂商只落 v2，得 %q", names)
 	}
 	// 平台管理员收到站内通知（异步）
 	if !waitForOrgModelNotification(t, e.db, 1, "model_request") {

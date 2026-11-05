@@ -46,12 +46,17 @@ func TestHandleModelRequest(t *testing.T) {
 	engine, db, token := newModelGrantEnv(t)
 	now := time.Now().Unix()
 	seedOrgWithAdmin(t, db, 9, "race-org", now)
-	if err := db.Exec(`INSERT INTO org_model_requests (id, org_id, model_names, reason, status, created_at)
-		VALUES (55, 9, 'm1,m2', '项目需要', 'pending', ?)`, now).Error; err != nil {
+	// 申请单 model_names 为厂商名（厂商口径）
+	if err := db.Exec(`INSERT INTO vendors (id, name, status, created_at, updated_at)
+		VALUES (1, 'v1', 1, ?, ?), (2, 'v2', 1, ?, ?)`, now, now, now, now).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Exec(`INSERT INTO models (name, input_price, output_price, status, created_at, updated_at)
-		VALUES ('m1', 1000000, 1000000, 1, ?, ?), ('m2', 1000000, 1000000, 1, ?, ?)`, now, now, now, now).Error; err != nil {
+	if err := db.Exec(`INSERT INTO org_model_requests (id, org_id, model_names, reason, status, created_at)
+		VALUES (55, 9, 'v1,v2', '项目需要', 'pending', ?)`, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO models (name, vendor_id, input_price, output_price, status, created_at, updated_at)
+		VALUES ('m1', 1, 1000000, 1000000, 1, ?, ?), ('m2', 2, 1000000, 1000000, 1, ?, ?)`, now, now, now, now).Error; err != nil {
 		t.Fatal(err)
 	}
 
@@ -59,9 +64,9 @@ func TestHandleModelRequest(t *testing.T) {
 		t.Fatalf("批准应 200，得 %d", code)
 	}
 	var cnt int64
-	_ = db.Raw(`SELECT COUNT(*) FROM org_model_grants WHERE org_id = 9`).Scan(&cnt).Error
+	_ = db.Raw(`SELECT COUNT(*) FROM org_vendor_grants WHERE org_id = 9`).Scan(&cnt).Error
 	if cnt != 2 {
-		t.Fatalf("批准后应有 2 行开通记录，得 %d", cnt)
+		t.Fatalf("批准后应有 2 行厂商开通记录，得 %d", cnt)
 	}
 	// 重复审批 → 404（pending 条件更新防双审批）
 	if code := putModelGrantReq(engine, token, "/api/platform/model-requests/55", `{"action":"approve"}`); code != http.StatusNotFound {
@@ -79,16 +84,16 @@ func TestHandleModelRequest(t *testing.T) {
 
 	// 驳回分支：不落开通记录
 	if err := db.Exec(`INSERT INTO org_model_requests (id, org_id, model_names, status, created_at)
-		VALUES (56, 9, 'm1', 'pending', ?)`, now).Error; err != nil {
+		VALUES (56, 9, 'v1', 'pending', ?)`, now).Error; err != nil {
 		t.Fatal(err)
 	}
 	if code := putModelGrantReq(engine, token, "/api/platform/model-requests/56", `{"action":"reject","reply":"暂不开放"}`); code != http.StatusOK {
 		t.Fatalf("驳回应 200，得 %d", code)
 	}
-	_ = db.Raw(`SELECT COUNT(*) FROM org_model_grants WHERE org_id = 9 AND model_name = 'm1'`).Scan(&cnt).Error
-	// m1 在 55 号单已开通，驳回 56 不影响已有开通
+	_ = db.Raw(`SELECT COUNT(*) FROM org_vendor_grants WHERE org_id = 9 AND vendor_id = 1`).Scan(&cnt).Error
+	// v1 在 55 号单已开通，驳回 56 不影响已有开通
 	if cnt != 1 {
-		t.Fatalf("驳回不应新增开通记录，m1 行数=%d", cnt)
+		t.Fatalf("驳回不应新增开通记录，v1 行数=%d", cnt)
 	}
 }
 

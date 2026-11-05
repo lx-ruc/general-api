@@ -1227,3 +1227,81 @@ func TestDisablePoolKeyAutoStopsSoleModel(t *testing.T) {
 		t.Fatalf("恢复后应 status=1 且 auto_disabled_at=0: %+v", row)
 	}
 }
+
+// 厂商授权自动继承：用户被授予厂商后，组内新增模型零配置即可调用并出现在 /v1/models
+func TestVendorGrantAutoInherit(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(okBody))
+	}))
+	defer up.Close()
+	// 用户仅被授权厂商 1（撤掉模型级 m1 授权，证明走的是厂商展开）
+	mustExec(t, e.f, `DELETE FROM user_model_grants WHERE user_id = 1`)
+	mustExec(t, e.f, `INSERT INTO user_vendor_grants (user_id, vendor_id, created_at) VALUES (1, 1, strftime('%s','now'))`)
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, nil, 10)
+	// 组内新增模型 m-inherit（同厂商 1）：不写任何授权，立即可调
+	now := time.Now().Unix()
+	mustExec(t, e.f, `INSERT INTO models (name, vendor_id, input_price, output_price, status, created_at, updated_at)
+		VALUES ('m-inherit', 1, 2000000, 8000000, 1, ?, ?)`, now, now)
+	mustExec(t, e.f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (1, 'm-inherit')`)
+
+	if w := e.post(`{"model":"m-inherit","messages":[{"role":"user","content":"hi"}]}`); w.Code != http.StatusOK {
+		t.Fatalf("组内新增模型应随厂商授权立即可调，got %d body=%s", w.Code, w.Body)
+	}
+	// /v1/models 同步出现
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	req.Header.Set("Authorization", "Bearer "+e.apiKey)
+	w := httptest.NewRecorder()
+	e.engine.ServeHTTP(w, req)
+	if !strings.Contains(w.Body.String(), `"m-inherit"`) {
+		t.Fatalf("/v1/models 应含自动继承的新模型: %s", w.Body)
+	}
+}
+
+// 三级取价：模型覆盖 > 客户厂商价 > 模型默认价；缓存价 0 逐级回落本级输入价
+func TestThreeTierPricing(t *testing.T) {
+	e := newTestEnv(t)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"usage":{"prompt_tokens":1000000,"completion_tokens":1000000}}`))
+	}))
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch", up.URL, nil, 10)
+	now := time.Now().Unix()
+	// m-tier：默认 2M/8M；厂商价 3M/9M（缓存 0 → 回落厂商输入价 3M）；模型覆盖 5M/7M（缓存 0 → 回落覆盖输入价 5M）
+	mustExec(t, e.f, `INSERT INTO models (name, vendor_id, input_price, output_price, input_cache_hit_price, status, created_at, updated_at)
+		VALUES ('m-tier', 1, 2000000, 8000000, 0, 1, ?, ?)`, now, now)
+	mustExec(t, e.f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (1, 'm-tier')`)
+	mustExec(t, e.f, `INSERT INTO user_model_grants (user_id, model_name, created_at) VALUES (1, 'm-tier', ?)`, now)
+	mustExec(t, e.f, `INSERT INTO org_vendor_prices (org_id, vendor_id, input_price, output_price, input_cache_hit_price, created_at, updated_at)
+		VALUES (1, 1, 3000000, 9000000, 0, ?, ?)`, now, now)
+
+	// 厂商价生效（无模型覆盖）：cost = ceil((1M×3M + 1M×9M)/1M) = 12,000,000 点
+	if w := e.post(`{"model":"m-tier","messages":[{"role":"user","content":"hi"}]}`); w.Code != http.StatusOK {
+		t.Fatalf("应 200，got %d body=%s", w.Code, w.Body)
+	}
+	if cost, _, _ := e.usageRow(t, e.lastUsage(t)); cost != 12000000 {
+		t.Fatalf("厂商价应生效 cost=12,000,000，got %d", cost)
+	}
+	// 模型覆盖压过厂商价：快照应为 5M/7M（缓存 0 回落覆盖输入价）
+	mustExec(t, e.f, `INSERT INTO org_model_prices (org_id, model_name, input_price, output_price, created_at, updated_at)
+		VALUES (1, 'm-tier', 5000000, 7000000, ?, ?)`, now, now)
+	if w := e.post(`{"model":"m-tier","messages":[{"role":"user","content":"hi"}]}`); w.Code != http.StatusOK {
+		t.Fatalf("应 200，got %d", w.Code)
+	}
+	var over struct{ InputPrice, OutputPrice, CachePrice int64 }
+	_ = e.f.db.Raw(`SELECT input_price, output_price, input_cache_hit_price FROM usage_logs ORDER BY id DESC LIMIT 1`).Scan(&over).Error
+	// 快照 cache=0 是全库约定（0=同输入价，计费层回落本级输入价）
+	if over.InputPrice != 5000000 || over.OutputPrice != 7000000 || over.CachePrice != 0 {
+		t.Fatalf("模型覆盖应压过厂商价（cache=0 约定），got %+v", over)
+	}
+	// 删除覆盖 → 回落厂商价 3+9=12（同值，改用输出侧断言快照）
+	mustExec(t, e.f, `DELETE FROM org_model_prices WHERE org_id = 1 AND model_name = 'm-tier'`)
+	if w := e.post(`{"model":"m-tier","messages":[{"role":"user","content":"hi"}]}`); w.Code != http.StatusOK {
+		t.Fatalf("应 200，got %d", w.Code)
+	}
+	var last struct{ InputPrice, OutputPrice int64 }
+	_ = e.f.db.Raw(`SELECT input_price, output_price FROM usage_logs ORDER BY id DESC LIMIT 1`).Scan(&last).Error
+	if last.InputPrice != 3000000 || last.OutputPrice != 9000000 {
+		t.Fatalf("删覆盖后应回落厂商价 3M/9M，got %+v", last)
+	}
+}

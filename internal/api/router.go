@@ -216,6 +216,10 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		plat.GET("/model-prices/:name", ph.ListOrgModelPrices)
 		plat.PUT("/model-prices/:name", ph.SetOrgModelPrice)
 		plat.DELETE("/model-prices/:name/:orgId", ph.DeleteOrgModelPrice)
+		// 客户级厂商定价（组内全部模型统一生效；模型级覆盖优先）
+		plat.GET("/vendor-prices/:vendorId", ph.ListOrgVendorPrices)
+		plat.PUT("/vendor-prices/:vendorId", ph.SetOrgVendorPrice)
+		plat.DELETE("/vendor-prices/:vendorId/:orgId", ph.DeleteOrgVendorPrice)
 
 		// 客户模型开通：申请审批 + 手动开通/回收
 		plat.GET("/model-requests", ph.ListModelRequests)
