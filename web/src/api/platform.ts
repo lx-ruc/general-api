@@ -122,6 +122,8 @@ export interface MModel {
   name: string
   display_name: string
   vendor: string
+  /** 承接渠道厂商标签（与渠道管理页同源，可多个并列如 volces + volces/Thu）；空=回退 vendor */
+  vendors?: string[]
   /** chat/embedding/video：video 走 /v1/videos/generations/tasks 任务式端点 */
   type: string
   input_price: number
@@ -174,6 +176,8 @@ export const apiListOrgModelPrices = (modelName: string) =>
 export interface OrgModelPriceByOrgRow {
   model_name: string
   display_name: string
+  /** 承接渠道厂商标签（与渠道管理页同源） */
+  vendors: string[]
   model_status: number
   override: boolean
   def_input_price: number

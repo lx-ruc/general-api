@@ -453,11 +453,12 @@ func (h *Handler) ListModelRequestCandidates(c *gin.Context) {
 		return
 	}
 	type row struct {
-		Name        string `json:"name"`
-		DisplayName string `json:"display_name"`
-		Vendor      string `json:"vendor"`
-		Granted     bool   `json:"granted"`
-		Pending     bool   `json:"pending"`
+		Name        string   `json:"name"`
+		DisplayName string   `json:"display_name"`
+		Vendor      string   `json:"vendor"`
+		Vendors     []string `json:"vendors"` // 承接渠道厂商标签；空=回退 vendor
+		Granted     bool     `json:"granted"`
+		Pending     bool     `json:"pending"`
 		// Routable=false 表示该模型当前没有可用上游 Key（如渠道 Key 因上游 401
 		// 被自动禁用）——仍可申请（平台可能换 Key/换渠道），但前端要提示开通后
 		// 未必立即可用
@@ -476,6 +477,18 @@ func (h *Handler) ListModelRequestCandidates(c *gin.Context) {
 		WHERE m.status = 1 ORDER BY m.name`, oid, oid).Scan(&rows).Error
 	if rows == nil {
 		rows = []row{}
+	}
+	names := make([]string, 0, len(rows))
+	for _, r := range rows {
+		names = append(names, r.Name)
+	}
+	vendorMap := service.ChannelVendorsByModel(h.DB, names)
+	for i := range rows {
+		if vs := vendorMap[rows[i].Name]; len(vs) > 0 {
+			rows[i].Vendors = vs
+		} else {
+			rows[i].Vendors = []string{}
+		}
 	}
 	httpx.OK(c, rows)
 }

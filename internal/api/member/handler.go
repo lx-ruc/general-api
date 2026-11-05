@@ -156,11 +156,12 @@ func (h *Handler) CopyKey(c *gin.Context) {
 // ListModels GET /api/member/models：可用模型 + 单价 + 我的余额
 func (h *Handler) ListModels(c *gin.Context) {
 	type modelRow struct {
-		Name        string `json:"name"`
-		DisplayName string `json:"display_name"`
-		Vendor      string `json:"vendor"`
-		InputPrice  int64  `json:"input_price"`
-		OutputPrice int64  `json:"output_price"`
+		Name        string   `json:"name"`
+		DisplayName string   `json:"display_name"`
+		Vendor      string   `json:"vendor"`
+		Vendors     []string `json:"vendors"` // 承接渠道厂商标签（与渠道管理页同源）；空=回退 vendor
+		InputPrice  int64    `json:"input_price"`
+		OutputPrice int64    `json:"output_price"`
 	}
 	var models []modelRow
 	_ = h.DB.Raw(`
@@ -169,6 +170,18 @@ func (h *Handler) ListModels(c *gin.Context) {
 		WHERE g.user_id = ? AND m.status = 1 ORDER BY m.name`, uid(c)).Scan(&models).Error
 	if models == nil {
 		models = []modelRow{}
+	}
+	names := make([]string, 0, len(models))
+	for _, m := range models {
+		names = append(names, m.Name)
+	}
+	vendorMap := service.ChannelVendorsByModel(h.DB, names)
+	for i := range models {
+		if vs := vendorMap[models[i].Name]; len(vs) > 0 {
+			models[i].Vendors = vs
+		} else {
+			models[i].Vendors = []string{}
+		}
 	}
 	var u model.User
 	_ = h.DB.Where("id = ?", uid(c)).First(&u).Error
@@ -357,10 +370,11 @@ func (h *Handler) ListAvailableModels(c *gin.Context) {
 		return
 	}
 	type row struct {
-		Name        string `json:"name"`
-		DisplayName string `json:"display_name"`
-		Vendor      string `json:"vendor"`
-		Granted     bool   `json:"granted"`
+		Name        string   `json:"name"`
+		DisplayName string   `json:"display_name"`
+		Vendor      string   `json:"vendor"`
+		Vendors     []string `json:"vendors"` // 承接渠道厂商标签；空=回退 vendor
+		Granted     bool     `json:"granted"`
 	}
 	var rows []row
 	_ = h.DB.Raw(`
@@ -374,6 +388,18 @@ func (h *Handler) ListAvailableModels(c *gin.Context) {
 		ORDER BY m.name`, uid(c), o.ID).Scan(&rows).Error
 	if rows == nil {
 		rows = []row{}
+	}
+	names := make([]string, 0, len(rows))
+	for _, r := range rows {
+		names = append(names, r.Name)
+	}
+	vendorMap := service.ChannelVendorsByModel(h.DB, names)
+	for i := range rows {
+		if vs := vendorMap[rows[i].Name]; len(vs) > 0 {
+			rows[i].Vendors = vs
+		} else {
+			rows[i].Vendors = []string{}
+		}
 	}
 	httpx.OK(c, rows)
 }

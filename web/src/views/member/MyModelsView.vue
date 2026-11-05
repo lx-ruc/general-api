@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { apiMyModels } from '../../api/member'
 import { fmtYuan } from '../../utils/format'
 import { usePpy } from '../../composables/usePpy'
+import VendorTags from '../../components/VendorTags.vue'
 
 const ppy = usePpy()
 const data = ref<any>(null)
@@ -61,7 +62,9 @@ const usedPct = computed(() => {
           <template #default="{ row }"><code>{{ row.name }}</code></template>
         </el-table-column>
         <el-table-column prop="display_name" label="说明" min-width="160" />
-        <el-table-column prop="vendor" label="厂商" width="100" />
+        <el-table-column label="厂商" width="150">
+          <template #default="{ row }"><VendorTags :vendors="row.vendors" :vendor="row.vendor" /></template>
+        </el-table-column>
       </el-table>
       <p class="billing-note">
         调用产生的 token 用量按模型单价折算为额度扣减；调用方式见

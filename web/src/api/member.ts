@@ -18,6 +18,8 @@ export interface MyModel {
   name: string
   display_name: string
   vendor: string
+  /** 承接渠道厂商标签（与渠道管理页同源，可多个并列）；空=回退 vendor */
+  vendors?: string[]
   input_price: number
   output_price: number
 }
@@ -39,6 +41,8 @@ export interface AvailableModel {
   name: string
   display_name: string
   vendor: string
+  /** 承接渠道厂商标签；空=回退 vendor */
+  vendors?: string[]
   granted: boolean
 }
 

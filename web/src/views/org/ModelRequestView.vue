@@ -6,6 +6,7 @@ import {
   type ModelRequestCandidate, type OrgModelRequestRow,
 } from '../../api/org'
 import { fmtTime } from '../../utils/format'
+import VendorTags from '../../components/VendorTags.vue'
 
 // 模型申请（向平台）：客户管理员为客户申请开通新模型，平台审批通过后
 // 才能在「子账号管理 → 模型授权」里给子账号勾选。已开通/审批中的模型不可重复申请。
@@ -79,7 +80,9 @@ function toggleModel(name: string, checked: boolean) {
           <template #default="{ row }"><code>{{ row.name }}</code></template>
         </el-table-column>
         <el-table-column prop="display_name" label="说明" min-width="160" />
-        <el-table-column prop="vendor" label="厂商" width="110" />
+        <el-table-column label="厂商" width="150">
+          <template #default="{ row }"><VendorTags :vendors="row.vendors" :vendor="row.vendor" /></template>
+        </el-table-column>
         <el-table-column label="状态" width="170" align="center">
           <template #default="{ row }">
             <el-tag v-if="row.granted" size="small" type="success">已开通</el-tag>

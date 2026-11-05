@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiMyRequests, apiCreateRequest, apiMyModels, apiAvailableModels, type AvailableModel } from '../../api/member'
+import VendorTags from '../../components/VendorTags.vue'
 import { fmtYuan, yuanToPoints, fmtTime } from '../../utils/format'
 import { usePpy } from '../../composables/usePpy'
 
@@ -109,6 +110,7 @@ const isModel = (row: any) => row.kind === 'model'
                 <el-checkbox :value="m.name">
                   <b>{{ m.name }}</b>
                   <span v-if="m.display_name" class="hint">（{{ m.display_name }}）</span>
+                  <VendorTags :vendors="m.vendors" :vendor="m.vendor" class="ml" />
                 </el-checkbox>
               </div>
             </el-checkbox-group>
@@ -166,6 +168,7 @@ const isModel = (row: any) => row.kind === 'model'
 
 <style scoped>
 .hint { margin-left: 8px; font-size: 12px; color: #909399; }
+.ml { margin-left: 6px; }
 .model-row { line-height: 28px; }
 .granted-block { margin: 8px 0 0; line-height: 24px; }
 </style>

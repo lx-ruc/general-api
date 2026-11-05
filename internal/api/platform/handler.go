@@ -1298,6 +1298,11 @@ func (h *Handler) ListModels(c *gin.Context) {
 	priceCnts := h.modelOrgPriceCounts()
 	live := h.modelLiveUpstreamNames()
 	hasCh := h.modelEnabledChannelModels()
+	names := make([]string, 0, len(models))
+	for _, m := range models {
+		names = append(names, m.Name)
+	}
+	vendors := service.ChannelVendorsByModel(h.DB, names)
 	list := make([]gin.H, 0, len(models))
 	for _, m := range models {
 		list = append(list, gin.H{
@@ -1309,9 +1314,10 @@ func (h *Handler) ListModels(c *gin.Context) {
 			"cost_input_cache_hit_price": m.CostInputCacheHitPrice,
 			"status":                     m.Status, "remark": m.Remark,
 			"auto_disabled_at":           m.AutoDisabledAt,
-			"channel_count":   counts[m.Name],
-			"channel_names":   chNames[m.Name],
-			"org_price_count": priceCnts[m.Name],
+			"vendors":                    vendors[m.Name],
+			"channel_count":              counts[m.Name],
+			"channel_names":              chNames[m.Name],
+			"org_price_count":            priceCnts[m.Name],
 			// 当前是否有可用上游 Key（channel_count 只数渠道，这里给出布尔口径
 			// 供前端亮「上游暂不可用」标签；启用 × 渠道启用 × 有 Key 三者同时满足才为真）
 			"routable": live[m.Name],
@@ -1614,17 +1620,18 @@ func (h *Handler) DeleteOrgModelPrice(c *gin.Context) {
 // override=该客户对此模型是否设了覆盖价；def_* 为模型默认价（未覆盖时对照展示），
 // 生效三价 = 覆盖价（有）或默认价（无）；缓存价 0 = 同输入价（全库统一语义）
 type orgModelPriceRow struct {
-	ModelName               string `json:"model_name"`
-	DisplayName             string `json:"display_name"`
-	ModelStatus             int    `json:"model_status"` // 1启用 0停用（停用但有覆盖价的仍返回，供管理/清除）
-	Override                bool   `json:"override"`
-	DefInputPrice           int64  `json:"def_input_price"`
-	DefOutputPrice          int64  `json:"def_output_price"`
-	DefInputCacheHitPrice   int64  `json:"def_input_cache_hit_price"`
-	InputPrice              int64  `json:"input_price"`
-	OutputPrice             int64  `json:"output_price"`
-	InputCacheHitPrice      int64  `json:"input_cache_hit_price"`
-	Remark                  string `json:"remark"`
+	ModelName               string   `json:"model_name"`
+	DisplayName             string   `json:"display_name"`
+	Vendors                 []string `json:"vendors"` // 承接渠道厂商标签（与渠道管理页同源）
+	ModelStatus             int      `json:"model_status"` // 1启用 0停用（停用但有覆盖价的仍返回，供管理/清除）
+	Override                bool     `json:"override"`
+	DefInputPrice           int64    `json:"def_input_price"`
+	DefOutputPrice          int64    `json:"def_output_price"`
+	DefInputCacheHitPrice   int64    `json:"def_input_cache_hit_price"`
+	InputPrice              int64    `json:"input_price"`
+	OutputPrice             int64    `json:"output_price"`
+	InputCacheHitPrice      int64    `json:"input_cache_hit_price"`
+	Remark                  string   `json:"remark"`
 }
 
 // ListOrgModelPricesByOrg GET /api/platform/orgs/:id/model-prices：该客户视角的
@@ -1661,6 +1668,15 @@ func (h *Handler) ListOrgModelPricesByOrg(c *gin.Context) {
 	}
 	if rows == nil {
 		rows = []orgModelPriceRow{}
+	}
+	// 承接渠道厂商标签（与模型列表同源），定价卡片按它区分模型分组
+	names := make([]string, 0, len(rows))
+	for _, r := range rows {
+		names = append(names, r.ModelName)
+	}
+	vendorMap := service.ChannelVendorsByModel(h.DB, names)
+	for i := range rows {
+		rows[i].Vendors = vendorMap[rows[i].ModelName]
 	}
 	httpx.OK(c, rows)
 }

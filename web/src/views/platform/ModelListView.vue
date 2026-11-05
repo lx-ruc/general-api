@@ -8,6 +8,7 @@ import {
 } from '../../api/platform'
 import { yuan1KToPoints, pointsToYuan1K, yuan1MToPoints, pointsToYuan1M } from '../../utils/format'
 import { usePpy } from '../../composables/usePpy'
+import VendorTags from '../../components/VendorTags.vue'
 
 const ppy = usePpy()
 
@@ -268,7 +269,9 @@ async function resetOrgPrice(row: OrgModelPriceRow) {
         <template #default="{ row }"><code>{{ row.name }}</code></template>
       </el-table-column>
       <el-table-column prop="display_name" label="显示名" min-width="140" />
-      <el-table-column prop="vendor" label="厂商" width="90" />
+      <el-table-column label="厂商" width="150">
+        <template #default="{ row }"><VendorTags :vendors="row.vendors" :vendor="row.vendor" /></template>
+      </el-table-column>
       <el-table-column label="类型" width="80" align="center">
         <template #default="{ row }">
           <el-tag size="small" :type="typeOf(row.type).tag" effect="plain">{{ typeOf(row.type).label }}</el-tag>

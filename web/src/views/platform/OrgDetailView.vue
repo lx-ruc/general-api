@@ -10,6 +10,7 @@ import {
   type OrgModelPriceByOrgRow,
 } from '../../api/platform'
 import LineChart from '../../components/LineChart.vue'
+import VendorTags from '../../components/VendorTags.vue'
 import { trendOptions, barOption } from '../../utils/chart'
 import {
   fmtTime, fmtNum, fmtYuan, yuanToPoints, pointsToYuan, roleNames,
@@ -359,6 +360,7 @@ async function exportStatementCSV() {
               <el-tag v-else size="small" type="info" effect="plain">默认</el-tag>
               <el-tag v-if="r.model_status === 0" size="small" type="danger" effect="plain">停用</el-tag>
               <el-tag v-if="isDirty(r.model_name)" size="small" type="warning" effect="plain">未保存</el-tag>
+              <VendorTags :vendors="r.vendors" class="ml" />
             </div>
             <div v-if="r.display_name && r.display_name !== r.model_name" class="dim">{{ r.model_name }}</div>
           </template>
@@ -645,6 +647,7 @@ async function exportStatementCSV() {
 .card-head { display: flex; justify-content: space-between; align-items: center; }
 .reset-hint { margin: 0 0 14px; font-size: 12.5px; color: var(--tg-graphite); line-height: 1.8; }
 .unit { font-size: 12px; color: var(--tg-muted); font-weight: 400; margin-left: 4px; }
+.ml { margin-left: 6px; }
 .dim { color: var(--tg-muted); font-size: 12px; }
 .green { color: var(--tg-green-ink); }
 .red { color: var(--tg-red); }
