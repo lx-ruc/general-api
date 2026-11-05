@@ -192,6 +192,20 @@ func SetupRouter(cfg *config.Config, db *gorm.DB, cipher *crypto.Cipher, webDist
 		plat.PUT("/vendor-bills", ph.UpsertVendorBill)
 		plat.DELETE("/vendor-bills/:id", ph.DeleteVendorBill)
 
+		// 厂商管理（一行一厂商：Key 池 + 端点 + 模型概览）
+		plat.GET("/vendors", ph.ListVendors)
+		plat.POST("/vendors", ph.CreateVendor)
+		plat.GET("/vendors/:id", ph.GetVendor)
+		plat.PUT("/vendors/:id", ph.UpdateVendor)
+		plat.DELETE("/vendors/:id", ph.DeleteVendor)
+		plat.POST("/vendors/:id/test", ph.TestVendor)
+		plat.GET("/vendors/:id/keys", ph.ListVendorKeys)
+		plat.POST("/vendors/:id/keys", ph.AddVendorKeys)
+		plat.GET("/vendors/:id/keys/:kid/full", ph.GetVendorKeyFull)
+		plat.PUT("/vendors/:id/keys/:kid/status", ph.UpdateVendorKeyStatus)
+		plat.DELETE("/vendors/:id/keys/:kid", ph.DeleteVendorKey)
+		plat.POST("/vendors/:id/keys/:kid/cooldown/clear", ph.ClearVendorKeyCooldown)
+
 		plat.GET("/channels", ph.ListChannels)
 		plat.POST("/channels", ph.CreateChannel)
 		plat.GET("/channels/:id", ph.GetChannel)
