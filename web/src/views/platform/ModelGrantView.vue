@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   apiListModelRequests, apiHandleModelRequest, apiListOrgs, apiGetOrgModels, apiSetOrgModels,
@@ -7,9 +7,8 @@ import {
 } from '../../api/platform'
 import { fmtTime } from '../../utils/format'
 
-// 模型开通：两件事——① 审批客户提交的开通申请（批准=写入客户白名单，客户管理员
-// 立即可给子账号授权）；② 手动直接调整某客户的开通范围（回收会级联移除该客户
-// 全部子账号的相应授权，调用立即被拒）。
+// 厂商开通：① 审批客户提交的开通申请（批准=写入客户厂商白名单，组内全部模型可用、
+// 新增模型自动继承）；② 手动直接调整某客户的开通范围（回收级联移除子账号授权）。
 
 const list = ref<ModelRequestRow[]>([])
 const total = ref(0)
@@ -29,7 +28,7 @@ async function load() {
 
 async function approve(row: ModelRequestRow) {
   await ElMessageBox.confirm(
-    `确认为「${row.org_name}」开通模型：${row.model_names}？批准后客户管理员即可在子账号管理中授权这些模型。`,
+    `确认为「${row.org_name}」开通厂商：${row.model_names}？批准后组内全部模型立即可授权（新增模型自动继承）。`,
     '批准开通', { type: 'warning' },
   )
   const r = await apiHandleModelRequest(row.id, 'approve')
@@ -40,7 +39,7 @@ async function approve(row: ModelRequestRow) {
 
 async function reject(row: ModelRequestRow) {
   const { value } = await ElMessageBox.prompt('驳回原因（将作为平台回复展示给客户）', '驳回申请', {
-    inputPlaceholder: '如：该模型暂不对外开放',
+    inputPlaceholder: '如：该厂商暂不对外开放',
     inputValidator: (v: string) => (v && v.trim() ? true : '请填写驳回原因'),
   })
   await apiHandleModelRequest(row.id, 'reject', value.trim())
@@ -49,47 +48,88 @@ async function reject(row: ModelRequestRow) {
   load()
 }
 
-// ---- 手动开通管理 ----
+// ---- 手动开通管理（厂商勾选 + 模型例外） ----
 const orgs = ref<any[]>([])
 const orgId = ref<number | null>(null)
-const granted = ref<string[]>([])
-const available = ref<{ name: string; display_name: string; vendor: string }[]>([])
+// granted 双段：厂商 id 列表 + 模型级例外名列表
+const grantedVendors = ref<number[]>([])
+const grantedModels = ref<string[]>([])
+const grantedVendorNames = ref<string[]>([]) // 已开通但候选里没出现的厂商（如全部模型停用）
+const available = ref<{ name: string; display_name: string; vendor: string; vendor_id: number }[]>([])
 const grantSaving = ref(false)
 
-const grantedSet = () => new Set(granted.value)
+// 候选厂商 = 可用模型的厂商去重 ∪ 已开通厂商
+interface VendorOpt { id: number; name: string; modelCount: number }
+const vendorOptions = computed<VendorOpt[]>(() => {
+  const map = new Map<number, VendorOpt>()
+  for (const m of available.value) {
+    if (!m.vendor_id) continue
+    const cur = map.get(m.vendor_id)
+    if (cur) cur.modelCount++
+    else map.set(m.vendor_id, { id: m.vendor_id, name: m.vendor || `厂商#${m.vendor_id}`, modelCount: 1 })
+  }
+  // 已开通但无在列模型的厂商也保留（可勾选/取消）
+  availableVendorNames.value.forEach((name, i) => {
+    const id = grantedVendors.value[i]
+    if (!map.has(id)) map.set(id, { id, name, modelCount: 0 })
+  })
+  return [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
+})
+const availableVendorNames = ref<string[]>([])
 
+function toggleVendor(id: number, checked: boolean) {
+  grantedVendors.value = checked ? [...grantedVendors.value, id] : grantedVendors.value.filter((v) => v !== id)
+}
 function toggleModel(name: string, checked: boolean) {
-  granted.value = checked ? [...granted.value, name] : granted.value.filter((n) => n !== name)
+  grantedModels.value = checked ? [...grantedModels.value, name] : grantedModels.value.filter((n) => n !== name)
+}
+// 组内厂商已勾选时模型例外勾选不产生额外效果（展示为已覆盖）
+function coveredByVendor(m: { vendor_id: number }): boolean {
+  return grantedVendors.value.includes(m.vendor_id)
 }
 
 async function loadOrgModels() {
   if (!orgId.value) return
   const r = await apiGetOrgModels(orgId.value)
-  granted.value = r.granted
+  const g = r.granted as any
+  grantedVendors.value = (g?.vendors || []).map((v: any) => v.id)
+  grantedVendorNames.value = (g?.vendors || []).map((v: any) => v.name)
+  availableVendorNames.value = grantedVendorNames.value
+  grantedModels.value = g?.models || []
   available.value = r.available
 }
 
 async function onOrgChange() {
-  granted.value = []
+  grantedVendors.value = []
+  grantedModels.value = []
   available.value = []
   loadOrgModels()
 }
 
 async function saveGrant() {
   if (!orgId.value) return
-  const before = grantedSet()
+  const beforeV = new Set(grantedVendors.value)
+  const beforeM = new Set(grantedModels.value)
   const r = await apiGetOrgModels(orgId.value)
-  const removed = r.granted.filter((n: string) => !before.has(n))
-  if (removed.length > 0) {
+  const g = r.granted as any
+  const removedV: string[] = []
+  ;(g?.vendors || []).forEach((v: any) => { if (!beforeV.has(v.id)) removedV.push(v.name) })
+  const removedM = (g?.models || []).filter((n: string) => !beforeM.has(n))
+  if (removedV.length > 0 || removedM.length > 0) {
+    const parts: string[] = []
+    if (removedV.length) parts.push(`厂商 ${removedV.join('、')}`)
+    if (removedM.length) parts.push(`模型 ${removedM.join('、')}`)
     await ElMessageBox.confirm(
-      `本次保存将回收模型：${removed.join('、')}。该客户全部子账号的相应授权会同步移除，相关调用立即被拒绝，确认继续？`,
+      `本次保存将回收${parts.join('与')}。该客户全部子账号的相应授权会同步移除，相关调用立即被拒绝，确认继续？`,
       '回收确认', { type: 'warning', confirmButtonText: '确认回收' },
     )
   }
   grantSaving.value = true
   try {
-    const resp = await apiSetOrgModels(orgId.value, [...granted.value])
-    ElMessage.success(resp.message || '已保存')
+    const resp = await apiSetOrgModels(orgId.value, {
+      vendors: grantedVendors.value, models: grantedModels.value,
+    } as any)
+    ElMessage.success((resp as any).message || '已保存')
     loadOrgModels()
   } finally {
     grantSaving.value = false
@@ -123,7 +163,7 @@ onMounted(async () => {
       <el-table :data="list" size="small" v-loading="loading" empty-text="暂无开通申请。客户在「模型申请」页提交后会在这里出现。">
         <el-table-column prop="id" label="#" width="70" />
         <el-table-column prop="org_name" label="客户" min-width="120" show-overflow-tooltip />
-        <el-table-column label="申请模型" min-width="200">
+        <el-table-column label="申请厂商" min-width="200">
           <template #default="{ row }">
             <el-tag v-for="n in row.model_names.split(',')" :key="n" size="small" style="margin-right: 4px">{{ n }}</el-tag>
           </template>
@@ -154,7 +194,7 @@ onMounted(async () => {
     </el-card>
 
     <el-card shadow="never">
-      <template #header>客户开通管理<span class="unit">（不经申请直接开通/回收）</span></template>
+      <template #header>客户开通管理<span class="unit">（不经申请直接开通/回收；勾厂商=组内全部模型可用，新模型自动继承）</span></template>
       <el-form inline>
         <el-form-item label="客户">
           <el-select v-model="orgId" filterable placeholder="选择客户" style="width: 220px" @change="onOrgChange">
@@ -163,21 +203,36 @@ onMounted(async () => {
         </el-form-item>
       </el-form>
       <template v-if="orgId">
-        <p class="hint" style="margin: 0 0 8px">
-          勾选该客户可用的模型。取消勾选并保存 = 回收：该客户全部子账号的相应授权会同步移除，相关调用立即被拒绝。
-        </p>
+        <div class="section-title">厂商（推荐按厂商开通）</div>
+        <el-table :data="vendorOptions" size="small" empty-text="暂无厂商（先在「厂商管理」接入模型）">
+          <el-table-column width="50" align="center">
+            <template #default="{ row }">
+              <el-checkbox :model-value="grantedVendors.includes(row.id)"
+                @change="(v: any) => toggleVendor(row.id, !!v)" />
+            </template>
+          </el-table-column>
+          <el-table-column label="厂商" min-width="140">
+            <template #default="{ row }"><b>{{ row.name }}</b></template>
+          </el-table-column>
+          <el-table-column label="组内模型数" width="100" align="center">
+            <template #default="{ row }">{{ row.modelCount }}</template>
+          </el-table-column>
+        </el-table>
+
+        <div class="section-title">模型级例外（个别模型单独开通；所属厂商已勾选时无需再勾）</div>
         <el-table :data="available" size="small" empty-text="平台暂无已上线的模型">
           <el-table-column width="50" align="center">
             <template #default="{ row }">
-              <el-checkbox :model-value="granted.includes(row.name)"
+              <el-checkbox :model-value="coveredByVendor(row) || grantedModels.includes(row.name)"
+                :disabled="coveredByVendor(row)"
                 @change="(v: any) => toggleModel(row.name, !!v)" />
             </template>
           </el-table-column>
           <el-table-column label="模型名" min-width="160">
             <template #default="{ row }"><code>{{ row.name }}</code></template>
           </el-table-column>
-          <el-table-column prop="display_name" label="说明" min-width="160" />
-          <el-table-column prop="vendor" label="厂商" width="110" />
+          <el-table-column prop="display_name" label="说明" min-width="140" />
+          <el-table-column prop="vendor" label="厂商" width="120" />
         </el-table>
         <el-button type="primary" style="margin-top: 12px" :loading="grantSaving" @click="saveGrant">保存</el-button>
       </template>
@@ -189,6 +244,6 @@ onMounted(async () => {
 .wrap { display: flex; flex-direction: column; gap: 16px; }
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .unit { font-size: 12px; color: #909399; font-weight: normal; }
-.hint { font-size: 12px; color: #909399; }
+.section-title { font-size: 13px; font-weight: 600; margin: 12px 0 6px; }
 .dim { color: var(--tg-muted); font-size: 12px; }
 </style>

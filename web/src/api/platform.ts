@@ -409,8 +409,8 @@ export interface ModelRequestRow {
 export interface ModelRequestPage { list: ModelRequestRow[]; total: number; page: number; page_size: number }
 
 export interface OrgModelsInfo {
-  granted: string[]
-  available: { name: string; display_name: string; vendor: string }[]
+  granted: { vendors: { id: number; name: string }[]; models: string[] }
+  available: { name: string; display_name: string; vendor: string; vendor_id?: number }[]
 }
 
 export const apiListModelRequests = (params?: any) =>
@@ -424,8 +424,9 @@ export const apiGetOrgModels = (orgId: number) =>
   http.get<any, OrgModelsInfo>(`/api/platform/orgs/${orgId}/models`)
 
 // 整体替换客户开通范围；回收会级联移除该客户全部子账号的相应授权
-export const apiSetOrgModels = (orgId: number, models: string[]) =>
-  http.put<any, { message: string; added: string[]; removed: string[] }>(`/api/platform/orgs/${orgId}/models`, { models })
+// 整体替换客户开通范围；回收会级联移除该客户全部子账号的相应授权
+export const apiSetOrgModels = (orgId: number, payload: { vendors?: number[]; models?: string[] }) =>
+  http.put<any, any>(`/api/platform/orgs/${orgId}/models`, payload)
 
 // 平台视角对账单
 export const apiOrgStatement = (id: number, month: string) =>

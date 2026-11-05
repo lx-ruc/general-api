@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import dayjs from 'dayjs'
 import {
@@ -65,21 +65,44 @@ async function submitPwd() {
   pwdVisible.value = false
 }
 
-// 模型授权
+// 模型授权（厂商勾选 + 模型例外双段）
 const grantVisible = ref(false)
 const grantMember = ref<Member | null>(null)
+const grantedVendors = ref<number[]>([])
 const grantedModels = ref<string[]>([])
 const availableModels = ref<any[]>([])
 async function openGrant(m: Member) {
   grantMember.value = m
   const resp = await apiGetMemberModels(m.id)
-  grantedModels.value = resp.granted
+  const g = resp.granted || {}
+  grantedVendors.value = g.vendors || []
+  grantedModels.value = g.models || []
   availableModels.value = resp.available
   grantVisible.value = true
 }
+function toggleVendor(vid: number, checked: boolean) {
+  grantedVendors.value = checked ? [...grantedVendors.value, vid] : grantedVendors.value.filter((v) => v !== vid)
+}
+function toggleModel(name: string, checked: boolean) {
+  grantedModels.value = checked ? [...grantedModels.value, name] : grantedModels.value.filter((n) => n !== name)
+}
+function coveredByVendor(m: any): boolean {
+  return grantedVendors.value.includes(m.vendor_id)
+}
+// 候选厂商 = 可用模型的厂商去重
+const grantVendorOptions = computed(() => {
+  const map = new Map<number, { id: number; name: string; modelCount: number }>()
+  for (const m of availableModels.value) {
+    if (!m.vendor_id) continue
+    const cur = map.get(m.vendor_id)
+    if (cur) cur.modelCount++
+    else map.set(m.vendor_id, { id: m.vendor_id, name: m.vendor || `厂商#${m.vendor_id}`, modelCount: 1 })
+  }
+  return [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
+})
 async function submitGrant() {
   if (!grantMember.value) return
-  await apiSetMemberModels(grantMember.value.id, grantedModels.value)
+  await apiSetMemberModels(grantMember.value.id, { vendors: grantedVendors.value, models: grantedModels.value })
   ElMessage.success('授权已更新')
   grantVisible.value = false
   load()
@@ -266,12 +289,24 @@ function remove(m: Member) {
     </template>
   </el-dialog>
 
-  <el-dialog v-model="grantVisible" :title="`模型授权：${grantMember?.display_name || grantMember?.username || ''}`" width="560px">
+  <el-dialog v-model="grantVisible" :title="`模型授权：${grantMember?.display_name || grantMember?.username || ''}`" width="640px">
     <p class="grant-hint">
-      勾选该子账号可用 API key 调用的模型（决定其 <code>/v1/models</code> 列表与转发白名单）
+      勾厂商=组内全部模型可用（新增模型自动继承）；个别模型可单独勾选作例外
     </p>
-    <el-checkbox-group v-model="grantedModels">
-      <el-checkbox v-for="m in availableModels" :key="m.name" :value="m.name" class="grant-item">
+    <div class="grant-section">厂商</div>
+    <el-checkbox-group>
+      <el-checkbox v-for="v in grantVendorOptions" :key="v.id" :value="v.id" class="grant-item"
+        :model-value="grantedVendors.includes(v.id)" @change="(val: any) => toggleVendor(v.id, !!val)">
+        <b>{{ v.name }}</b>
+        <span class="grant-price">{{ v.modelCount }} 个模型</span>
+      </el-checkbox>
+    </el-checkbox-group>
+    <div class="grant-section">模型（例外；所属厂商已勾选时无需再勾）</div>
+    <el-checkbox-group>
+      <el-checkbox v-for="m in availableModels" :key="m.name" :value="m.name" class="grant-item"
+        :model-value="coveredByVendor(m) || grantedModels.includes(m.name)"
+        :disabled="coveredByVendor(m)"
+        @change="(val: any) => toggleModel(m.name, !!val)">
         <code>{{ m.name }}</code>
         <span v-if="m.display_name" class="grant-price">{{ m.display_name }}</span>
       </el-checkbox>
@@ -296,5 +331,6 @@ function remove(m: Member) {
 .grant-hint { margin: 0 0 14px; font-size: 13px; color: var(--tg-graphite); }
 .alert-hint { margin: 0 0 4px; font-size: 12px; color: var(--tg-muted); }
 .grant-item { width: 100%; margin-bottom: 6px; height: auto; }
+.grant-section { font-size: 13px; font-weight: 600; margin: 10px 0 6px; }
 .grant-price { color: var(--tg-muted); font-size: 12px; margin-left: 6px; }
 </style>

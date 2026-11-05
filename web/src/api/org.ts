@@ -80,8 +80,9 @@ export const apiResetMemberPassword = (id: number, new_password: string) =>
 export const apiAddMemberQuota = (id: number, amount: number, remark: string) =>
   http.post<any, any>(`/api/org/members/${id}/quota`, { amount, remark })
 export const apiGetMemberModels = (id: number) => http.get<any, any>(`/api/org/members/${id}/models`)
-export const apiSetMemberModels = (id: number, models: string[]) =>
-  http.put<any, any>(`/api/org/members/${id}/models`, { models })
+// 双段整体替换：vendors=厂商授权 id 列表（组内全部模型可用），models=模型级例外
+export const apiSetMemberModels = (id: number, payload: { vendors?: number[]; models?: string[] }) =>
+  http.put<any, any>(`/api/org/members/${id}/models`, payload)
 
 export const apiOrgStats = () => http.get<any, any>('/api/org/stats/overview')
 export const apiOrgUsage = (params?: any) => http.get<any, any>('/api/org/usage', { params })
