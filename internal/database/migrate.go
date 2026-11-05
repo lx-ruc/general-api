@@ -178,12 +178,12 @@ func migrateVendors(db *gorm.DB) error {
 	now := time.Now().Unix()
 	// ① 非空 vendor 标签建厂商实体；空标签渠道归并到「未分类」（仅当存在时才建）
 	if err := db.Exec(`INSERT INTO vendors (name, display_name, status, remark, created_at, updated_at)
-		SELECT DISTINCT vendor, vendor, 1, '迁移自渠道厂商标签', ?, ? FROM channels
+		SELECT DISTINCT vendor, vendor, 1, '迁移自渠道厂商标签', CAST(? AS INTEGER), CAST(? AS INTEGER) FROM channels
 		WHERE vendor <> '' ON CONFLICT(name) DO NOTHING`, now, now).Error; err != nil {
 		return fmt.Errorf("migrate vendors seed: %w", err)
 	}
 	if err := db.Exec(`INSERT INTO vendors (name, display_name, status, remark, created_at, updated_at)
-		SELECT DISTINCT 'uncategorized', '未分类', 1, '空厂商标签渠道归并', ?, ? FROM channels
+		SELECT DISTINCT 'uncategorized', '未分类', 1, '空厂商标签渠道归并', CAST(? AS INTEGER), CAST(? AS INTEGER) FROM channels
 		WHERE vendor = '' ON CONFLICT(name) DO NOTHING`, now, now).Error; err != nil {
 		return fmt.Errorf("migrate vendors uncategorized: %w", err)
 	}
@@ -263,13 +263,13 @@ func migrateVendors(db *gorm.DB) error {
 	// ⑤ 存量授权折算成厂商级（DISTINCT 去重：同客户多模型同厂商只留一行；
 	// 模型级 org_model_grants/user_model_grants 行保留为例外，不删除）
 	if err := db.Exec(`INSERT INTO org_vendor_grants (org_id, vendor_id, source, created_at)
-		SELECT DISTINCT g.org_id, m.vendor_id, 'backfill', ? FROM org_model_grants g
+		SELECT DISTINCT g.org_id, m.vendor_id, 'backfill', CAST(? AS INTEGER) FROM org_model_grants g
 		JOIN models m ON m.name = g.model_name
 		WHERE m.vendor_id > 0 ON CONFLICT(org_id, vendor_id) DO NOTHING`, now).Error; err != nil {
 		return fmt.Errorf("migrate org_vendor_grants: %w", err)
 	}
 	if err := db.Exec(`INSERT INTO user_vendor_grants (user_id, vendor_id, created_at)
-		SELECT DISTINCT g.user_id, m.vendor_id, ? FROM user_model_grants g
+		SELECT DISTINCT g.user_id, m.vendor_id, CAST(? AS INTEGER) FROM user_model_grants g
 		JOIN models m ON m.name = g.model_name
 		WHERE m.vendor_id > 0 ON CONFLICT(user_id, vendor_id) DO NOTHING`, now).Error; err != nil {
 		return fmt.Errorf("migrate user_vendor_grants: %w", err)
@@ -292,7 +292,7 @@ func migrateVendorKeys(db *gorm.DB) error {
 	}
 	if err := db.Exec(`INSERT INTO vendor_keys (vendor_id, key_enc, weight, status, remark, created_at, updated_at)
 		SELECT c.vendor_id, c.upstream_key_enc, 1, 1, '迁移自渠道「' || c.name || '」单密钥',
-			c.created_at, ? FROM channels c
+			c.created_at, CAST(? AS INTEGER) FROM channels c
 		WHERE c.upstream_key_enc <> '' AND c.vendor_id > 0`, now).Error; err != nil {
 		return fmt.Errorf("migrate vendor_keys legacy: %w", err)
 	}
