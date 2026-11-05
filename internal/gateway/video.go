@@ -195,23 +195,17 @@ func (h *Handler) fetchUpstreamTask(ctx context.Context, task *model.VideoTask) 
 	return resp.StatusCode, body, nil, nil // 非 JSON / 无状态字段：原样透传，不动账本
 }
 
-// videoChannelKey 取渠道一把可用上游 Key（只读查询用）：池内启用 Key 依次解密取
-// 首把成功者（不看冷却——查询不改调度状态），无池回退 legacy 单 Key
+// videoChannelKey 取渠道所属厂商一把可用上游 Key（只读查询用）：厂商池内启用 Key
+// 依次解密取首把成功者（不看冷却——查询不改调度状态）
 func (h *Handler) videoChannelKey(chID int64) (string, bool) {
 	var krs []struct{ KeyEnc string }
-	if err := h.DB.Raw("SELECT key_enc FROM channel_keys WHERE channel_id = ? AND status = 1 ORDER BY id",
-		chID).Scan(&krs).Error; err == nil {
+	if err := h.DB.Raw(`SELECT vk.key_enc FROM vendor_keys vk
+		JOIN channels c ON c.vendor_id = vk.vendor_id
+		WHERE c.id = ? AND vk.status = 1 ORDER BY vk.id`, chID).Scan(&krs).Error; err == nil {
 		for _, kr := range krs {
 			if k, derr := h.Cipher.Decrypt(kr.KeyEnc); derr == nil && k != "" {
 				return k, true
 			}
-		}
-	}
-	var enc string
-	if err := h.DB.Raw("SELECT upstream_key_enc FROM channels WHERE id = ?", chID).
-		Scan(&enc).Error; err == nil && enc != "" {
-		if k, derr := h.Cipher.Decrypt(enc); derr == nil && k != "" {
-			return k, true
 		}
 	}
 	return "", false

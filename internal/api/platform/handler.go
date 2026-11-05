@@ -455,9 +455,43 @@ type abilityReq struct {
 	UpstreamModelName *string `json:"upstream_model_name"`
 }
 
+// resolveVendorID 渠道表单的厂商归属解析（过渡兼容双写）：
+// vendor_id>0 直接用（校验存在）；否则按 vendor 文本名 find-or-create 厂商实体
+// （旧表单/curl 解析预填的还是文本标签）；两者皆空归「未分类」。返回厂商 id
+func resolveVendorID(tx *gorm.DB, vendorID int64, vendorName string) (int64, error) {
+	name := strings.TrimSpace(vendorName)
+	if vendorID > 0 {
+		var cnt int64
+		if err := tx.Raw("SELECT COUNT(*) FROM vendors WHERE id = ?", vendorID).Scan(&cnt).Error; err != nil {
+			return 0, err
+		}
+		if cnt == 0 {
+			return 0, fmt.Errorf("厂商不存在（#%d）", vendorID)
+		}
+		return vendorID, nil
+	}
+	if name == "" {
+		name = "uncategorized"
+	}
+	var id int64
+	if err := tx.Raw("SELECT id FROM vendors WHERE name = ?", name).Scan(&id).Error; err != nil {
+		return 0, err
+	}
+	if id > 0 {
+		return id, nil
+	}
+	now := time.Now().Unix()
+	v := model.Vendor{Name: name, DisplayName: name, Status: 1, CreatedAt: now, UpdatedAt: now}
+	if err := tx.Create(&v).Error; err != nil {
+		return 0, err
+	}
+	return v.ID, nil
+}
+
 // ensureModelsExist 渠道保存时兜底登记模型：模型未登记则建 models 行（启用、价格 0，
-// 需管理台「模型定价」定价），已登记的不动——定价已收敛到模型定价页，渠道侧不再碰价格
-func ensureModelsExist(tx *gorm.DB, models []abilityReq, vendor string) error {
+// 需管理台「模型定价」定价）并挂到渠道所属厂商；已登记且未挂厂商的补挂（模型一律
+// 单厂商归属——双厂商承接应拆成两个模型行）——定价已收敛到模型定价页，渠道侧不碰价格
+func ensureModelsExist(tx *gorm.DB, models []abilityReq, vendorID int64) error {
 	for _, m := range models {
 		name := strings.TrimSpace(m.ModelName)
 		if name == "" {
@@ -465,8 +499,13 @@ func ensureModelsExist(tx *gorm.DB, models []abilityReq, vendor string) error {
 		}
 		var ex model.Model
 		if err := tx.Where("name = ?", name).First(&ex).Error; err != nil {
-			mo := model.Model{Name: name, Vendor: vendor, Status: 1}
+			mo := model.Model{Name: name, VendorID: vendorID, Status: 1}
 			if err := tx.Create(&mo).Error; err != nil {
+				return err
+			}
+		} else if ex.VendorID == 0 {
+			if err := tx.Model(&model.Model{}).Where("name = ?", name).
+				Update("vendor_id", vendorID).Error; err != nil {
 				return err
 			}
 		}
@@ -476,10 +515,11 @@ func ensureModelsExist(tx *gorm.DB, models []abilityReq, vendor string) error {
 
 type channelReq struct {
 	Name        string       `json:"name" binding:"required"`
-	Vendor      string       `json:"vendor"`
+	Vendor      string       `json:"vendor"`    // 过渡兼容：文本标签（自动 find-or-create 厂商实体）
+	VendorID    int64        `json:"vendor_id"` // 厂商实体 id（优先生效）
 	BaseURL     string       `json:"base_url" binding:"required"`
 	Path        string       `json:"path"`
-	UpstreamKey string       `json:"upstream_key"` // 多行：每行一把 key，可后缀 :权重；留空=不修改
+	UpstreamKey string       `json:"upstream_key"` // 多行：每行一把 key，可后缀 :权重；留空=不修改（入厂商池）
 	Weight      int          `json:"weight"`
 	Priority    int          `json:"priority"`
 	Status      *int         `json:"status"`
@@ -528,65 +568,61 @@ func parseKeyLines(s string) []keyLine {
 	return out
 }
 
-// buildKeyPool 把多行明文 key 加密为待入库的 Key 池
-func (h *Handler) buildKeyPool(channelID int64, s string) ([]model.ChannelKey, error) {
+// buildVendorKeyPool 把多行明文 key 加密为待入库的厂商 Key 池
+func (h *Handler) buildVendorKeyPool(vendorID int64, s string) ([]model.VendorKey, error) {
 	lines := parseKeyLines(s)
-	out := make([]model.ChannelKey, 0, len(lines))
+	out := make([]model.VendorKey, 0, len(lines))
 	now := time.Now().Unix()
 	for _, l := range lines {
 		enc, err := h.Cipher.Encrypt(l.Key)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, model.ChannelKey{
-			ChannelID: channelID, KeyEnc: enc, Weight: l.Weight, Status: 1, CreatedAt: now, UpdatedAt: now,
+		out = append(out, model.VendorKey{
+			VendorID: vendorID, KeyEnc: enc, Weight: l.Weight, Status: 1, CreatedAt: now, UpdatedAt: now,
 		})
 	}
 	return out, nil
 }
 
-// keyCounts 各渠道 Key 池统计（SQLite/PG 均可移植的 CASE 写法）
-func (h *Handler) keyCounts() map[int64]struct{ Total, Active int64 } {
+// vendorKeyCounts 各厂商 Key 池统计（SQLite/PG 均可移植的 CASE 写法）
+func (h *Handler) vendorKeyCounts() map[int64]struct{ Total, Active int64 } {
 	var rows []struct {
-		ChannelID int64
-		Total     int64
-		Active    int64
+		VendorID int64
+		Total    int64
+		Active   int64
 	}
-	_ = h.DB.Raw(`SELECT channel_id, COUNT(*) AS total,
+	_ = h.DB.Raw(`SELECT vendor_id, COUNT(*) AS total,
 		SUM(CASE WHEN status = 1 THEN 1 ELSE 0 END) AS active
-		FROM channel_keys GROUP BY channel_id`).Scan(&rows).Error
+		FROM vendor_keys GROUP BY vendor_id`).Scan(&rows).Error
 	out := make(map[int64]struct{ Total, Active int64 }, len(rows))
 	for _, r := range rows {
-		out[r.ChannelID] = struct{ Total, Active int64 }{r.Total, r.Active}
+		out[r.VendorID] = struct{ Total, Active int64 }{r.Total, r.Active}
 	}
 	return out
 }
 
-// hasKey 渠道是否有可用密钥：池内有启用 Key，或 legacy 单 Key 密文存在
-func hasKey(enc string, active int64) bool {
-	return active > 0 || enc != ""
-}
-
-// keyCoolingCounts 各渠道「冷却中」的启用 Key 数（配额/限流冷却都算）：渠道列表密钥列
+// vendorKeyCoolingCounts 各厂商「冷却中」的启用 Key 数（配额/限流冷却都算）：列表密钥列
 // 的「冷 N」琥珀提示用（冷却期自动跳过、到期自愈，管理员点 Key 池可看详情/手动解除）。
-// 池内 Key 逐个查协调器（内存实现为零成本；legacy 单 Key 无池行不计）
-func (h *Handler) keyCoolingCounts() map[int64]int64 {
+// 池内 Key 逐个查协调器（内存实现为零成本）
+func (h *Handler) vendorKeyCoolingCounts() map[int64]int64 {
 	var keys []struct {
-		ChannelID int64
-		ID        int64
+		VendorID int64
+		ID       int64
 	}
-	_ = h.DB.Raw("SELECT channel_id, id FROM channel_keys WHERE status = 1").Scan(&keys).Error
+	_ = h.DB.Raw("SELECT vendor_id, id FROM vendor_keys WHERE status = 1").Scan(&keys).Error
 	out := make(map[int64]int64)
 	for _, k := range keys {
-		if h.Coord != nil && h.Coord.IsCooling(fmt.Sprintf("ck:%d:%d", k.ChannelID, k.ID)) {
-			out[k.ChannelID]++
+		if h.Coord != nil && h.Coord.IsCooling(fmt.Sprintf("ck:%d:%d", k.VendorID, k.ID)) {
+			out[k.VendorID]++
 		}
 	}
 	return out
 }
 
-// modelChannelCounts 每个模型名当前「已接通」的渠道数（启用且有可用密钥才算，与数据面可选渠道同口径）
-// 及渠道名清单（定价页点开渠道数可看是哪些渠道）；定价页据此区分「已接通」与「仅登记未接渠道」的模型。
+// modelChannelCounts 每个模型名当前「已接通」的渠道数（启用且所属厂商有启用 Key 才算，
+// 与数据面可选渠道同口径）及渠道名清单（定价页点开渠道数可看是哪些渠道）；定价页据此
+// 区分「已接通」与「仅登记未接渠道」的模型。
 func (h *Handler) modelChannelCounts() (counts map[string]int64, names map[string][]string) {
 	type row struct {
 		ModelName string
@@ -597,10 +633,9 @@ func (h *Handler) modelChannelCounts() (counts map[string]int64, names map[strin
 		SELECT ca.model_name AS model_name, c.name AS ch_name
 		FROM channel_abilities ca
 		JOIN channels c ON c.id = ca.channel_id
-		LEFT JOIN (
-			SELECT DISTINCT channel_id FROM channel_keys WHERE status = 1
-		) k ON k.channel_id = ca.channel_id
-		WHERE c.status = 1 AND (COALESCE(c.upstream_key_enc, '') != '' OR k.channel_id IS NOT NULL)
+		JOIN vendors v ON v.id = c.vendor_id
+		WHERE c.status = 1 AND v.status = 1
+		  AND EXISTS (SELECT 1 FROM vendor_keys vk WHERE vk.vendor_id = c.vendor_id AND vk.status = 1)
 		ORDER BY ca.model_name, c.priority DESC, c.name`).Scan(&rows).Error
 	counts = make(map[string]int64, len(rows))
 	names = make(map[string][]string, len(rows))
@@ -638,21 +673,16 @@ func (h *Handler) ListChannels(c *gin.Context) {
 		byChannel[a.ChannelID] = append(byChannel[a.ChannelID], a)
 	}
 	list := make([]gin.H, 0, len(channels))
-	counts := h.keyCounts()
-	cooling := h.keyCoolingCounts()
+	counts := h.vendorKeyCounts()
+	cooling := h.vendorKeyCoolingCounts()
 	for _, ch := range channels {
-		kc := counts[ch.ID]
-		// legacy 单 Key 计入展示数量（池为空且存在密文时）
-		keyCount, keyActive := kc.Total, kc.Active
-		if keyCount == 0 && ch.UpstreamKeyEnc != "" {
-			keyCount, keyActive = 1, 1
-		}
+		kc := counts[ch.VendorID] // Key 池在厂商维度（同厂商端点共享同一套数字）
 		list = append(list, gin.H{
-			"id": ch.ID, "name": ch.Name, "vendor": ch.Vendor,
+			"id": ch.ID, "name": ch.Name, "vendor": ch.Vendor, "vendor_id": ch.VendorID,
 			"base_url": ch.BaseURL, "path": ch.Path,
-			"has_key":   hasKey(ch.UpstreamKeyEnc, kc.Active),
-			"key_count": keyCount, "key_active_count": keyActive,
-			"key_cooling_count": cooling[ch.ID],
+			"has_key":   kc.Active > 0,
+			"key_count": kc.Total, "key_active_count": kc.Active,
+			"key_cooling_count": cooling[ch.VendorID],
 			"weight":            ch.Weight, "priority": ch.Priority, "status": ch.Status,
 			"last_test_at": ch.LastTestAt, "last_test_ok": ch.LastTestOk,
 			"remark": ch.Remark, "created_at": ch.CreatedAt,
@@ -662,15 +692,10 @@ func (h *Handler) ListChannels(c *gin.Context) {
 	httpx.OK(c, list)
 }
 
-// CreateChannel POST /api/platform/channels
+// CreateChannel POST /api/platform/channels（端点；Key 入所属厂商池）
 func (h *Handler) CreateChannel(c *gin.Context) {
 	var req channelReq
 	if !httpx.BindJSON(c, &req) {
-		return
-	}
-	// 模型必须来自「配密钥 → 从上游获取」的流程：新建渠道必带密钥（binding 已要求至少一个模型）
-	if req.UpstreamKey == "" {
-		httpx.Fail(c, http.StatusBadRequest, "请先填上游密钥：配好密钥后从上游获取模型，无密钥渠道不配置模型")
 		return
 	}
 	var cnt int64
@@ -683,13 +708,40 @@ func (h *Handler) CreateChannel(c *gin.Context) {
 	if req.Status != nil {
 		status = *req.Status
 	}
-	pool, err := h.buildKeyPool(0, req.UpstreamKey)
+	// Key 挂厂商池：本表单没填 Key 时，要求所选厂商池内已有启用 Key（无密钥不配模型，
+	// 模型必须来自「配密钥 → 从上游获取」的流程）
+	var vendorID int64
+	var pool []model.VendorKey
+	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		vid, verr := resolveVendorID(tx, req.VendorID, req.Vendor)
+		if verr != nil {
+			return verr
+		}
+		vendorID = vid
+		if req.UpstreamKey != "" {
+			p, perr := h.buildVendorKeyPool(vendorID, req.UpstreamKey)
+			if perr != nil {
+				return perr
+			}
+			pool = p
+		} else {
+			var active int64
+			if err := tx.Raw("SELECT COUNT(*) FROM vendor_keys WHERE vendor_id = ? AND status = 1",
+				vendorID).Scan(&active).Error; err != nil {
+				return err
+			}
+			if active == 0 {
+				return fmt.Errorf("请先填上游密钥：配好密钥后从上游获取模型，无密钥厂商不配置模型")
+			}
+		}
+		return nil
+	})
 	if err != nil {
-		httpx.Fail(c, http.StatusInternalServerError, "密钥加密失败")
+		httpx.Fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	ch := model.Channel{
-		Name: req.Name, Vendor: req.Vendor, BaseURL: req.BaseURL,
+		Name: req.Name, Vendor: req.Vendor, VendorID: vendorID, BaseURL: req.BaseURL,
 		Path:   req.pathOrDefault(),
 		Weight: maxInt(req.Weight, 1), Priority: req.Priority,
 		Status: status, Remark: req.Remark,
@@ -698,9 +750,8 @@ func (h *Handler) CreateChannel(c *gin.Context) {
 		if err := tx.Create(&ch).Error; err != nil {
 			return err
 		}
-		for i := range pool {
-			pool[i].ChannelID = ch.ID
-			if err := tx.Create(&pool[i]).Error; err != nil {
+		if len(pool) > 0 {
+			if err := tx.Create(&pool).Error; err != nil {
 				return err
 			}
 		}
@@ -711,7 +762,7 @@ func (h *Handler) CreateChannel(c *gin.Context) {
 				return err
 			}
 		}
-		if err := ensureModelsExist(tx, req.Models, req.Vendor); err != nil {
+		if err := ensureModelsExist(tx, req.Models, vendorID); err != nil {
 			return err
 		}
 		return nil
@@ -741,22 +792,19 @@ func (h *Handler) GetChannel(c *gin.Context) {
 	if abilities == nil {
 		abilities = []model.ChannelAbility{}
 	}
-	kc := h.keyCounts()[ch.ID]
-	keyCount, keyActive := kc.Total, kc.Active
-	if keyCount == 0 && ch.UpstreamKeyEnc != "" {
-		keyCount, keyActive = 1, 1
-	}
+	kc := h.vendorKeyCounts()[ch.VendorID]
 	httpx.OK(c, gin.H{
-		"id": ch.ID, "name": ch.Name, "vendor": ch.Vendor,
+		"id": ch.ID, "name": ch.Name, "vendor": ch.Vendor, "vendor_id": ch.VendorID,
 		"base_url": ch.BaseURL, "path": ch.Path,
-		"has_key":   hasKey(ch.UpstreamKeyEnc, kc.Active),
-		"key_count": keyCount, "key_active_count": keyActive,
+		"has_key":   kc.Active > 0,
+		"key_count": kc.Total, "key_active_count": kc.Active,
 		"weight": ch.Weight, "priority": ch.Priority, "status": ch.Status,
 		"remark": ch.Remark, "models": abilities,
 	})
 }
 
-// UpdateChannel PUT /api/platform/channels/:id（upstream_key 留空 = 不修改）
+// UpdateChannel PUT /api/platform/channels/:id（upstream_key 留空 = 不改 Key；
+// 非空 = 追加到所属厂商池——厂商池为多端点共享，不做整池替换，替换请到 Key 池管理）
 func (h *Handler) UpdateChannel(c *gin.Context) {
 	id, ok := httpx.PathID(c)
 	if !ok {
@@ -779,56 +827,62 @@ func (h *Handler) UpdateChannel(c *gin.Context) {
 			return
 		}
 	}
-	// 无密钥渠道不配模型：legacy 密文与 Key 池皆空、且本次也没填新密钥时拒绝保存
-	if req.UpstreamKey == "" && ch.UpstreamKeyEnc == "" {
-		var keyRows int64
-		_ = h.DB.Model(&model.ChannelKey{}).Where("channel_id = ?", id).Count(&keyRows).Error
-		if keyRows == 0 {
-			httpx.Fail(c, http.StatusBadRequest, "该渠道没有密钥：请先在「Key 池」添加密钥，再从上游获取模型并保存")
-			return
+	// 厂商归属解析 + Key 追加 + 无密钥校验（同创建：厂商池无启用 Key 且本次没填 → 拒绝）。
+	// 不传归属（vendor_id=0 且 vendor 文本为空）时沿用原渠道厂商——部分更新（仅改
+	// base_url/模型）不应把渠道偷偷挪去「未分类」
+	var pool []model.VendorKey
+	var vendorID int64
+	err := h.DB.Transaction(func(tx *gorm.DB) error {
+		vid, vname := req.VendorID, strings.TrimSpace(req.Vendor)
+		if vid == 0 && vname == "" {
+			vid = ch.VendorID // 沿用原归属（渠道也从未挂厂商时由下方兜底走未分类）
 		}
-	}
-	// 「有密钥才能启用」同 UpdateChannelStatus：保存为启用态时校验可用密钥
-	// （本次整池替换会带来全新启用 Key，视为有密钥，不拦）
-	if req.Status != nil && *req.Status == 1 && req.UpstreamKey == "" {
+		var verr error
+		vendorID, verr = resolveVendorID(tx, vid, vname)
+		if verr != nil {
+			return verr
+		}
+		if req.UpstreamKey != "" {
+			p, perr := h.buildVendorKeyPool(vendorID, req.UpstreamKey)
+			if perr != nil {
+				return perr
+			}
+			pool = p
+			return nil
+		}
 		var active int64
-		_ = h.DB.Model(&model.ChannelKey{}).Where("channel_id = ? AND status = 1", id).Count(&active).Error
-		if !hasKey(ch.UpstreamKeyEnc, active) {
-			httpx.Fail(c, http.StatusBadRequest, "该渠道没有可用密钥：请先到「Key 池」更换或启用密钥，再启用渠道")
-			return
+		if err := tx.Raw("SELECT COUNT(*) FROM vendor_keys WHERE vendor_id = ? AND status = 1",
+			vendorID).Scan(&active).Error; err != nil {
+			return err
 		}
+		if active == 0 {
+			return fmt.Errorf("该厂商没有密钥：请先在「Key 池」添加密钥，再从上游获取模型并保存")
+		}
+		// 保存为启用态时校验可用密钥（「有密钥才能启用」同 UpdateChannelStatus）
+		if req.Status != nil && *req.Status == 1 {
+			return nil // active > 0 已保证
+		}
+		return nil
+	})
+	if err != nil {
+		httpx.Fail(c, http.StatusBadRequest, err.Error())
+		return
 	}
 	updates := map[string]any{
-		"name": req.Name, "vendor": req.Vendor, "base_url": req.BaseURL,
+		"name": req.Name, "vendor": req.Vendor, "vendor_id": vendorID, "base_url": req.BaseURL,
 		"path": req.pathOrDefault(), "weight": maxInt(req.Weight, 1),
 		"priority": req.Priority, "remark": req.Remark, "updated_at": time.Now().Unix(),
 	}
 	if req.Status != nil {
 		updates["status"] = *req.Status
 	}
-	// upstream_key 非空 = 整池替换（多行 key）并同时置空 legacy 单 Key；留空 = 不修改
-	replacePool := req.UpstreamKey != ""
-	var pool []model.ChannelKey
-	if replacePool {
-		var perr error
-		if pool, perr = h.buildKeyPool(id, req.UpstreamKey); perr != nil {
-			httpx.Fail(c, http.StatusInternalServerError, "密钥加密失败")
-			return
-		}
-		updates["upstream_key_enc"] = ""
-	}
-	err := h.DB.Transaction(func(tx *gorm.DB) error {
+	err = h.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&model.Channel{}).Where("id = ?", id).Updates(updates).Error; err != nil {
 			return err
 		}
-		if replacePool {
-			if err := tx.Where("channel_id = ?", id).Delete(&model.ChannelKey{}).Error; err != nil {
+		if len(pool) > 0 {
+			if err := tx.Create(&pool).Error; err != nil {
 				return err
-			}
-			for i := range pool {
-				if err := tx.Create(&pool[i]).Error; err != nil {
-					return err
-				}
 			}
 		}
 		// 整体替换 abilities
@@ -841,7 +895,7 @@ func (h *Handler) UpdateChannel(c *gin.Context) {
 				return err
 			}
 		}
-		if err := ensureModelsExist(tx, req.Models, req.Vendor); err != nil {
+		if err := ensureModelsExist(tx, req.Models, vendorID); err != nil {
 			return err
 		}
 		return nil
@@ -854,8 +908,8 @@ func (h *Handler) UpdateChannel(c *gin.Context) {
 	//（换新 Key 的场景在这里自动恢复之前被停用的模型）
 	service.SyncModelsAndNotify(h.DB, fmt.Sprintf("渠道「%s」（#%d）配置更新", req.Name, id))
 	msg := "渠道已更新"
-	if replacePool {
-		msg = fmt.Sprintf("渠道已更新（Key 池替换为 %d 把）", len(pool))
+	if len(pool) > 0 {
+		msg = fmt.Sprintf("渠道已更新（追加 %d 把 Key 到厂商池）", len(pool))
 	}
 	httpx.OK(c, gin.H{"message": msg})
 }
@@ -882,13 +936,14 @@ func (h *Handler) UpdateChannelStatus(c *gin.Context) {
 		httpx.Fail(c, http.StatusNotFound, "渠道不存在")
 		return
 	}
-	// 「有密钥才能启用」：无可用密钥（legacy 密文与池内启用 Key 皆无）的渠道拒绝手动
-	// 启用——启用了也没有可用上游，模型保持停用，只会产生必然失败的请求；停用方向不限制
+	// 「有密钥才能启用」：所属厂商无启用 Key 的渠道拒绝手动启用——启用了也没有可用
+	// 上游，模型保持停用，只会产生必然失败的请求；停用方向不限制
 	if *req.Status == 1 {
 		var active int64
-		_ = h.DB.Model(&model.ChannelKey{}).Where("channel_id = ? AND status = 1", id).Count(&active).Error
-		if !hasKey(ch.UpstreamKeyEnc, active) {
-			httpx.Fail(c, http.StatusBadRequest, "该渠道没有可用密钥：请先到「Key 池」更换或启用密钥，再启用渠道")
+		_ = h.DB.Raw("SELECT COUNT(*) FROM vendor_keys WHERE vendor_id = ? AND status = 1",
+			ch.VendorID).Scan(&active).Error
+		if active == 0 {
+			httpx.Fail(c, http.StatusBadRequest, "该厂商没有可用密钥：请先到「Key 池」更换或启用密钥，再启用渠道")
 			return
 		}
 	}
@@ -909,7 +964,7 @@ func (h *Handler) UpdateChannelStatus(c *gin.Context) {
 	httpx.OK(c, gin.H{"message": "已更新"})
 }
 
-// DeleteChannel DELETE /api/platform/channels/:id（Key 池随渠道删除）
+// DeleteChannel DELETE /api/platform/channels/:id（厂商 Key 池为共享资源，不随端点删除）
 func (h *Handler) DeleteChannel(c *gin.Context) {
 	id, ok := httpx.PathID(c)
 	if !ok {
@@ -923,7 +978,7 @@ func (h *Handler) DeleteChannel(c *gin.Context) {
 		if res.RowsAffected == 0 {
 			return gorm.ErrRecordNotFound
 		}
-		return tx.Where("channel_id = ?", id).Delete(&model.ChannelKey{}).Error
+		return nil
 	})
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
@@ -938,21 +993,35 @@ func (h *Handler) DeleteChannel(c *gin.Context) {
 	httpx.OK(c, gin.H{"message": "已删除"})
 }
 
-// ---------------- 渠道 Key 池管理 ----------------
+// ---------------- 渠道 Key 池管理（Key 属厂商池，路由仍挂渠道下做过渡兼容） ----------------
+
+// vendorOfChannel 渠道 id → 所属厂商 id；渠道不存在回 false
+func (h *Handler) vendorOfChannel(chID int64) (int64, bool) {
+	var vid int64
+	if err := h.DB.Raw("SELECT vendor_id FROM channels WHERE id = ?", chID).Scan(&vid).Error; err != nil || vid == 0 {
+		return 0, false
+	}
+	return vid, true
+}
 
 // maskKey 打码展示：前 6 + … + 后 4（规则与站内通知的 key_masked 同源，收口在 service.MaskKey）
 func maskKey(k string) string {
 	return service.MaskKey(k)
 }
 
-// ListChannelKeys GET /api/platform/channels/:id/keys：Key 池列表（打码，不回明文/密文）
+// ListChannelKeys GET /api/platform/channels/:id/keys：所属厂商 Key 池列表（打码，不回明文/密文）
 func (h *Handler) ListChannelKeys(c *gin.Context) {
 	id, ok := httpx.PathID(c)
 	if !ok {
 		return
 	}
-	var keys []model.ChannelKey
-	if err := h.DB.Where("channel_id = ?", id).Order("id").Find(&keys).Error; err != nil {
+	vid, ok := h.vendorOfChannel(id)
+	if !ok {
+		httpx.Fail(c, http.StatusNotFound, "渠道不存在或未挂厂商")
+		return
+	}
+	var keys []model.VendorKey
+	if err := h.DB.Where("vendor_id = ?", vid).Order("id").Find(&keys).Error; err != nil {
 		httpx.Fail(c, http.StatusInternalServerError, "查询失败")
 		return
 	}
@@ -964,7 +1033,7 @@ func (h *Handler) ListChannelKeys(c *gin.Context) {
 		}
 		// 冷却状态（选路同款 scope）：厂商侧限额恢复后管理员据此点"清除冷却"，
 		// 不必等指数退避自然到期（配额类起步 10min，连击翻倍封顶 24h）
-		scope := fmt.Sprintf("ck:%d:%d", id, k.ID)
+		scope := fmt.Sprintf("ck:%d:%d", vid, k.ID)
 		quota := h.Coord.IsQuotaCooling(scope)
 		list = append(list, gin.H{
 			"id": k.ID, "key_masked": maskKey(plain), "weight": k.Weight,
@@ -976,11 +1045,16 @@ func (h *Handler) ListChannelKeys(c *gin.Context) {
 	httpx.OK(c, list)
 }
 
-// GetChannelKeyFull GET /api/platform/channels/:id/keys/:kid/full —— 复制完整渠道 Key：
+// GetChannelKeyFull GET /api/platform/channels/:id/keys/:kid/full —— 复制完整厂商 Key：
 // 明文只进剪贴板不回显界面（Key 池列表一律打码）
 func (h *Handler) GetChannelKeyFull(c *gin.Context) {
 	id, ok := httpx.PathID(c)
 	if !ok {
+		return
+	}
+	vid, ok := h.vendorOfChannel(id)
+	if !ok {
+		httpx.Fail(c, http.StatusNotFound, "渠道不存在或未挂厂商")
 		return
 	}
 	kid, err := strconv.ParseInt(c.Param("kid"), 10, 64)
@@ -988,8 +1062,8 @@ func (h *Handler) GetChannelKeyFull(c *gin.Context) {
 		httpx.Fail(c, http.StatusBadRequest, "invalid key id")
 		return
 	}
-	service.CopyKeyPayload(c, h.DB, h.Cipher, "渠道 Key", middleware.GetUID(c),
-		"SELECT id, key_enc AS enc FROM channel_keys WHERE id = ? AND channel_id = ?", kid, id)
+	service.CopyKeyPayload(c, h.DB, h.Cipher, "厂商 Key", middleware.GetUID(c),
+		"SELECT id, key_enc AS enc FROM vendor_keys WHERE id = ? AND vendor_id = ?", kid, vid)
 }
 
 // UpdateChannelKeyStatus PUT /api/platform/channels/:id/keys/:kid/status
@@ -997,6 +1071,11 @@ func (h *Handler) GetChannelKeyFull(c *gin.Context) {
 func (h *Handler) UpdateChannelKeyStatus(c *gin.Context) {
 	id, ok := httpx.PathID(c)
 	if !ok {
+		return
+	}
+	vid, ok := h.vendorOfChannel(id)
+	if !ok {
+		httpx.Fail(c, http.StatusNotFound, "渠道不存在或未挂厂商")
 		return
 	}
 	kid, err := strconv.ParseInt(c.Param("kid"), 10, 64)
@@ -1015,17 +1094,17 @@ func (h *Handler) UpdateChannelKeyStatus(c *gin.Context) {
 		httpx.Fail(c, http.StatusBadRequest, "status 只能为 0 或 1")
 		return
 	}
-	res := h.DB.Exec(`UPDATE channel_keys SET status = ?,
+	res := h.DB.Exec(`UPDATE vendor_keys SET status = ?,
 		remark = CASE WHEN ? = 1 THEN '' ELSE remark END, updated_at = ?
-		WHERE id = ? AND channel_id = ?`,
-		*req.Status, *req.Status, time.Now().Unix(), kid, id)
+		WHERE id = ? AND vendor_id = ?`,
+		*req.Status, *req.Status, time.Now().Unix(), kid, vid)
 	if res.Error != nil || res.RowsAffected == 0 {
 		httpx.Fail(c, http.StatusNotFound, "Key 不存在")
 		return
 	}
 	// Key 启停是「更换失效 Key」的主恢复路径：启用可能带回模型的可用上游，
 	// 禁用可能是最后一根稻草 → 两个方向都对齐模型启用态
-	service.SyncModelsAndNotify(h.DB, fmt.Sprintf("渠道 #%d 的 Key #%d %s", id, kid, map[int]string{0: "禁用", 1: "启用"}[*req.Status]))
+	service.SyncModelsAndNotify(h.DB, fmt.Sprintf("厂商 #%d 的 Key #%d %s", vid, kid, map[int]string{0: "禁用", 1: "启用"}[*req.Status]))
 	httpx.OK(c, gin.H{"message": "已更新"})
 }
 
@@ -1037,25 +1116,35 @@ func (h *Handler) ClearChannelKeyCooldown(c *gin.Context) {
 	if !ok {
 		return
 	}
+	vid, ok := h.vendorOfChannel(id)
+	if !ok {
+		httpx.Fail(c, http.StatusNotFound, "渠道不存在或未挂厂商")
+		return
+	}
 	kid, err := strconv.ParseInt(c.Param("kid"), 10, 64)
 	if err != nil || kid <= 0 {
 		httpx.Fail(c, http.StatusBadRequest, "invalid key id")
 		return
 	}
 	var cnt int64
-	if err := h.DB.Raw("SELECT COUNT(*) FROM channel_keys WHERE id = ? AND channel_id = ?", kid, id).Scan(&cnt).Error; err != nil || cnt == 0 {
+	if err := h.DB.Raw("SELECT COUNT(*) FROM vendor_keys WHERE id = ? AND vendor_id = ?", kid, vid).Scan(&cnt).Error; err != nil || cnt == 0 {
 		httpx.Fail(c, http.StatusNotFound, "Key 不存在")
 		return
 	}
-	h.Coord.ClearCooldown(fmt.Sprintf("ck:%d:%d", id, kid))
+	h.Coord.ClearCooldown(fmt.Sprintf("ck:%d:%d", vid, kid))
 	httpx.OK(c, gin.H{"message": "已清除冷却"})
 }
 
-// AddChannelKeys POST /api/platform/channels/:id/keys：向 Key 池追加（单把或批量，不覆盖现有）
-// weight 对整批生效（<=0 按 1）；追加入池即置空 legacy 单 Key（池成为唯一密钥来源）
+// AddChannelKeys POST /api/platform/channels/:id/keys：向所属厂商 Key 池追加（单把或批量，不覆盖现有）
+// weight 对整批生效（<=0 按 1）
 func (h *Handler) AddChannelKeys(c *gin.Context) {
 	id, ok := httpx.PathID(c)
 	if !ok {
+		return
+	}
+	vid, ok := h.vendorOfChannel(id)
+	if !ok {
+		httpx.Fail(c, http.StatusNotFound, "渠道不存在或未挂厂商")
 		return
 	}
 	var req struct {
@@ -1071,7 +1160,7 @@ func (h *Handler) AddChannelKeys(c *gin.Context) {
 	}
 	// 明文去重（仅限本次提交内；池内既有密文因 AES-GCM nonce 随机不可比对）
 	seen := map[string]bool{}
-	rows := make([]model.ChannelKey, 0, len(req.Keys))
+	rows := make([]model.VendorKey, 0, len(req.Keys))
 	now := time.Now().Unix()
 	for _, k := range req.Keys {
 		k = strings.TrimSpace(k)
@@ -1084,38 +1173,32 @@ func (h *Handler) AddChannelKeys(c *gin.Context) {
 			httpx.Fail(c, http.StatusInternalServerError, "密钥加密失败")
 			return
 		}
-		rows = append(rows, model.ChannelKey{
-			ChannelID: id, KeyEnc: enc, Weight: weight, Status: 1, CreatedAt: now, UpdatedAt: now,
+		rows = append(rows, model.VendorKey{
+			VendorID: vid, KeyEnc: enc, Weight: weight, Status: 1, CreatedAt: now, UpdatedAt: now,
 		})
 	}
 	if len(rows) == 0 {
 		httpx.Fail(c, http.StatusBadRequest, "没有可新增的 Key")
 		return
 	}
-	var cnt int64
-	if err := h.DB.Model(&model.Channel{}).Where("id = ?", id).Count(&cnt).Error; err != nil || cnt == 0 {
-		httpx.Fail(c, http.StatusNotFound, "渠道不存在")
-		return
-	}
-	err := h.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&rows).Error; err != nil {
-			return err
-		}
-		return tx.Exec("UPDATE channels SET upstream_key_enc = '', updated_at = ? WHERE id = ?", now, id).Error
-	})
-	if err != nil {
+	if err := h.DB.Create(&rows).Error; err != nil {
 		httpx.Fail(c, http.StatusInternalServerError, "保存失败")
 		return
 	}
-	// 新 Key 入池可能带回模型的可用上游（给失效渠道换 Key 的常规动作）→ 对齐模型启用态
-	service.SyncModelsAndNotify(h.DB, fmt.Sprintf("渠道 #%d 追加 %d 把 Key", id, len(rows)))
+	// 新 Key 入池可能带回模型的可用上游（给失效厂商换 Key 的常规动作）→ 对齐模型启用态
+	service.SyncModelsAndNotify(h.DB, fmt.Sprintf("厂商 #%d 追加 %d 把 Key", vid, len(rows)))
 	httpx.OK(c, gin.H{"added": len(rows)})
 }
 
-// DeleteChannelKey DELETE /api/platform/channels/:id/keys/:kid：从池中彻底移除（禁用可恢复，删除不可）
+// DeleteChannelKey DELETE /api/platform/channels/:id/keys/:kid：从厂商池中彻底移除（禁用可恢复，删除不可）
 func (h *Handler) DeleteChannelKey(c *gin.Context) {
 	id, ok := httpx.PathID(c)
 	if !ok {
+		return
+	}
+	vid, ok := h.vendorOfChannel(id)
+	if !ok {
+		httpx.Fail(c, http.StatusNotFound, "渠道不存在或未挂厂商")
 		return
 	}
 	kid, err := strconv.ParseInt(c.Param("kid"), 10, 64)
@@ -1123,22 +1206,21 @@ func (h *Handler) DeleteChannelKey(c *gin.Context) {
 		httpx.Fail(c, http.StatusBadRequest, "invalid key id")
 		return
 	}
-	res := h.DB.Exec("DELETE FROM channel_keys WHERE id = ? AND channel_id = ?", kid, id)
+	res := h.DB.Exec("DELETE FROM vendor_keys WHERE id = ? AND vendor_id = ?", kid, vid)
 	if res.Error != nil || res.RowsAffected == 0 {
 		httpx.Fail(c, http.StatusNotFound, "Key 不存在")
 		return
 	}
-	// 最后一把 Key 删掉后渠道已无法转发：按「没配密钥就没有模型」清空模型能力（模型定价不动）
+	// 厂商池删空后其全部端点已无法转发：按「没配密钥就没有模型」清空这些渠道的
+	// 模型能力（与启动清理 Cleanup ① 同口径；模型定价与历史账单不受影响）
 	var left int64
-	_ = h.DB.Model(&model.ChannelKey{}).Where("channel_id = ?", id).Count(&left).Error
+	_ = h.DB.Raw("SELECT COUNT(*) FROM vendor_keys WHERE vendor_id = ?", vid).Scan(&left).Error
 	if left == 0 {
-		var ch model.Channel
-		if err := h.DB.Where("id = ?", id).First(&ch).Error; err == nil && ch.UpstreamKeyEnc == "" {
-			_ = h.DB.Where("channel_id = ?", id).Delete(&model.ChannelAbility{}).Error
-		}
+		_ = h.DB.Exec(`DELETE FROM channel_abilities WHERE channel_id IN
+			(SELECT id FROM channels WHERE vendor_id = ?)`, vid).Error
 	}
 	// Key 删除同样可能带走模型的最后一个可用上游 → 对齐模型启用态
-	service.SyncModelsAndNotify(h.DB, fmt.Sprintf("渠道 #%d 删除 Key #%d", id, kid))
+	service.SyncModelsAndNotify(h.DB, fmt.Sprintf("厂商 #%d 删除 Key #%d", vid, kid))
 	httpx.OK(c, gin.H{"message": "已删除"})
 }
 
@@ -1222,16 +1304,14 @@ func (h *Handler) UpstreamModels(c *gin.Context) {
 		httpx.Fail(c, http.StatusNotFound, "渠道不存在")
 		return
 	}
-	// Key 选择与数据面/测试一致：池内第一把启用 Key → 回退 legacy 单 Key
+	// Key 选择与数据面/测试一致：所属厂商池第一把启用 Key
 	key := ""
-	var poolKey model.ChannelKey
-	if h.DB.Where("channel_id = ? AND status = 1", id).Order("id").First(&poolKey).Error == nil {
+	var poolKey model.VendorKey
+	if h.DB.Where("vendor_id = ? AND status = 1", ch.VendorID).Order("id").First(&poolKey).Error == nil {
 		key, _ = h.Cipher.Decrypt(poolKey.KeyEnc)
-	} else if ch.UpstreamKeyEnc != "" {
-		key, _ = h.Cipher.Decrypt(ch.UpstreamKeyEnc)
 	}
 	if key == "" {
-		httpx.Fail(c, http.StatusBadRequest, "渠道未配置上游密钥，无法查询模型列表")
+		httpx.Fail(c, http.StatusBadRequest, "所属厂商未配置上游密钥，无法查询模型列表")
 		return
 	}
 	h.fetchUpstreamModelNames(c, ch.BaseURL, ch.Path, key)

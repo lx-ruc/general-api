@@ -11,17 +11,20 @@ import (
 	"token-gateway/internal/crypto"
 )
 
-// Candidate 一个可用的上游渠道候选（已解密上游 key、已确定上游模型名）
+// Candidate 一个可用的上游渠道候选（已解密上游 key、已确定上游模型名）。
+// Key 属于渠道所属厂商的 Key 池（厂商下全部端点共用）
 type Candidate struct {
 	ChannelID     int64
 	ChannelName   string
+	VendorID      int64
+	VendorName    string
 	BaseURL       string
 	Path          string
 	UpstreamKey   string
 	UpstreamModel string // 空 = 与对外模型名同名透传
 	Weight        int
 	Priority      int
-	KeyID         int64 // 0 = 单 Key 兼容模式（channels.upstream_key_enc）
+	KeyID         int64 // vendor_keys.id
 }
 
 // URL 上游完整地址 = base_url + path
@@ -29,32 +32,30 @@ func (c Candidate) URL() string {
 	return strings.TrimRight(c.BaseURL, "/") + c.Path
 }
 
-// KeyScope 冷却 scope：单 Key 模式用 legacy 标记，避免不同渠道互相误伤
+// KeyScope 冷却 scope：厂商级——同厂商全部端点共享同一把 Key 的冷却状态
 func (c Candidate) KeyScope() string {
-	if c.KeyID == 0 {
-		return fmt.Sprintf("ck:%d:legacy", c.ChannelID)
-	}
-	return fmt.Sprintf("ck:%d:%d", c.ChannelID, c.KeyID)
+	return fmt.Sprintf("ck:%d:%d", c.VendorID, c.KeyID)
 }
 
-// SlotScope 渠道并发闸门 scope
+// SlotScope 渠道并发闸门 scope（仍按端点/渠道粒度）
 func (c Candidate) SlotScope() string {
 	return fmt.Sprintf("ch:%d", c.ChannelID)
 }
 
 type keyRow struct {
-	ChannelID int64
-	ID        int64
-	KeyEnc    string
-	Weight    int
+	VendorID int64
+	ID       int64
+	KeyEnc   string
+	Weight   int
 }
 
 type candRow struct {
 	ChannelID         int64
 	Name              string
+	VendorID          int64
+	VendorName        string
 	BaseURL           string
 	Path              string
-	UpstreamKeyEnc    string
 	UpstreamModelName *string
 	Weight            int
 	Priority          int
@@ -62,26 +63,36 @@ type candRow struct {
 
 // SelectStats 渠道选择诊断信息：候选为空时用于区分错误语义（配置问题 vs 限流）
 type SelectStats struct {
-	Channels         int // 启用且 base_url/path 合法、配置了该模型的渠道数
-	KeyedChannels    int // 其中配置过密钥的渠道数（池内有启用 Key，或单 Key 密文非空）
-	CoolingKeys      int // 因 429 冷却被跳过的 Key 数（含单 Key 兼容模式）
+	Channels         int // 启用且 base_url/path 合法、配置了该模型的渠道数（限模型所属厂商）
+	KeyedVendors     int // 其中所属厂商配置过启用 Key 的厂商数
+	CoolingKeys      int // 因 429 冷却被跳过的 Key 数
 	QuotaCoolingKeys int // 其中因配额耗尽（厂商侧限额）冷却的 Key 数（⊆ CoolingKeys）
-	DecryptFailed    int // 密钥材料齐备但全部解密失败的渠道数（aes_key 变更/密文损坏 → 配置问题，重试无意义）
+	DecryptFailed    int // 密钥材料齐备但全部解密失败的厂商数（aes_key 变更/密文损坏 → 配置问题，重试无意义）
 }
 
-// SelectCandidates 查询模型的路由候选（渠道 × Key）：
-// 最高 priority 组内按 weight 加权随机（负载均衡），其余组按优先级顺序 appended 作为降级备用。
-// 渠道内：Key 池（channel_keys）过滤禁用与冷却后按权重洗牌；无池回退单 Key 兼容模式。
+// SelectCandidates 查询模型的路由候选（渠道 × 厂商 Key）：
+// 只取模型所属厂商（models.vendor_id）的承接渠道；最高 priority 组内按 weight 加权随机
+// （负载均衡），其余组按优先级顺序 appended 作为降级备用。渠道内：厂商 Key 池
+// （vendor_keys）过滤禁用与冷却后按权重洗牌——同厂商全部端点共用同一套池。
 func SelectCandidates(db *gorm.DB, cipher *crypto.Cipher, modelName string, cd coord.Coordinator) ([]Candidate, SelectStats, error) {
 	var stats SelectStats
+	// 模型归属厂商（0=未挂厂商 → 不可路由）
+	var modelVendor int64
+	if err := db.Raw("SELECT vendor_id FROM models WHERE name = ?", modelName).Scan(&modelVendor).Error; err != nil {
+		return nil, stats, err
+	}
+	if modelVendor == 0 {
+		return nil, stats, nil
+	}
 	var rows []candRow
 	err := db.Raw(`
-		SELECT c.id AS channel_id, c.name, c.base_url, c.path, c.upstream_key_enc,
-		       a.upstream_model_name, c.weight, c.priority
+		SELECT c.id AS channel_id, c.name, c.vendor_id, v.name AS vendor_name,
+		       c.base_url, c.path, a.upstream_model_name, c.weight, c.priority
 		FROM channels c
 		JOIN channel_abilities a ON a.channel_id = c.id
-		WHERE a.model_name = ? AND c.status = 1
-		ORDER BY c.priority DESC`, modelName).Scan(&rows).Error
+		JOIN vendors v ON v.id = c.vendor_id
+		WHERE a.model_name = ? AND c.status = 1 AND c.vendor_id = ?
+		ORDER BY c.priority DESC`, modelName, modelVendor).Scan(&rows).Error
 	if err != nil {
 		return nil, stats, err
 	}
@@ -99,27 +110,35 @@ func SelectCandidates(db *gorm.DB, cipher *crypto.Cipher, modelName string, cd c
 		return nil, stats, nil
 	}
 
-	// 各渠道的 Key 池（一次查全，避免 N+1）
+	// 候选涉及的厂商 Key 池（一次查全，避免 N+1；同厂商多渠道天然共用同一池）
 	pools := map[int64][]keyRow{}
 	{
-		var krs []keyRow
-		chIDs := make([]int64, 0, len(rows))
+		vendorIDs := make(map[int64]bool, 2)
 		for _, r := range rows {
-			chIDs = append(chIDs, r.ChannelID)
+			vendorIDs[r.VendorID] = true
 		}
-		if err := db.Raw("SELECT channel_id, id, key_enc, weight FROM channel_keys WHERE status = 1 AND channel_id IN ? ORDER BY id", chIDs).Scan(&krs).Error; err != nil {
+		ids := make([]int64, 0, len(vendorIDs))
+		for id := range vendorIDs {
+			ids = append(ids, id)
+		}
+		var krs []keyRow
+		if err := db.Raw("SELECT vendor_id, id, key_enc, weight FROM vendor_keys WHERE status = 1 AND vendor_id IN ? ORDER BY id", ids).Scan(&krs).Error; err != nil {
 			return nil, stats, err
 		}
 		for _, kr := range krs {
-			pools[kr.ChannelID] = append(pools[kr.ChannelID], kr)
+			pools[kr.VendorID] = append(pools[kr.VendorID], kr)
 		}
 	}
-	// 配置过密钥的渠道数（池内有启用 Key，或 legacy 密文非空；池全禁用时池查询已过滤 → 不计入）
+	// 配置过启用 Key 的厂商数（池全禁用时池查询已过滤 → 不计入）。
+	// 只表达「密钥材料在不在」：解密全灭由 DecryptFailed 单独表达（两者组合区分
+	// 「没配 Key」与「配了但解不开」的 503 文案）
+	keyed := map[int64]bool{}
 	for _, r := range rows {
-		if len(pools[r.ChannelID]) > 0 || r.UpstreamKeyEnc != "" {
-			stats.KeyedChannels++
+		if len(pools[r.VendorID]) > 0 {
+			keyed[r.VendorID] = true
 		}
 	}
+	stats.KeyedVendors = len(keyed)
 
 	cands := make([]Candidate, 0, len(rows))
 	i := 0
@@ -134,7 +153,7 @@ func SelectCandidates(db *gorm.DB, cipher *crypto.Cipher, modelName string, cd c
 			group = weightedShuffle(group) // 首组（最高优先级）做负载均衡
 		}
 		for _, r := range group {
-			cc, cooling, quota, decFail := channelCandidates(r, cipher, pools[r.ChannelID], cd)
+			cc, cooling, quota, decFail := channelCandidates(r, cipher, pools[r.VendorID], cd)
 			stats.CoolingKeys += cooling
 			stats.QuotaCoolingKeys += quota
 			if decFail {
@@ -147,67 +166,51 @@ func SelectCandidates(db *gorm.DB, cipher *crypto.Cipher, modelName string, cd c
 	return cands, stats, nil
 }
 
-// channelCandidates 单渠道展开为多个候选：优先 Key 池（过滤禁用/冷却 + 权重洗牌），无池回退单 Key。
-// 第二返回值为因冷却被跳过的 Key 数，第三为其中配额类冷却（厂商侧限额耗尽）的 Key 数，
-// 第四返回值表示该渠道密钥材料齐备但全部解密失败。
+// channelCandidates 单渠道展开为多个候选：该渠道所属厂商的 Key 池（过滤禁用/冷却 +
+// 权重洗牌）逐一配到该渠道。第二返回值为因冷却被跳过的 Key 数，第三为其中配额类
+// 冷却（厂商侧限额耗尽）的 Key 数，第四返回值表示该厂商密钥材料齐备但全部解密失败
 func channelCandidates(r candRow, cipher *crypto.Cipher, pool []keyRow, cd coord.Coordinator) ([]Candidate, int, int, bool) {
 	upstreamModel := ""
 	if r.UpstreamModelName != nil {
 		upstreamModel = *r.UpstreamModelName
 	}
-	mk := func(keyID int64, key, um string, w int) Candidate {
+	mk := func(keyID int64, key string, w int) Candidate {
 		return Candidate{
-			ChannelID: r.ChannelID, ChannelName: r.Name, BaseURL: r.BaseURL, Path: r.Path,
-			UpstreamKey: key, UpstreamModel: um, Weight: w, Priority: r.Priority, KeyID: keyID,
+			ChannelID: r.ChannelID, ChannelName: r.Name, VendorID: r.VendorID, VendorName: r.VendorName,
+			BaseURL: r.BaseURL, Path: r.Path,
+			UpstreamKey: key, UpstreamModel: upstreamModel, Weight: w, Priority: r.Priority, KeyID: keyID,
 		}
 	}
-
-	if len(pool) > 0 {
-		usable := pool[:0:0]
-		cooling, quota := 0, 0
-		for _, kr := range pool {
-			scope := fmt.Sprintf("ck:%d:%d", r.ChannelID, kr.ID)
-			if cd != nil && cd.IsCooling(scope) {
-				cooling++ // 冷却中的 Key 跳过
-				if cd.IsQuotaCooling(scope) {
-					quota++
-				}
-				continue
+	if len(pool) == 0 {
+		return nil, 0, 0, false // 无密钥材料：由 KeyedVendors==0 表达，不计解密失败
+	}
+	usable := pool[:0:0]
+	cooling, quota := 0, 0
+	for _, kr := range pool {
+		scope := fmt.Sprintf("ck:%d:%d", r.VendorID, kr.ID)
+		if cd != nil && cd.IsCooling(scope) {
+			cooling++ // 冷却中的 Key 跳过
+			if cd.IsQuotaCooling(scope) {
+				quota++
 			}
-			key, err := cipher.Decrypt(kr.KeyEnc)
-			if err != nil || key == "" {
-				continue
-			}
-			usable = append(usable, keyRow{ID: kr.ID, KeyEnc: key, Weight: kr.Weight})
+			continue
 		}
-		if len(usable) == 0 {
-			// 池内全部冷却/解密失败 → 该渠道本轮不可用；
-			// 一个都没冷却还全不可用 = 纯解密失败（aes_key 变更/密文损坏）
-			return nil, cooling, quota, cooling == 0
+		key, err := cipher.Decrypt(kr.KeyEnc)
+		if err != nil || key == "" {
+			continue
 		}
-		out := make([]Candidate, 0, len(usable))
-		for _, kr := range weightedShuffle(usable) {
-			out = append(out, mk(kr.ID, kr.KeyEnc, upstreamModel, kr.Weight))
-		}
-		return out, cooling, quota, false
+		usable = append(usable, keyRow{ID: kr.ID, KeyEnc: key, Weight: kr.Weight})
 	}
-
-	// 单 Key 兼容模式
-	if r.UpstreamKeyEnc == "" {
-		return nil, 0, 0, false // 无密钥材料：由 KeyedChannels==0 表达，不计解密失败
+	if len(usable) == 0 {
+		// 池内全部冷却/解密失败 → 该渠道本轮不可用；
+		// 一个都没冷却还全不可用 = 纯解密失败（aes_key 变更/密文损坏）
+		return nil, cooling, quota, cooling == 0
 	}
-	scope := fmt.Sprintf("ck:%d:legacy", r.ChannelID)
-	if cd != nil && cd.IsCooling(scope) {
-		if cd.IsQuotaCooling(scope) {
-			return nil, 1, 1, false
-		}
-		return nil, 1, 0, false
+	out := make([]Candidate, 0, len(usable))
+	for _, kr := range weightedShuffle(usable) {
+		out = append(out, mk(kr.ID, kr.KeyEnc, kr.Weight))
 	}
-	key, err := cipher.Decrypt(r.UpstreamKeyEnc)
-	if err != nil || key == "" {
-		return nil, 0, 0, true
-	}
-	return []Candidate{mk(0, key, upstreamModel, r.Weight)}, 0, 0, false
+	return out, cooling, quota, false
 }
 
 // weightedShuffle 不放回加权随机抽取，得到一个打乱顺序的列表（权重<=0 按 1 计）

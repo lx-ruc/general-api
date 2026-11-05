@@ -21,10 +21,9 @@ import (
 func (e *testEnv) seedVideo(t *testing.T, upstreamURL string, modelOutPrice int64) {
 	t.Helper()
 	now := time.Now().Unix()
-	mustExec(t, e.f, `INSERT INTO models (name, type, input_price, output_price, cost_output_price, status, created_at, updated_at)
-		VALUES ('vid-1', 'video', 0, ?, 1000000, 1, ?, ?)`, modelOutPrice, now, now)
-	mustExec(t, e.f, `INSERT INTO channels (id,name,base_url,path,upstream_key_enc,weight,priority,status,created_at,updated_at)
-		VALUES (1,'video-ch',?, '/contents/generations/tasks', 'legacy-key', 1, 10, 1, ?, ?)`, upstreamURL, now, now)
+	mustExec(t, e.f, `INSERT INTO models (name, vendor_id, type, input_price, output_price, cost_output_price, status, created_at, updated_at)
+		VALUES ('vid-1', 1, 'video', 0, ?, 1000000, 1, ?, ?)`, modelOutPrice, now, now)
+	e.seedVendorChannel(t, 1, "video-ch", upstreamURL, "/contents/generations/tasks", 10)
 	mustExec(t, e.f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (1, 'vid-1')`)
 	mustExec(t, e.f, `INSERT INTO user_model_grants (user_id, model_name, created_at) VALUES (1, 'vid-1', ?)`, now)
 }
@@ -154,10 +153,9 @@ func TestVideoTypeGate(t *testing.T) {
 func TestVideoQuerySettleOnce(t *testing.T) {
 	e := newTestEnv(t)
 	now := time.Now().Unix()
-	mustExec(t, e.f, `INSERT INTO models (name, type, input_price, output_price, status, created_at, updated_at)
-		VALUES ('vid-1', 'video', 0, 30000000, 1, ?, ?)`, now, now)
-	mustExec(t, e.f, `INSERT INTO channels (id,name,base_url,path,upstream_key_enc,weight,priority,status,created_at,updated_at)
-		VALUES (1,'video-ch',?, '/contents/generations/tasks', 'legacy-key', 1, 10, 1, ?, ?)`, "http://up.invalid", now, now)
+	mustExec(t, e.f, `INSERT INTO models (name, vendor_id, type, input_price, output_price, status, created_at, updated_at)
+		VALUES ('vid-1', 1, 'video', 0, 30000000, 1, ?, ?)`, now, now)
+	e.seedVendorChannel(t, 1, "video-ch", "http://up.invalid", "/contents/generations/tasks", 10)
 	mustExec(t, e.f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (1, 'vid-1')`)
 	mustExec(t, e.f, `INSERT INTO video_tasks (task_id, org_id, user_id, api_key_id, channel_id, model_name,
 		output_price, cost_output_price, create_request_id, created_at, updated_at)
@@ -251,8 +249,7 @@ func TestVideoQueryOrgIsolation(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":"cgt-a","status":"running"}`))
 	}))
 	defer up.Close()
-	mustExec(t, e.f, `INSERT INTO channels (id,name,base_url,path,upstream_key_enc,weight,priority,status,created_at,updated_at)
-		VALUES (1,'video-ch',?, '/contents/generations/tasks', 'legacy-key', 1, 10, 1, ?, ?)`, up.URL, now, now)
+	e.seedVendorChannel(t, 1, "video-ch", up.URL, "/contents/generations/tasks", 10)
 	mustExec(t, e.f, `INSERT INTO video_tasks (task_id, org_id, user_id, api_key_id, channel_id, model_name,
 		output_price, create_request_id, created_at, updated_at)
 		VALUES ('cgt-a', 1, 1, 1, 1, 'vid-1', 30000000, 'r', ?, ?)`, now, now)
@@ -287,8 +284,8 @@ func TestVideoQueryDisabledChannel(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":"cgt-x","status":"queued"}`))
 	}))
 	defer up.Close()
-	mustExec(t, e.f, `INSERT INTO channels (id,name,base_url,path,upstream_key_enc,weight,priority,status,created_at,updated_at)
-		VALUES (1,'video-ch',?, '/contents/generations/tasks', 'legacy-key', 1, 10, 0, ?, ?)`, up.URL, now, now)
+	e.seedVendorChannel(t, 1, "video-ch", up.URL, "/contents/generations/tasks", 10)
+	mustExec(t, e.f, `UPDATE channels SET status = 0 WHERE id = 1`)
 	mustExec(t, e.f, `INSERT INTO video_tasks (task_id, org_id, user_id, api_key_id, channel_id, model_name,
 		output_price, create_request_id, created_at, updated_at)
 		VALUES ('cgt-x', 1, 1, 1, 1, 'vid-1', 30000000, 'r', ?, ?)`, now, now)
@@ -308,8 +305,7 @@ func TestVideoQueryUpstreamErrorPassthrough(t *testing.T) {
 		_, _ = w.Write([]byte(`{"error":{"message":"task not found"}}`))
 	}))
 	defer up.Close()
-	mustExec(t, e.f, `INSERT INTO channels (id,name,base_url,path,upstream_key_enc,weight,priority,status,created_at,updated_at)
-		VALUES (1,'video-ch',?, '/contents/generations/tasks', 'legacy-key', 1, 10, 1, ?, ?)`, up.URL, now, now)
+	e.seedVendorChannel(t, 1, "video-ch", up.URL, "/contents/generations/tasks", 10)
 	mustExec(t, e.f, `INSERT INTO video_tasks (task_id, org_id, user_id, api_key_id, channel_id, model_name,
 		output_price, create_request_id, created_at, updated_at)
 		VALUES ('cgt-e', 1, 1, 1, 1, 'vid-1', 30000000, 'r', ?, ?)`, now, now)
@@ -338,8 +334,7 @@ func TestVideoSweep(t *testing.T) {
 		}
 	}))
 	defer up.Close()
-	mustExec(t, e.f, `INSERT INTO channels (id,name,base_url,path,upstream_key_enc,weight,priority,status,created_at,updated_at)
-		VALUES (1,'video-ch',?, '/contents/generations/tasks', 'legacy-key', 1, 10, 1, ?, ?)`, up.URL, now, now)
+	e.seedVendorChannel(t, 1, "video-ch", up.URL, "/contents/generations/tasks", 10)
 	// s1: 未查询过（status=''）→ 扫描结算；s2: failed → 不扫；
 	// s3: 超龄（created_at 在放弃线之前）→ 不扫
 	mustExec(t, e.f, `INSERT INTO video_tasks (task_id, org_id, user_id, api_key_id, channel_id, model_name,
@@ -434,10 +429,9 @@ func TestVideoModelMapping(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":"cgt-m","model":"ep-2026-video","status":"succeeded","usage":{"completion_tokens":100000}}`))
 	}))
 	defer up.Close()
-	mustExec(t, e.f, `INSERT INTO models (name, type, input_price, output_price, status, created_at, updated_at)
-		VALUES ('vid-1', 'video', 0, 2000000, 1, ?, ?)`, now, now)
-	mustExec(t, e.f, `INSERT INTO channels (id,name,base_url,path,upstream_key_enc,weight,priority,status,created_at,updated_at)
-		VALUES (1,'video-ch',?, '/contents/generations/tasks', 'legacy-key', 1, 10, 1, ?, ?)`, up.URL, now, now)
+	mustExec(t, e.f, `INSERT INTO models (name, vendor_id, type, input_price, output_price, status, created_at, updated_at)
+		VALUES ('vid-1', 1, 'video', 0, 2000000, 1, ?, ?)`, now, now)
+	e.seedVendorChannel(t, 1, "video-ch", up.URL, "/contents/generations/tasks", 10)
 	mustExec(t, e.f, `INSERT INTO channel_abilities (channel_id, model_name, upstream_model_name)
 		VALUES (1, 'vid-1', 'ep-2026-video')`)
 	mustExec(t, e.f, `INSERT INTO user_model_grants (user_id, model_name, created_at) VALUES (1, 'vid-1', ?)`, now)

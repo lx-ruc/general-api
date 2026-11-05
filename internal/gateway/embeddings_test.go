@@ -48,8 +48,8 @@ func TestEmbeddingsBasic(t *testing.T) {
 // 未授权模型 → 403 model_not_allowed（授权链路对 embeddings 同样生效）
 func TestEmbeddingsUnauthorized(t *testing.T) {
 	e := newTestEnv(t)
-	mustExec(t, e.f, `INSERT INTO models (name, input_price, output_price, status, created_at, updated_at)
-		VALUES ('m2', 500000, 0, 1, 0, 0)`) // 未授予 tester
+	mustExec(t, e.f, `INSERT INTO models (name, vendor_id, input_price, output_price, status, created_at, updated_at)
+		VALUES ('m2', 1, 500000, 0, 1, 0, 0)`) // 未授予 tester
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("未授权不应触达上游")
 	}))

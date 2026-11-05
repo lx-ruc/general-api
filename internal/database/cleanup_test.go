@@ -1,6 +1,7 @@
 package database
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -27,19 +28,27 @@ func openCleanupDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-func insertChannel(t *testing.T, db *gorm.DB, id int, name, keyEnc string) {
+func insertChannel(t *testing.T, db *gorm.DB, id int, name string, vendorID int) {
 	t.Helper()
-	if err := db.Exec(`INSERT INTO channels (id, name, base_url, upstream_key_enc, created_at, updated_at)
-		VALUES (?, ?, 'https://up.example', ?, 0, 0)`, id, name, keyEnc).Error; err != nil {
+	if err := db.Exec(`INSERT INTO channels (id, name, vendor_id, base_url, created_at, updated_at)
+		VALUES (?, ?, ?, 'https://up.example', 0, 0)`, id, name, vendorID).Error; err != nil {
 		t.Fatalf("insert channel %s: %v", name, err)
 	}
 }
 
-func insertKey(t *testing.T, db *gorm.DB, channelID, status int) {
+func insertVendor(t *testing.T, db *gorm.DB, id int) {
 	t.Helper()
-	if err := db.Exec(`INSERT INTO channel_keys (channel_id, key_enc, status, created_at, updated_at)
-		VALUES (?, 'enc', ?, 0, 0)`, channelID, status).Error; err != nil {
-		t.Fatalf("insert key ch%d: %v", channelID, err)
+	if err := db.Exec(`INSERT INTO vendors (id, name, status, created_at, updated_at)
+		VALUES (?, ?, 1, 0, 0)`, id, fmt.Sprintf("v%d", id)).Error; err != nil {
+		t.Fatalf("insert vendor %d: %v", id, err)
+	}
+}
+
+func insertKey(t *testing.T, db *gorm.DB, vendorID, status int) {
+	t.Helper()
+	if err := db.Exec(`INSERT INTO vendor_keys (vendor_id, key_enc, status, created_at, updated_at)
+		VALUES (?, 'enc', ?, 0, 0)`, vendorID, status).Error; err != nil {
+		t.Fatalf("insert key vendor%d: %v", vendorID, err)
 	}
 }
 
@@ -89,12 +98,17 @@ func grantModels(t *testing.T, db *gorm.DB, userID int) []string {
 
 func TestCleanupKeylessChannelsAndOrphanModels(t *testing.T) {
 	db := openCleanupDB(t)
-	// 渠道矩阵：c1 无任何密钥 / c2 池内启用密钥 / c3 仅 legacy 密文 / c4 只有 1 把禁用池密钥
-	insertChannel(t, db, 1, "c1-无密钥", "")
-	insertChannel(t, db, 2, "c2-池密钥", "")
-	insertChannel(t, db, 3, "c3-legacy", "enc-legacy")
-	insertChannel(t, db, 4, "c4-禁用池密钥", "")
+	// 渠道矩阵（厂商池维度）：v1 无任何密钥 / v2 有启用 Key / v3 有 Key（旧 legacy 等价）
+	// / v4 只有 1 把禁用 Key（判定看「有没有配过密钥」不看 status）
+	for i := 1; i <= 4; i++ {
+		insertVendor(t, db, i)
+	}
+	insertChannel(t, db, 1, "c1-无密钥", 1)
+	insertChannel(t, db, 2, "c2-池密钥", 2)
+	insertChannel(t, db, 3, "c3-有密钥", 3)
+	insertChannel(t, db, 4, "c4-禁用池密钥", 4)
 	insertKey(t, db, 2, 1)
+	insertKey(t, db, 3, 1)
 	insertKey(t, db, 4, 0)
 	insertAbility(t, db, 1, "model-a")
 	insertAbility(t, db, 1, "model-b")
@@ -118,7 +132,7 @@ func TestCleanupKeylessChannelsAndOrphanModels(t *testing.T) {
 		t.Fatalf("cleanup: %v", err)
 	}
 
-	// 无密钥判定看 Key 池全部行（不看 status）且 legacy 密文为空：仅 c1 被置空
+	// 无密钥判定看所属厂商池有没有任何 Key 行（不看 status）：仅 c1（厂商无 Key）被置空
 	if n := abilityCount(t, db, 1); n != 0 {
 		t.Errorf("无密钥渠道 c1 的模型能力应被置空，剩 %d 条", n)
 	}

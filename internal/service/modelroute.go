@@ -9,23 +9,24 @@ import (
 	"gorm.io/gorm"
 )
 
-// 模型「当前可路由」的统一口径：启用模型 × 存在启用渠道 × 该渠道有可用上游 Key。
+// 模型「当前可路由」的统一口径：启用模型 × 存在启用渠道（限模型所属厂商）× 该厂商
+// 有可用上游 Key（vendor_keys.status=1，且厂商本身启用）。
 //
 // 背景：渠道 Key 因上游 401 被自动禁用后，模型与渠道能力仍处启用态，各处
 // 「可用模型」目录继续宣传死模型，客户端调通列表后调用却 503
 // (channel_key_missing)。
 //
-// 语义与 gateway.SelectCandidates 的 KeyedChannels 判定保持一致：
-// Key 池内有启用行（channel_keys.status=1），或 legacy 单 Key 密文非空；
+// 语义与 gateway.SelectCandidates 的 KeyedVendors 判定保持一致；
 // 并同样要求 base_url/path 非空（SelectCandidates 会静默剔除空值渠道）。
 // 谓词引用模型别名为 m 的查询（各调用点均以 m 别名扫描 models 表）。
 const ModelHasLiveUpstream = `EXISTS (
 	SELECT 1 FROM channel_abilities ra
 	JOIN channels rc ON rc.id = ra.channel_id
+	JOIN vendors rv ON rv.id = rc.vendor_id
 	WHERE ra.model_name = m.name
-	  AND rc.status = 1 AND rc.base_url <> '' AND rc.path <> ''
-	  AND (rc.upstream_key_enc <> '' OR EXISTS (
-	      SELECT 1 FROM channel_keys rk WHERE rk.channel_id = rc.id AND rk.status = 1)))`
+	  AND rc.status = 1 AND rv.status = 1 AND rc.base_url <> '' AND rc.path <> ''
+	  AND rc.vendor_id = m.vendor_id
+	  AND EXISTS (SELECT 1 FROM vendor_keys rk WHERE rk.vendor_id = rc.vendor_id AND rk.status = 1))`
 
 // ChannelVendorsByModel 模型 → 承接渠道厂商标签去重列表（按字母序稳定输出）。
 // 标签与渠道管理页同源（channels.vendor，管理员在渠道上打的分组标记如 volces、
@@ -95,9 +96,10 @@ func SyncModelRoutableStatus(db *gorm.DB) (disabled, recovered []string, err err
 }
 
 // 渠道「有可用上游 Key」的统一口径（与 ModelHasLiveUpstream 内嵌判定一致）：
-// Key 池内有启用行（channel_keys.status=1），或 legacy 单 Key 密文非空。
-const channelHasUsableKey = `(COALESCE(channels.upstream_key_enc, '') <> '' OR EXISTS (
-	SELECT 1 FROM channel_keys hk WHERE hk.channel_id = channels.id AND hk.status = 1))`
+// 所属厂商有启用 Key 且厂商本身启用——同厂商全部端点同进退（Key 池共享）
+const channelHasUsableKey = `EXISTS (
+	SELECT 1 FROM vendor_keys hk JOIN vendors hv ON hv.id = hk.vendor_id
+	WHERE hk.vendor_id = channels.vendor_id AND hk.status = 1 AND hv.status = 1)`
 
 // SyncChannelKeyState 把渠道状态面与上游 Key 可用性对齐（幂等，可重复调用）：
 //   - 停用方向：启用中但已无任何可用上游 Key（Key 被上游 401/402 自动禁用、管理员禁用/

@@ -11,8 +11,8 @@ import (
 const cleanupLockKey = 74274157703
 
 // Cleanup 启动时幂等清理，保持两条不变量（模型一律经渠道从上游登记）：
-//  1. 没配密钥的渠道（Key 池无任何行且 legacy 密文为空，与 DeleteChannelKey 口径一致）
-//     不携带任何 channel_abilities —— 早期预置逻辑给无密钥渠道预填的模型在此清除；
+//  1. 没配密钥的渠道（所属厂商无任何启用 Key，或未挂厂商）不携带任何
+//     channel_abilities —— 早期预置逻辑给无密钥渠道预填的模型在此清除；
 //  2. 无任何渠道能力支撑的 models 行连同其 user_model_grants 一并删除（定价可在下次
 //     配渠道时经表单自动重登，子账号授权需重新勾选）。
 //
@@ -23,11 +23,11 @@ func Cleanup(db *gorm.DB) error {
 }
 
 func cleanupAll(db *gorm.DB) error {
-	// ① 无密钥渠道的模型能力置空
+	// ① 无密钥渠道（所属厂商无启用 Key / 未挂厂商）的模型能力置空
 	res := db.Exec(`DELETE FROM channel_abilities WHERE channel_id IN (
 		SELECT c.id FROM channels c
-		WHERE COALESCE(c.upstream_key_enc, '') = ''
-		  AND NOT EXISTS (SELECT 1 FROM channel_keys k WHERE k.channel_id = c.id))`)
+		WHERE c.vendor_id = 0
+		   OR NOT EXISTS (SELECT 1 FROM vendor_keys k WHERE k.vendor_id = c.vendor_id))`)
 	if res.Error != nil {
 		return fmt.Errorf("cleanup keyless channel abilities: %w", res.Error)
 	}

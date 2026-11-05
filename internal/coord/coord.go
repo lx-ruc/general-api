@@ -12,7 +12,7 @@ import (
 // Coordinator 协调器接口
 //
 // scope 约定：
-//   - Key 冷却：ck:{channelID}:{keyID}（单 Key 兼容模式用 ck:{channelID}:legacy）
+//   - Key 冷却：ck:{vendorID}:{keyID}（厂商池 Key；同厂商全部端点共享冷却状态）
 //   - 并发闸门：ch:{channelID}
 type Coordinator interface {
 	// IsCooling scope 是否处于冷却期

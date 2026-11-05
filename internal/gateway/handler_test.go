@@ -60,13 +60,15 @@ type testEnv struct {
 	upCount atomic.Int64 // 上游 mock 命中计数（按需在各测试里另行统计）
 }
 
-// newTestEnv 建好 org/user/api_key/grant/model，注册 /v1 全链路（含 APIKeyAuth）
+// newTestEnv 建好 org/user/api_key/grant/vendor/model，注册 /v1 全链路（含 APIKeyAuth）。
+// vendor id 固定 1：所有测试渠道挂厂商 1，Key 池在厂商维度（冷却 scope ck:1:{keyID}）
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	f := newTestDB(t)
 	now := time.Now().Unix()
 	apiKey := "sk-test-key-0001"
+	service.ResetNotifyThrottle() // 跨用例 scope 撞名（厂商+key id 在各用例独立库里从头编号）会误节流
 
 	mustExec(t, f, `INSERT INTO orgs (name, quota_limit, status, created_at, updated_at)
 		VALUES ('t-org', 100000000, 1, ?, ?)`, now, now)
@@ -74,8 +76,10 @@ func newTestEnv(t *testing.T) *testEnv {
 		VALUES (1, 'tester', 'x', 'member', 1, ?, ?)`, now, now)
 	mustExec(t, f, `INSERT INTO api_keys (org_id, user_id, key_prefix, key_hash, status, created_at)
 		VALUES (1, 1, 'sk-test', ?, 1, ?)`, auth.HashAPIKey(apiKey), now)
-	mustExec(t, f, `INSERT INTO models (name, input_price, output_price, status, created_at, updated_at)
-		VALUES ('m1', 2000000, 8000000, 1, ?, ?)`, now, now)
+	mustExec(t, f, `INSERT INTO vendors (id, name, status, created_at, updated_at)
+		VALUES (1, 'test-vendor', 1, ?, ?)`, now, now)
+	mustExec(t, f, `INSERT INTO models (name, vendor_id, input_price, output_price, status, created_at, updated_at)
+		VALUES ('m1', 1, 2000000, 8000000, 1, ?, ?)`, now, now)
 	mustExec(t, f, `INSERT INTO user_model_grants (user_id, model_name, created_at) VALUES (1, 'm1', ?)`, now)
 
 	cfg := &config.Config{}
@@ -108,22 +112,32 @@ func newTestEnv(t *testing.T) *testEnv {
 	return &testEnv{f: f, h: h, cd: cd, m: m, engine: engine, apiKey: apiKey, userID: 1, orgID: 1, cfg: cfg}
 }
 
-// seedUpstreamChannel 渠道指向 mock 上游；poolKeys 非空走 Key 池，否则 legacy 单 key
+// seedUpstreamChannel 渠道指向 mock 上游（挂厂商 1）；poolKeys 非空入厂商 Key 池，
+// 空则给厂商池补一把默认 Key（旧 legacy 单 Key 语义的等价替身）
 func (e *testEnv) seedUpstreamChannel(t *testing.T, id int64, name, upstreamURL string, poolKeys []string, priority int) {
 	t.Helper()
 	now := time.Now().Unix()
-	if len(poolKeys) > 0 {
-		mustExec(t, e.f, `INSERT INTO channels (id,name,base_url,path,weight,priority,status,created_at,updated_at)
-			VALUES (?,?,?, '/v1/chat/completions', 1, ?, 1, ?, ?)`, id, name, upstreamURL, priority, now, now)
-		for i, k := range poolKeys {
-			mustExec(t, e.f, `INSERT INTO channel_keys (channel_id,key_enc,weight,status,created_at,updated_at)
-				VALUES (?,?,1,1,?,?)`, id, k, now+int64(i), now+int64(i))
-		}
-	} else {
-		mustExec(t, e.f, `INSERT INTO channels (id,name,base_url,path,upstream_key_enc,weight,priority,status,created_at,updated_at)
-			VALUES (?,?,?, '/v1/chat/completions', 'legacy-key', 1, ?, 1, ?, ?)`, id, name, upstreamURL, priority, now, now)
+	mustExec(t, e.f, `INSERT INTO channels (id,name,vendor_id,base_url,path,weight,priority,status,created_at,updated_at)
+		VALUES (?,?,1,?, '/v1/chat/completions', 1, ?, 1, ?, ?)`, id, name, upstreamURL, priority, now, now)
+	if len(poolKeys) == 0 {
+		poolKeys = []string{"legacy-key"}
+	}
+	for i, k := range poolKeys {
+		mustExec(t, e.f, `INSERT INTO vendor_keys (vendor_id,key_enc,weight,status,created_at,updated_at)
+			VALUES (1,?,1,1,?,?)`, k, now+int64(i), now+int64(i))
 	}
 	mustExec(t, e.f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (?, 'm1')`, id)
+}
+
+// seedVendorChannel 自定义路径的厂商渠道种子（video/embeddings 等非 chat 路径用）：
+// 渠道挂厂商 1，一把 Key 进厂商池（等价旧 legacy 单 Key 语义）；abilities 由调用方自管
+func (e *testEnv) seedVendorChannel(t *testing.T, id int64, name, upstreamURL, path string, priority int) {
+	t.Helper()
+	now := time.Now().Unix()
+	mustExec(t, e.f, `INSERT INTO channels (id,name,vendor_id,base_url,path,weight,priority,status,created_at,updated_at)
+		VALUES (?,?,1,?,?, 1, ?, 1, ?, ?)`, id, name, upstreamURL, path, priority, now, now)
+	mustExec(t, e.f, `INSERT INTO vendor_keys (vendor_id,key_enc,weight,status,created_at,updated_at)
+		VALUES (1,'legacy-key',1,1,?,?)`, now, now)
 }
 
 func (e *testEnv) post(body string) *httptest.ResponseRecorder {
@@ -245,44 +259,43 @@ func TestCostCenterSnapshot(t *testing.T) {
 	}
 }
 
-// 429 → Key 冷却 → 同请求降级到低优先级渠道；下个请求冷却生效不再打 429 渠道
+// 配额类 429 → 只冷却当前 Key（不连坐厂商池其它 Key）→ 同请求内换下一把 Key 继续；
+// 下个请求冷却生效不再用被冷却的 Key。
+// （普通 429 在 key_cooldown_scope=channel 下连坐同厂商全部 Key——那是
+// TestAccountWideCooldownCoolsWholePool 的语义；厂商池共享后回退粒度即 Key 级）
 func Test429CooldownThenFallback(t *testing.T) {
 	e := newTestEnv(t)
-	up1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		e.upCount.Add(1)
-		w.Header().Set("Retry-After", "30")
-		w.WriteHeader(http.StatusTooManyRequests)
-		_, _ = w.Write([]byte(`{"error":{"message":"rate limited"}}`))
-	}))
-	defer up1.Close()
-	up2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var hits atomic.Int64
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits.Add(1) == 1 { // 首个请求：配额类 429；之后恢复（模拟厂商侧限额回落）
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"error":{"code":"SetLimitExceeded"}}`))
+			return
+		}
 		_, _ = w.Write([]byte(okBody))
 	}))
-	defer up2.Close()
-	e.seedUpstreamChannel(t, 1, "ch429", up1.URL, nil, 10)
-	e.seedUpstreamChannel(t, 2, "chok", up2.URL, nil, 1)
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch429", up.URL, []string{"k1", "k2"}, 10)
 
 	w := e.post(chatBody("q", ""))
 	if w.Code != http.StatusOK {
-		t.Fatalf("应降级到渠道 2 成功，got %d body=%s", w.Code, w.Body)
-	}
-	if got := w.Header().Get("X-Tg-Channel-Id"); got != "2" {
-		t.Fatalf("应由渠道 2 应答，got X-Tg-Channel-Id=%q", got)
+		t.Fatalf("配额 429 后应换 Key 继续成功，got %d body=%s", w.Code, w.Body)
 	}
 	if e.m.Upstream429.Value() != 1 || e.m.KeyCooldown.Value() != 1 {
 		t.Fatalf("429/冷却指标错误: %d %d", e.m.Upstream429.Value(), e.m.KeyCooldown.Value())
 	}
-	if !e.cd.IsCooling("ck:1:legacy") {
-		t.Fatal("渠道 1 的 key 应进入冷却")
+	cool1, cool2 := e.cd.IsCooling("ck:1:1"), e.cd.IsCooling("ck:1:2")
+	if cool1 == cool2 {
+		t.Fatalf("应恰有一把 Key 进入配额冷却（不连坐），cool1=%v cool2=%v", cool1, cool2)
 	}
 
-	// 第二次请求：渠道 1 被冷却过滤，直接命中渠道 2
+	// 第二次请求：被冷却的 Key 被过滤，直接用另一把（累计 hits = 首笔 2 次 + 本笔 1 次）
 	w = e.post(chatBody("q", ""))
 	if w.Code != http.StatusOK {
-		t.Fatalf("第二次请求应直接走渠道 2，got %d", w.Code)
+		t.Fatalf("第二次请求应避开冷却 Key，got %d", w.Code)
 	}
-	if e.upCount.Load() != 1 {
-		t.Fatalf("冷却后不应再打渠道 1，upstream hits=%d", e.upCount.Load())
+	if hits.Load() != 3 {
+		t.Fatalf("冷却的 Key 不应再被打，upstream hits=%d", hits.Load())
 	}
 }
 
@@ -424,17 +437,18 @@ func TestQuota429AllKeysExhausted(t *testing.T) {
 // 配额类 429 时成立，任何其它失败原因都要保留各自的错误语义
 func TestQuota429MixedWith5xxReturns502(t *testing.T) {
 	e := newTestEnv(t)
-	up429 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// 同厂商池内确定性混合：k1（配额 429）与 k2（5xx）各承担一种失败，
+	// 配额 429 只冷却 k1、5xx 计渠道故障——两者都发生时按「非配额」502 回错
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.Header.Get("Authorization"), "k2") {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = w.Write([]byte(`{"error":{"code":"SetLimitExceeded","message":"has reached the set usage limit"}}`))
 	}))
-	defer up429.Close()
-	up500 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer up500.Close()
-	e.seedUpstreamChannel(t, 1, "ch-quota", up429.URL, []string{"k1"}, 1)
-	e.seedUpstreamChannel(t, 2, "ch-500", up500.URL, nil, 1)
+	defer up.Close()
+	e.seedUpstreamChannel(t, 1, "ch-mixed", up.URL, []string{"k1", "k2"}, 1)
 
 	if w := e.post(chatBody("q", "")); w.Code != http.StatusBadGateway {
 		t.Fatalf("混合失败应回 502（配额分类不得越权吞掉其它失败原因），got %d body=%s", w.Code, w.Body)
@@ -513,7 +527,7 @@ func Test401AutoDisablesPoolKey(t *testing.T) {
 	var cnt int64
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		_ = e.f.db.Raw("SELECT COUNT(*) FROM channel_keys WHERE key_enc = 'bad-key' AND status = 0").Scan(&cnt).Error
+		_ = e.f.db.Raw("SELECT COUNT(*) FROM vendor_keys WHERE key_enc = 'bad-key' AND status = 0").Scan(&cnt).Error
 		if cnt == 1 {
 			break
 		}
@@ -668,8 +682,8 @@ func TestSSEStreamReleasesSlot(t *testing.T) {
 func TestNoKeyReturnsChannelKeyMissing(t *testing.T) {
 	e := newTestEnv(t)
 	now := time.Now().Unix()
-	mustExec(t, e.f, `INSERT INTO channels (id,name,base_url,path,weight,priority,status,created_at,updated_at)
-		VALUES (1,'nokey','http://up.example','/v1/chat/completions',1,0,1,?,?)`, now, now)
+	mustExec(t, e.f, `INSERT INTO channels (id,name,vendor_id,base_url,path,weight,priority,status,created_at,updated_at)
+		VALUES (1,'nokey',1,'http://up.example','/v1/chat/completions',1,0,1,?,?)`, now, now)
 	mustExec(t, e.f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (1, 'm1')`)
 
 	w := e.post(chatBody("q", ""))
@@ -688,9 +702,9 @@ func TestNoKeyReturnsChannelKeyMissing(t *testing.T) {
 func TestAllKeysDisabledReturnsChannelKeyMissing(t *testing.T) {
 	e := newTestEnv(t)
 	now := time.Now().Unix()
-	mustExec(t, e.f, `INSERT INTO channels (id,name,base_url,path,weight,priority,status,created_at,updated_at)
-		VALUES (1,'disabled','http://up.example','/v1/chat/completions',1,0,1,?,?)`, now, now)
-	mustExec(t, e.f, `INSERT INTO channel_keys (channel_id,key_enc,weight,status,created_at,updated_at)
+	mustExec(t, e.f, `INSERT INTO channels (id,name,vendor_id,base_url,path,weight,priority,status,created_at,updated_at)
+		VALUES (1,'disabled',1,'http://up.example','/v1/chat/completions',1,0,1,?,?)`, now, now)
+	mustExec(t, e.f, `INSERT INTO vendor_keys (vendor_id,key_enc,weight,status,created_at,updated_at)
 		VALUES (1,'k1',1,0,?,?)`, now, now)
 	mustExec(t, e.f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (1, 'm1')`)
 
@@ -704,8 +718,8 @@ func TestAllKeysDisabledReturnsChannelKeyMissing(t *testing.T) {
 func TestNoChannelReturnsNoAvailableChannel(t *testing.T) {
 	e := newTestEnv(t)
 	now := time.Now().Unix()
-	mustExec(t, e.f, `INSERT INTO models (name, input_price, output_price, status, created_at, updated_at)
-		VALUES ('m2', 2000000, 8000000, 1, ?, ?)`, now, now)
+	mustExec(t, e.f, `INSERT INTO models (name, vendor_id, input_price, output_price, status, created_at, updated_at)
+		VALUES ('m2', 1, 2000000, 8000000, 1, ?, ?)`, now, now)
 	mustExec(t, e.f, `INSERT INTO user_model_grants (user_id, model_name, created_at) VALUES (1, 'm2', ?)`, now)
 
 	w := e.post(`{"model":"m2","messages":[{"role":"user","content":"q"}]}`)
@@ -732,7 +746,7 @@ func TestAllKeys401ReturnsChannelKeyInvalid(t *testing.T) {
 		t.Fatalf("全 Key 401 应回 503 channel_key_invalid，got %d body=%s", w.Code, w.Body)
 	}
 	var disabled int64
-	_ = e.f.db.Raw(`SELECT COUNT(*) FROM channel_keys WHERE status = 0`).Scan(&disabled).Error
+	_ = e.f.db.Raw(`SELECT COUNT(*) FROM vendor_keys WHERE status = 0`).Scan(&disabled).Error
 	if disabled != 2 {
 		t.Fatalf("两把 Key 均应被自动禁用，got %d", disabled)
 	}
@@ -838,20 +852,13 @@ func TestAllKeysUndecryptableReturns503(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	encLegacy, err := store.Encrypt("legacy-real-key")
-	if err != nil {
-		t.Fatal(err)
-	}
 	now := time.Now().Unix()
-	// 渠道 1：池内密文；渠道 2：legacy 密文——runtime key 下全部解不开
-	mustExec(t, e.f, `INSERT INTO channels (id,name,base_url,path,weight,priority,status,created_at,updated_at)
-		VALUES (1,'c1','http://up.test','/v1/chat/completions',1,10,1,?,?)`, now, now)
-	mustExec(t, e.f, `INSERT INTO channel_keys (channel_id,key_enc,weight,status,created_at,updated_at)
+	// 厂商池密文在 runtime key 下解不开（aes_key 轮换后未重建密钥的场景）
+	mustExec(t, e.f, `INSERT INTO channels (id,name,vendor_id,base_url,path,weight,priority,status,created_at,updated_at)
+		VALUES (1,'c1',1,'http://up.test','/v1/chat/completions',1,10,1,?,?)`, now, now)
+	mustExec(t, e.f, `INSERT INTO vendor_keys (vendor_id,key_enc,weight,status,created_at,updated_at)
 		VALUES (1,?,1,1,?,?)`, encPool, now, now)
-	mustExec(t, e.f, `INSERT INTO channels (id,name,base_url,path,upstream_key_enc,weight,priority,status,created_at,updated_at)
-		VALUES (2,'c2','http://up.test','/v1/chat/completions',?,1,1,1,?,?)`, encLegacy, now, now)
 	mustExec(t, e.f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (1,'m1')`)
-	mustExec(t, e.f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (2,'m1')`)
 
 	h2 := NewHandler(e.f.db, runtime, e.cfg, middleware.NewRateLimiter(10000, 20), e.m, e.cd)
 	engine2 := gin.New()
@@ -1145,13 +1152,14 @@ func TestListModelsHidesDeadUpstream(t *testing.T) {
 	now := time.Now().Unix()
 	// m1 挂启用 Key 的渠道（newTestEnv 只造了模型与授权，无渠道）
 	e.seedUpstreamChannel(t, 1, "live", "http://live.example", []string{"k1"}, 0)
-	// dead 模型：启用且已授权，但承接渠道唯一 Key 被禁用（如上游 401 自动禁用）
-	mustExec(t, e.f, `INSERT INTO models (name, input_price, output_price, status, created_at, updated_at)
-		VALUES ('dead', 1000000, 1000000, 1, ?, ?)`, now, now)
+	// dead 模型：启用且已授权，但所属厂商（独立厂商 2）唯一 Key 被禁用（如上游 401 自动禁用）
+	mustExec(t, e.f, `INSERT INTO models (name, vendor_id, input_price, output_price, status, created_at, updated_at)
+		VALUES ('dead', 2, 1000000, 1000000, 1, ?, ?)`, now, now)
 	mustExec(t, e.f, `INSERT INTO user_model_grants (user_id, model_name, created_at) VALUES (1, 'dead', ?)`, now)
-	mustExec(t, e.f, `INSERT INTO channels (id,name,base_url,path,weight,priority,status,created_at,updated_at)
-		VALUES (2,'dead-ch','http://up.example','/v1/chat/completions',1,0,1,?,?)`, now, now)
-	mustExec(t, e.f, `INSERT INTO channel_keys (channel_id,key_enc,weight,status,remark,created_at,updated_at)
+	mustExec(t, e.f, `INSERT INTO vendors (id, name, status, created_at, updated_at) VALUES (2, 'dead-vendor', 1, ?, ?)`, now, now)
+	mustExec(t, e.f, `INSERT INTO channels (id,name,vendor_id,base_url,path,weight,priority,status,created_at,updated_at)
+		VALUES (2,'dead-ch',2,'http://up.example','/v1/chat/completions',1,0,1,?,?)`, now, now)
+	mustExec(t, e.f, `INSERT INTO vendor_keys (vendor_id,key_enc,weight,status,remark,created_at,updated_at)
 		VALUES (2,'k1',1,0,'上游 401',?,?)`, now, now)
 	mustExec(t, e.f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (2, 'dead')`)
 
@@ -1169,7 +1177,7 @@ func TestListModelsHidesDeadUpstream(t *testing.T) {
 		t.Fatalf("可路由的 m1 应出现: %s", body)
 	}
 	// 换上新 Key → 立即恢复宣传
-	mustExec(t, e.f, `UPDATE channel_keys SET status = 1 WHERE channel_id = 2`)
+	mustExec(t, e.f, `UPDATE vendor_keys SET status = 1 WHERE vendor_id = 2`)
 	if body := get(); !strings.Contains(body, `"dead"`) {
 		t.Fatalf("Key 恢复后模型应重新出现: %s", body)
 	}
@@ -1183,10 +1191,10 @@ func TestDisablePoolKeyAutoStopsSoleModel(t *testing.T) {
 	e.seedUpstreamChannel(t, 7, "sole", "http://up.example", []string{"k1"}, 0)
 
 	var keyID int64
-	if err := e.f.db.Raw(`SELECT id FROM channel_keys WHERE channel_id = 7`).Scan(&keyID).Error; err != nil || keyID == 0 {
-		t.Fatalf("读取池 Key id 失败: %v", err)
+	if err := e.f.db.Raw(`SELECT id FROM vendor_keys WHERE vendor_id = 1`).Scan(&keyID).Error; err != nil || keyID == 0 {
+		t.Fatalf("读取厂商池 Key id 失败: %v", err)
 	}
-	DisablePoolKey(e.f.db, 7, keyID, 401)
+	DisablePoolKey(e.f.db, 1, "test-vendor", keyID, 401)
 
 	var row struct{ Status, AutoAt int64 }
 	if err := e.f.db.Raw(`SELECT status AS status, auto_disabled_at AS auto_at FROM models WHERE name = 'm1'`).Scan(&row).Error; err != nil {
@@ -1198,7 +1206,7 @@ func TestDisablePoolKeyAutoStopsSoleModel(t *testing.T) {
 
 	// Key 池换回可用 Key → 渠道自动恢复（无 Key 停用标记清零），模型同一次调用恢复；
 	// DisablePoolKey / Key 池启停路径收口都在 SyncModelsAndNotify
-	mustExec(t, e.f, `UPDATE channel_keys SET status = 1 WHERE channel_id = 7`)
+	mustExec(t, e.f, `UPDATE vendor_keys SET status = 1 WHERE vendor_id = 1`)
 	service.SyncModelsAndNotify(e.f.db, "测试：Key 池换回可用 Key")
 
 	var chRow struct {

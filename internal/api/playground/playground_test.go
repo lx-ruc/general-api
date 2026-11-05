@@ -72,13 +72,16 @@ func newPGEnv(t *testing.T) *pgEnv {
 		(2, 1,    'staff', 'x', 'member',         1, ?, ?),
 		(3, NULL, 'root',  'x', 'platform_admin', 1, ?, ?),
 		(4, 1,    'staff2','x', 'member',         1, ?, ?)`, now, now, now, now, now, now, now, now)
-	mustExec(t, db, `INSERT INTO models (name, input_price, output_price, status, created_at, updated_at) VALUES
-		('m1', 2000000, 8000000, 1, ?, ?),
-		('m2', 2000000, 8000000, 1, ?, ?),
-		('m3', 2000000, 8000000, 1, ?, ?),
-		('m4', 2000000, 8000000, 1, ?, ?)`, now, now, now, now, now, now, now, now)
-	mustExec(t, db, `INSERT INTO channels (id, name, base_url, path, upstream_key_enc, weight, priority, status, created_at, updated_at)
-		VALUES (1, 'ch1', ?, '/v1/chat/completions', 'legacy-key', 1, 1, 1, ?, ?)`, up.URL, now, now)
+	mustExec(t, db, `INSERT INTO vendors (id, name, status, created_at, updated_at) VALUES (1, 'tv', 1, 0, 0)`)
+	mustExec(t, db, `INSERT INTO models (name, vendor_id, input_price, output_price, status, created_at, updated_at) VALUES
+		('m1', 1, 2000000, 8000000, 1, ?, ?),
+		('m2', 1, 2000000, 8000000, 1, ?, ?),
+		('m3', 1, 2000000, 8000000, 1, ?, ?),
+		('m4', 1, 2000000, 8000000, 1, ?, ?)`, now, now, now, now, now, now, now, now)
+	mustExec(t, db, `INSERT INTO channels (id, name, vendor_id, base_url, path, weight, priority, status, created_at, updated_at)
+		VALUES (1, 'ch1', 1, ?, '/v1/chat/completions', 1, 1, 1, ?, ?)`, up.URL, now, now)
+	mustExec(t, db, `INSERT INTO vendor_keys (vendor_id, key_enc, weight, status, created_at, updated_at)
+		VALUES (1, 'legacy-key', 1, 1, ?, ?)`, now, now)
 	mustExec(t, db, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (1, 'm1'), (1, 'm2')`)
 	mustExec(t, db, `INSERT INTO user_model_grants (user_id, model_name, created_at) VALUES
 		(2, 'm1', ?), (2, 'm4', ?), (4, 'm2', ?)`, now, now, now)

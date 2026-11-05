@@ -250,6 +250,12 @@ func TestStreamUpstreamResetCountsChannelFailure(t *testing.T) {
 	if status != 0 {
 		t.Fatalf("连续中途断流应触发熔断自动禁用（status=%d）", status)
 	}
+	// 模型联动停用同为其后的异步步骤（SyncModelRoutableStatus）：一并等齐再发第 4 笔
+	var mSt int64
+	waitFor(t, 2*time.Second, func() bool {
+		_ = e.f.db.Raw("SELECT status FROM models WHERE name = 'm1'").Scan(&mSt).Error
+		return mSt == 0
+	})
 	// 禁用后的第 4 笔：m1 失去唯一可用上游，随渠道熔断被联动自动停用 →
 	// 干净的 404（模型不可用），客户端不再收到截断流
 	if w := e.post(chatBody("rst-me", `,"stream":true`)); w.Code != http.StatusNotFound {

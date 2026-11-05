@@ -64,14 +64,14 @@ func TestNotifyKeyQuotaCoolingFanOut(t *testing.T) {
 	if err := json.Unmarshal([]byte(rows[0].Payload), &p); err != nil {
 		t.Fatalf("payload 应为合法 JSON: %v", err)
 	}
-	if p.ChannelID != 7 || p.KeyID != 15 || p.ChannelName != "火山通道" || p.ErrCode != "SetLimitExceeded" {
+	if p.VendorID != 7 || p.KeyID != 15 || p.VendorName != "火山通道" || p.ErrCode != "SetLimitExceeded" {
 		t.Fatalf("payload 定位信息不符: %+v", p)
 	}
 	if p.KeyMasked != MaskKey(raw) || strings.Contains(rows[0].Payload, raw) {
 		t.Fatalf("payload 只能放打码 Key（%q），不得出现明文", p.KeyMasked)
 	}
 	if !strings.Contains(rows[0].Title, "火山通道") {
-		t.Fatalf("标题应含渠道名: %q", rows[0].Title)
+		t.Fatalf("标题应含厂商名: %q", rows[0].Title)
 	}
 }
 
@@ -159,7 +159,7 @@ func TestNotifyKeyRateLimited(t *testing.T) {
 	if err := json.Unmarshal([]byte(rows[0].Payload), &p); err != nil {
 		t.Fatalf("payload 应为合法 JSON: %v", err)
 	}
-	if p.ChannelID != 9 || p.KeyID != 21 || p.KeyMasked != MaskKey(raw) || strings.Contains(rows[0].Payload, raw) {
+	if p.VendorID != 9 || p.KeyID != 21 || p.KeyMasked != MaskKey(raw) || strings.Contains(rows[0].Payload, raw) {
 		t.Fatalf("payload 定位信息不符或泄露明文: %+v", p)
 	}
 	if p.ErrCode != "RateLimited" {

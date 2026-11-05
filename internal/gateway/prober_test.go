@@ -339,12 +339,12 @@ func TestProbeDeadKeySwitchesToHealthyKey(t *testing.T) {
 		Status int64
 		Remark string
 	}
-	_ = e.f.db.Raw("SELECT status, remark FROM channel_keys WHERE id = 1").Scan(&dead)
+	_ = e.f.db.Raw("SELECT status, remark FROM vendor_keys WHERE id = 1").Scan(&dead)
 	if dead.Status != 0 || !strings.Contains(dead.Remark, "Key 已失效") {
 		t.Fatalf("失效 Key 应落库禁用并写中文备注，got status=%d remark=%q", dead.Status, dead.Remark)
 	}
 	var healthy struct{ Status int64 }
-	_ = e.f.db.Raw("SELECT status FROM channel_keys WHERE id = 2").Scan(&healthy)
+	_ = e.f.db.Raw("SELECT status FROM vendor_keys WHERE id = 2").Scan(&healthy)
 	if healthy.Status != 1 {
 		t.Fatalf("健康 Key 不应被禁用，got status=%d", healthy.Status)
 	}
@@ -379,7 +379,7 @@ func TestProbeBalanceExhaustedKeyDisabled(t *testing.T) {
 		Status int64
 		Remark string
 	}
-	_ = e.f.db.Raw("SELECT status, remark FROM channel_keys WHERE id = 1").Scan(&dead)
+	_ = e.f.db.Raw("SELECT status, remark FROM vendor_keys WHERE id = 1").Scan(&dead)
 	if dead.Status != 0 || !strings.Contains(dead.Remark, "余额不足") {
 		t.Fatalf("余额不足 Key 应落库禁用并注明原因，got status=%d remark=%q", dead.Status, dead.Remark)
 	}

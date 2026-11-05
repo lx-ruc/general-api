@@ -7,15 +7,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 )
 
-// seedMappedChannel 建带模型映射的渠道（对外名 m1 → 上游名 up-m1）
+// seedMappedChannel 建带模型映射的厂商渠道（对外名 m1 → 上游名 up-m1）
 func (e *testEnv) seedMappedChannel(t *testing.T, id int64, name, upstreamURL string) {
 	t.Helper()
-	now := time.Now().Unix()
-	mustExec(t, e.f, `INSERT INTO channels (id,name,base_url,path,upstream_key_enc,weight,priority,status,created_at,updated_at)
-		VALUES (?,?,?, '/v1/chat/completions', 'legacy-key', 1, 10, 1, ?, ?)`, id, name, upstreamURL, now, now)
+	e.seedVendorChannel(t, id, name, upstreamURL, "/v1/chat/completions", 10)
 	mustExec(t, e.f, `INSERT INTO channel_abilities (channel_id, model_name, upstream_model_name)
 		VALUES (?, 'm1', 'up-m1')`, id)
 }

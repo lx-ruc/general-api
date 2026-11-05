@@ -543,17 +543,34 @@ func TestListModelsChannelCount(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	seedCh := func(id int64, name, keyEnc string, status int64) {
-		if err := db.Exec(`INSERT INTO channels (id, name, base_url, upstream_key_enc, status, created_at, updated_at)
-			VALUES (?, ?, 'https://up.example', ?, ?, 0, 0)`, id, name, keyEnc, status).Error; err != nil {
+	// 厂商池语义：v1 有启用 Key（两个端点都算接通）；v2 无 Key；v3 有 Key 但端点停用；v4 Key 全禁用
+	seedVendor := func(id int64, keyStatus int64) {
+		if err := db.Exec(`INSERT INTO vendors (id, name, status, created_at, updated_at) VALUES (?, ?, 1, 0, 0)`,
+			id, fmt.Sprintf("v%d", id)).Error; err != nil {
+			t.Fatal(err)
+		}
+		if keyStatus >= 0 {
+			if err := db.Exec(`INSERT INTO vendor_keys (vendor_id, key_enc, status, created_at, updated_at)
+				VALUES (?, 'k', ?, 0, 0)`, id, keyStatus).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	seedCh := func(id int64, name string, vid int64, status int64) {
+		if err := db.Exec(`INSERT INTO channels (id, name, vendor_id, base_url, status, created_at, updated_at)
+			VALUES (?, ?, ?, 'https://up.example', ?, 0, 0)`, id, name, vid, status).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
-	seedCh(1, "c-live", "enc-legacy", 1) // 启用 + legacy 密文
-	seedCh(2, "c-nokey", "", 1)          // 启用但无任何密钥
-	seedCh(3, "c-off", "enc-legacy", 0)  // 有密钥但渠道停用
-	seedCh(4, "c-pool", "", 1)           // 启用 + 池内启用 Key
-	seedCh(5, "c-pooldis", "", 1)        // 启用但池 Key 全禁用
+	seedVendor(1, 1)
+	seedVendor(2, -1)
+	seedVendor(3, 1)
+	seedVendor(4, 0)
+	seedCh(1, "c-live", 1, 1)  // 启用 + 厂商池有 Key
+	seedCh(2, "c-nokey", 2, 1)  // 启用但厂商无 Key
+	seedCh(3, "c-off", 3, 0)    // 厂商有 Key 但端点停用
+	seedCh(4, "c-pool", 1, 1)   // 同厂商 v1 第二个端点（共用池）
+	seedCh(5, "c-pooldis", 4, 1) // 厂商 Key 全禁用
 	ab := func(cid int64, m string) {
 		if err := db.Exec(`INSERT INTO channel_abilities (channel_id, model_name) VALUES (?, ?)`, cid, m).Error; err != nil {
 			t.Fatal(err)
@@ -564,10 +581,6 @@ func TestListModelsChannelCount(t *testing.T) {
 	ab(3, "m-off")
 	ab(4, "m-live")
 	ab(5, "m-none")
-	if err := db.Exec(`INSERT INTO channel_keys (channel_id, key_enc, status, created_at, updated_at)
-		VALUES (4, 'k1', 1, 0, 0), (5, 'k2', 0, 0, 0)`).Error; err != nil {
-		t.Fatal(err)
-	}
 	// m-live 有一家客户设了覆盖价（调用状态区分「完全未定价」与「仅客户价生效」的依据）
 	if err := db.Exec(`INSERT INTO orgs (id, name, status, created_at, updated_at) VALUES (1, 'acme', 1, 0, 0)`).Error; err != nil {
 		t.Fatal(err)
@@ -724,8 +737,8 @@ func TestChannelEnsureModelsExist(t *testing.T) {
 		t.Fatalf("m-new 应被自动登记: %v", err)
 	}
 	// 携带的价格字段被忽略：登记为价格 0（管理台「模型定价」页再定价）
-	if mo.InputPrice != 0 || mo.OutputPrice != 0 || mo.Status != 1 || mo.Vendor != "volc" {
-		t.Fatalf("m-new 应为价格 0 的启用行: %+v", mo)
+	if mo.InputPrice != 0 || mo.OutputPrice != 0 || mo.Status != 1 || mo.VendorID == 0 {
+		t.Fatalf("m-new 应为价格 0 的启用行且挂上厂商: %+v", mo)
 	}
 	mo = model.Model{} // First 复用 struct 会把旧主键拼进条件，先清空
 	if err := db.Where("name = ?", "m-exist").First(&mo).Error; err != nil {
@@ -794,21 +807,25 @@ func TestChannelRequiresKeyForModels(t *testing.T) {
 		t.Fatalf("带密钥建渠道应 200，得 %d: %s", w.Code, w.Body.String())
 	}
 
-	// 无密钥存量渠道（预置模板形态）配模型 → 400
-	if err := db.Exec(`INSERT INTO channels (id, name, base_url, status, created_at, updated_at)
-		VALUES (99, 'c-preset', 'https://up.example', 0, 0, 0)`).Error; err != nil {
+	// 无密钥存量渠道（预置模板形态，挂独立无 Key 厂商）配模型 → 400
+	if err := db.Exec(`INSERT INTO vendors (id, name, status, created_at, updated_at) VALUES (77, 'preset-v', 1, 0, 0)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO channels (id, name, vendor_id, base_url, status, created_at, updated_at)
+		VALUES (99, 'c-preset', 77, 'https://up.example', 0, 0, 0)`).Error; err != nil {
 		t.Fatal(err)
 	}
 	w = do(http.MethodPut, "/api/platform/channels/99",
-		`{"name":"c-preset","base_url":"https://up.example","models":[{"model_name":"m1"}]}`)
+		`{"name":"c-preset","vendor":"preset-v","base_url":"https://up.example","models":[{"model_name":"m1"}]}`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("无密钥渠道配模型应 400，得 %d: %s", w.Code, w.Body.String())
 	}
 
 	// 有密钥渠道更新模型 → 200；随后删掉最后一把 Key → 能力被清空
 	var kid int64
-	if err := db.Raw("SELECT id FROM channel_keys WHERE channel_id = 1").Scan(&kid).Error; err != nil || kid == 0 {
-		t.Fatalf("应有池 Key: id=%d err=%v", kid, err)
+	if err := db.Raw(`SELECT vk.id FROM vendor_keys vk JOIN channels c ON c.vendor_id = vk.vendor_id
+		WHERE c.id = 1`).Scan(&kid).Error; err != nil || kid == 0 {
+		t.Fatalf("应有厂商池 Key: id=%d err=%v", kid, err)
 	}
 	var abCount int64
 	db.Raw("SELECT COUNT(*) FROM channel_abilities WHERE channel_id = 1").Scan(&abCount)
@@ -867,8 +884,9 @@ func TestChannelEnableRequiresKey(t *testing.T) {
 		t.Fatalf("建渠道应 200，得 %d: %s", w.Code, w.Body.String())
 	}
 	var kid int64
-	if err := db.Raw("SELECT id FROM channel_keys WHERE channel_id = 1").Scan(&kid).Error; err != nil || kid == 0 {
-		t.Fatalf("应有池 Key: id=%d err=%v", kid, err)
+	if err := db.Raw(`SELECT vk.id FROM vendor_keys vk JOIN channels c ON c.vendor_id = vk.vendor_id
+		WHERE c.id = 1`).Scan(&kid).Error; err != nil || kid == 0 {
+		t.Fatalf("应有厂商池 Key: id=%d err=%v", kid, err)
 	}
 	if w = do(http.MethodPut, "/api/platform/channels/1/status", `{"status":0}`); w.Code != http.StatusOK {
 		t.Fatalf("停用不受密钥限制，应 200，得 %d: %s", w.Code, w.Body.String())
@@ -1199,12 +1217,15 @@ func TestKeyStatusDisablesChannelWithoutKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Exec(`INSERT INTO channels (id, name, base_url, path, upstream_key_enc, status, created_at, updated_at)
-		VALUES (30, 'ch30', 'https://up.example', '/v1/chat/completions', '', 1, ?, ?)`, now, now).Error; err != nil {
+	if err := db.Exec(`INSERT INTO vendors (id, name, status, created_at, updated_at) VALUES (3, 'tv30', 1, ?, ?)`, now, now).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Exec(`INSERT INTO channel_keys (id, channel_id, key_enc, status, created_at, updated_at)
-		VALUES (300, 30, 'k', 1, ?, ?)`, now, now).Error; err != nil {
+	if err := db.Exec(`INSERT INTO channels (id, name, vendor_id, base_url, path, status, created_at, updated_at)
+		VALUES (30, 'ch30', 3, 'https://up.example', '/v1/chat/completions', 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO vendor_keys (id, vendor_id, key_enc, status, created_at, updated_at)
+		VALUES (300, 3, 'k', 1, ?, ?)`, now, now).Error; err != nil {
 		t.Fatal(err)
 	}
 

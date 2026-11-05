@@ -161,8 +161,11 @@ func migrateAll(db *gorm.DB) error {
 		return fmt.Errorf("backfill models.type: %w", err)
 	}
 
-	// ---- 厂商实体化存量迁移（①-⑤，全部幂等；每步以「行内状态」为锚点，崩溃重跑收敛）----
+	// ---- 厂商实体化存量迁移（①-⑦，全部幂等；每步以「行内状态」为锚点，崩溃重跑收敛）----
 	if err := migrateVendors(db); err != nil {
+		return err
+	}
+	if err := migrateVendorKeys(db); err != nil {
 		return err
 	}
 	return nil
@@ -270,6 +273,31 @@ func migrateVendors(db *gorm.DB) error {
 		JOIN models m ON m.name = g.model_name
 		WHERE m.vendor_id > 0 ON CONFLICT(user_id, vendor_id) DO NOTHING`, now).Error; err != nil {
 		return fmt.Errorf("migrate user_vendor_grants: %w", err)
+	}
+	return nil
+}
+
+// migrateVendorKeys Key 池上提搬迁（⑥渠道池行→厂商池行，⑦legacy 单 Key→池行）：
+// ⑥ id 原样保留（Redis 冷却 scope 中 keyID 段连续 + NOT EXISTS 天然防重插 + 崩溃安全），
+// 密文 SQL 级原样拷贝不经过加解密；⑦ 转池行（权重 1）后清空原列——清空即幂等锚点。
+// channel_keys 表与 upstream_key_enc 列的物理删除在 C5 drops 统一执行（过渡期双写兼容）
+func migrateVendorKeys(db *gorm.DB) error {
+	now := time.Now().Unix()
+	if err := db.Exec(`INSERT INTO vendor_keys (id, vendor_id, key_enc, weight, status, remark, created_at, updated_at)
+		SELECT k.id, c.vendor_id, k.key_enc, k.weight, k.status,
+			COALESCE(NULLIF(k.remark, ''), '迁移自渠道「' || c.name || '」Key 池'), k.created_at, k.updated_at
+		FROM channel_keys k JOIN channels c ON c.id = k.channel_id
+		WHERE c.vendor_id > 0 AND NOT EXISTS (SELECT 1 FROM vendor_keys vk WHERE vk.id = k.id)`).Error; err != nil {
+		return fmt.Errorf("migrate vendor_keys pool: %w", err)
+	}
+	if err := db.Exec(`INSERT INTO vendor_keys (vendor_id, key_enc, weight, status, remark, created_at, updated_at)
+		SELECT c.vendor_id, c.upstream_key_enc, 1, 1, '迁移自渠道「' || c.name || '」单密钥',
+			c.created_at, ? FROM channels c
+		WHERE c.upstream_key_enc <> '' AND c.vendor_id > 0`, now).Error; err != nil {
+		return fmt.Errorf("migrate vendor_keys legacy: %w", err)
+	}
+	if err := db.Exec(`UPDATE channels SET upstream_key_enc = '' WHERE upstream_key_enc <> ''`).Error; err != nil {
+		return fmt.Errorf("clear legacy upstream_key_enc: %w", err)
 	}
 	return nil
 }

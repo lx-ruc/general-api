@@ -187,25 +187,26 @@ type ProbeResult struct {
 	Quota     bool   // 失败是否因厂商侧配额耗尽（SetLimitExceeded 等）——换 Key/等恢复可解，禁用渠道无意义
 }
 
-// probeKey 单次探测的 Key 材料（池内一把，或 legacy 单 Key）
+// probeKey 单次探测的 Key 材料（厂商池内一把）
 type probeKey struct {
-	key   string
-	scope string
-	desc  string
-	id    int64 // 池内 Key id（legacy 单 Key 为 0），站内通知定位用
-	pool  bool  // 池内 Key：Key 级失败（401/403、配额 429）可换下一把；legacy 无从切换
+	key        string
+	scope      string
+	desc       string
+	id         int64   // vendor_keys.id，站内通知定位用
+	vendorID   int64   // 所属厂商（通知与禁用定位）
+	vendorName string
 }
 
-// ProbeChannel 实发一次 max_tokens=1 请求测连通。Key 选择与数据面选路同口径：
-// 池内优先挑非冷却的启用 Key（全部冷却时仍取第一把——管理员点测试通常就是想看它为什么不行），
-// 回退 legacy 单 Key。keyCooldown <= 0 时按 60s（探测侧标记冷却用）。
+// ProbeChannel 实发一次 max_tokens=1 请求测连通。探测对象仍是渠道（端点），Key 取自
+// 渠道所属厂商的 Key 池——与数据面选路同口径：池内优先挑非冷却的启用 Key（全部冷却时
+// 仍取第一把——管理员点测试通常就是想看它为什么不行）。keyCooldown <= 0 时按 60s。
 //
 // Key 级失败与数据面 relay 同语义地「就地换 Key」：401/403（Key 失效）/402（余额不足）
-// 与数据面走同一入口落库禁用该 Key（渠道列表「启 N」计数、Key 池红色标行与备注列随之更新，
-// 管理员能看到是哪把、为何被禁，更换后行内「启用」恢复）后换下一把继续探测；配额类 429
-// 按数据面同款退避冷却（其它 Key 不连坐）——主 Key 失效/用尽时探测同样自动切备用 Key，
-// 渠道尚有健康 Key 即报成功（被跳过的 Key 附在结果里）。
-// 渠道级失败（网络异常/5xx/其它 4xx）同渠道换 Key 无意义，直接返回。
+// 与数据面走同一入口落库禁用该 Key（厂商列表「启 N」计数、Key 池红色标行与备注列随之
+// 更新，管理员能看到是哪把、为何被禁，更换后行内「启用」恢复）后换下一把继续探测；
+// 配额类 429 按数据面同款退避冷却（其它 Key 不连坐）——主 Key 失效/用尽时探测同样自动
+// 切备用 Key，厂商尚有健康 Key 即报成功（被跳过的 Key 附在结果里）。
+// 端点级失败（网络异常/5xx/其它 4xx）换 Key 无意义，直接返回。
 //
 // 探测同时充当 Key 自愈入口：成功即 ClearCooldown（配额恢复后点一次「测试」，
 // 被冷却的 Key 立即回池，不必等冷却到期）。
@@ -215,6 +216,11 @@ func ProbeChannel(db *gorm.DB, cipher *crypto.Cipher, client *http.Client, cd co
 	if err := db.Where("id = ?", channelID).First(&ch).Error; err != nil {
 		return ProbeResult{Err: "channel not found: " + err.Error()}
 	}
+	if ch.VendorID == 0 {
+		return ProbeResult{Err: "渠道未挂厂商，无法探测"}
+	}
+	var vendorName string
+	_ = db.Raw("SELECT name FROM vendors WHERE id = ?", ch.VendorID).Scan(&vendorName).Error
 	// 探测形态按模型类型分派：chat/embedding 发真实小请求，video 只读 GET（不发真任务）
 	ab, kind, err := PickProbeAbility(db, channelID)
 	if err != nil {
@@ -224,26 +230,24 @@ func ProbeChannel(db *gorm.DB, cipher *crypto.Cipher, client *http.Client, cd co
 		keyCooldown = time.Minute
 	}
 
-	// 尝试序列：池内非冷却 Key 按 id 序；全冷却退第一把；无池回退 legacy 单 Key
+	// 尝试序列：厂商池内非冷却 Key 按 id 序；全冷却退第一把
 	var usable []probeKey
-	var poolKeys []model.ChannelKey
-	if err := db.Where("channel_id = ? AND status = 1", channelID).Order("id").Find(&poolKeys).Error; err == nil && len(poolKeys) > 0 {
-		mk := func(k model.ChannelKey) probeKey {
+	var poolKeys []model.VendorKey
+	if err := db.Where("vendor_id = ? AND status = 1", ch.VendorID).Order("id").Find(&poolKeys).Error; err == nil && len(poolKeys) > 0 {
+		mk := func(k model.VendorKey) probeKey {
 			key, _ := cipher.Decrypt(k.KeyEnc)
-			return probeKey{key: key, scope: fmt.Sprintf("ck:%d:%d", channelID, k.ID),
-				desc: fmt.Sprintf("池内 Key #%d", k.ID), id: k.ID, pool: true}
+			return probeKey{key: key, scope: fmt.Sprintf("ck:%d:%d", ch.VendorID, k.ID),
+				desc: fmt.Sprintf("池内 Key #%d", k.ID), id: k.ID,
+				vendorID: ch.VendorID, vendorName: vendorName}
 		}
 		for _, k := range poolKeys {
-			if !cd.IsCooling(fmt.Sprintf("ck:%d:%d", channelID, k.ID)) {
+			if !cd.IsCooling(fmt.Sprintf("ck:%d:%d", ch.VendorID, k.ID)) {
 				usable = append(usable, mk(k))
 			}
 		}
 		if len(usable) == 0 {
 			usable = append(usable, mk(poolKeys[0]))
 		}
-	} else if ch.UpstreamKeyEnc != "" {
-		key, _ := cipher.Decrypt(ch.UpstreamKeyEnc)
-		usable = append(usable, probeKey{key: key, scope: fmt.Sprintf("ck:%d:legacy", channelID), desc: "legacy 单 Key"})
 	}
 	// 解密失败（aes_key 变更/密文损坏）的 Key 剔除；全剔后视为无可用 Key
 	alive := usable[:0]
@@ -253,7 +257,7 @@ func ProbeChannel(db *gorm.DB, cipher *crypto.Cipher, client *http.Client, cd co
 		}
 	}
 	if len(alive) == 0 {
-		return ProbeResult{Err: "渠道无可用 Key（池内全部禁用或未配置）"}
+		return ProbeResult{Err: "厂商无可用 Key（池内全部禁用或未配置）"}
 	}
 
 	var skips, fails []string // 被跳过的坏 Key 摘要 / 各 Key 失败明细
@@ -272,16 +276,16 @@ func ProbeChannel(db *gorm.DB, cipher *crypto.Cipher, client *http.Client, cd co
 		case last.Quota: // probeOnce 内已按数据面同款冷却该 Key 并发站内通知
 			quotaCnt++
 			skips = append(skips, ak.desc+"（配额耗尽）")
-		case ak.pool && (last.Status == http.StatusUnauthorized || last.Status == http.StatusForbidden ||
-			last.Status == http.StatusPaymentRequired):
+		case last.Status == http.StatusUnauthorized || last.Status == http.StatusForbidden ||
+			last.Status == http.StatusPaymentRequired:
 			// Key 失效（401/403 过期/被吊销）或余额不足（402 欠费）：落库禁用该 Key
 			// （数据面 disableKey 同一入口），冷却叠加让本请求与近期选路立即跳过，换下一把继续
-			DisablePoolKey(db, ch.ID, ak.id, last.Status)
+			DisablePoolKey(db, ch.VendorID, vendorName, ak.id, last.Status)
 			cd.SetCooldown(ak.scope, keyCooldown)
 			skips = append(skips, fmt.Sprintf("%s（HTTP %d 失效）", ak.desc, last.Status))
-			slog.Warn("探测发现失效 Key，已禁用并换下一把", "channel_id", ch.ID, "channel", ch.Name,
+			slog.Warn("探测发现失效 Key，已禁用并换下一把", "vendor_id", ch.VendorID, "vendor", vendorName,
 				"key_id", ak.id, "status", last.Status)
-		default: // 网络异常/5xx/其它 4xx：渠道级故障，同渠道换 Key 无意义
+		default: // 网络异常/5xx/其它 4xx：端点级故障，换 Key 无意义
 			return last
 		}
 	}
@@ -367,7 +371,7 @@ func probeOnce(db *gorm.DB, ch model.Channel, ab model.ChannelAbility, kind prob
 			}
 			// 与数据面同源站内通知（服务内按渠道+Key 节流）：体检/自动恢复发现配额死 Key
 			// 时管理员也能收到，不依赖业务流量触发
-			go service.NotifyKeyQuotaCooling(db, ch.ID, ak.id, ch.Name, ak.key, qc)
+			go service.NotifyKeyQuotaCooling(db, ak.vendorID, ak.id, ak.vendorName, ak.key, qc)
 			return ProbeResult{Status: resp.StatusCode, LatencyMs: latency, KeyDesc: ak.desc, Quota: true,
 				Err: fmt.Sprintf("上游配额耗尽（%s）：厂商侧限额暂停，渠道与其它 Key 不受影响；限额恢复后冷却到期（约 %s）自动回池，也可在 Key 池点「清除冷却」立即复用。原始响应：HTTP 429 %s",
 					qc, keyCooldown, truncateStr(string(data), 200))}

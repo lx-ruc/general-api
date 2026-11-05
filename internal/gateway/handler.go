@@ -468,12 +468,12 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			werr(c, http.StatusServiceUnavailable, "no_available_channel",
 				"no enabled channel serves this model, please contact the platform admin")
 			return
-		case selStats.KeyedChannels == 0:
+		case selStats.KeyedVendors == 0:
 			rec.Status, rec.Error = http.StatusServiceUnavailable, "no usable upstream key (not configured or disabled)"
 			werr(c, http.StatusServiceUnavailable, "channel_key_missing",
 				"upstream key is not configured or disabled, please contact the platform admin")
 			return
-		case selStats.DecryptFailed > 0 && selStats.DecryptFailed == selStats.KeyedChannels:
+		case selStats.DecryptFailed > 0 && selStats.DecryptFailed == selStats.KeyedVendors:
 			// 密钥材料齐备但全部解不开：aes_key 轮换后未重建渠道密钥 / 密文损坏。
 			// 也是配置问题（重试无意义），不得落入"全冷却"429 误导客户端退避重试
 			rec.Status, rec.Error = http.StatusServiceUnavailable, "all upstream keys failed to decrypt"
@@ -642,7 +642,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 					"key_id", cand.KeyID, "code", qc, "cooldown", d.String())
 				h.Coord.MarkQuotaCooling(cand.KeyScope(), d) // 供选路无候选时区分"配额冷却"→ 402
 				// 站内通知系统管理员（异步；服务内按渠道+Key 节流 30 分钟，防死 Key 每分钟刷屏）
-				go service.NotifyKeyQuotaCooling(h.DB, cand.ChannelID, cand.KeyID, cand.ChannelName, cand.UpstreamKey, qc)
+				go service.NotifyKeyQuotaCooling(h.DB, cand.VendorID, cand.KeyID, cand.VendorName, cand.UpstreamKey, qc)
 				lastErr = fmt.Sprintf("upstream %s returned %d %s (key %d quota cooldown %s)",
 					cand.ChannelName, resp.StatusCode, qc, cand.KeyID, d)
 				authOnly, timeoutOnly = false, false
@@ -659,7 +659,7 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 			h.coolKeys(cands, cand, cd)
 			// 限流冷却知会系统管理员（异步，同款 30 分钟节流）：持续撞限是「厂商限额已低于
 			// 实际用量」的信号，管理员应提额或配降级渠道，而不是等用户报障才发现
-			go service.NotifyKeyRateLimited(h.DB, cand.ChannelID, cand.KeyID, cand.ChannelName, cand.UpstreamKey, cd)
+			go service.NotifyKeyRateLimited(h.DB, cand.VendorID, cand.KeyID, cand.VendorName, cand.UpstreamKey, cd)
 			lastErr = fmt.Sprintf("upstream %s returned %d (key %d cooling %s)",
 				cand.ChannelName, resp.StatusCode, cand.KeyID, cd)
 			authOnly, quotaOnly, timeoutOnly = false, false, false
@@ -1042,17 +1042,6 @@ var quota429Codes = map[string]struct{}{
 // 默认档位序列：10m→20m→40m→1h20m→2h40m→5h20m→10h40m→21h20m→24h（连击翻倍、到期归零）
 const quota429CooldownMax = 24 * time.Hour
 
-// longKeyCooldown 长效冷却起步档：10×key_cooldown、下限 10min。
-// 仅用于 legacy 单 Key 401/403（Key 失效重试无意义，拉长冷却降低无效探测；
-// 池内 Key 401/403 直接禁用不走此处）
-func longKeyCooldown(kc time.Duration) time.Duration {
-	d := 10 * kc
-	if d < 10*time.Minute {
-		d = 10 * time.Minute
-	}
-	return d
-}
-
 // quota429Code 从上游错误体提取配额类错误码（OpenAI 形状 error.code，大小写不敏感）；非配额类返回空
 func Quota429Code(body []byte) string {
 	var er struct {
@@ -1070,15 +1059,15 @@ func Quota429Code(body []byte) string {
 	return ""
 }
 
-// coolKeys 429 后设置冷却：key 粒度只冷却当前 Key；channel 粒度把候选中同渠道的全部
-// Key 一起冷却——主流厂商（智谱等）限额按账户不按 Key，同账户其余 Key 立刻重试只会
-// 再吃一次 429（实测 3 Key 池逐个试错浪费 147 次探测）。
+// coolKeys 429 后设置冷却：key 粒度只冷却当前 Key；channel 粒度（历史配置值，语义已
+// 演进为厂商级）把候选中同厂商的全部 Key 一起冷却——主流厂商（智谱等）限额按账户不按
+// Key，同账户其余 Key 立刻重试只会再吃一次 429（实测 3 Key 池逐个试错浪费 147 次探测）
 func (h *Handler) coolKeys(cands []Candidate, cur Candidate, d time.Duration) {
 	h.Coord.SetCooldown(cur.KeyScope(), d)
 	n := 1
 	if h.KeyCooldownScope == "channel" {
 		for _, c := range cands {
-			if c.ChannelID == cur.ChannelID && c.KeyID != cur.KeyID {
+			if c.VendorID == cur.VendorID && c.KeyID != cur.KeyID {
 				h.Coord.SetCooldown(c.KeyScope(), d)
 				n++
 			}
@@ -1090,45 +1079,37 @@ func (h *Handler) coolKeys(cands []Candidate, cur Candidate, d time.Duration) {
 		}
 	}
 	if n > 1 {
-		slog.Info("429 触发渠道级冷却（厂商限额按账户）",
-			"channel_id", cur.ChannelID, "channel", cur.ChannelName, "keys_cooled", n, "cooldown", d.String())
+		slog.Info("429 触发厂商级冷却（厂商限额按账户）",
+			"vendor_id", cur.VendorID, "vendor", cur.VendorName, "keys_cooled", n, "cooldown", d.String())
 	}
 }
 
-// disableKey 401/402/403 后禁用 Key：池内 Key 异步置 status=0（可在 Key 池管理手动恢复）；
-// legacy 单 Key 用长效冷却代替禁用（到期自动恢复，避免把渠道一刀切死）
+// disableKey 401/402/403 后禁用 Key：池内 Key 异步置 status=0（可在厂商 Key 池管理手动恢复）
 func (h *Handler) disableKey(cand Candidate, status int) {
-	if cand.KeyID == 0 {
-		d := longKeyCooldown(h.KeyCooldown)
-		h.Coord.SetCooldown(cand.KeyScope(), d)
-		slog.Warn("上游 401/403，legacy 单 Key 进入长效冷却",
-			"channel_id", cand.ChannelID, "status", status, "cooldown", d.String())
-		return
-	}
 	if h.Metrics != nil {
 		h.Metrics.KeyDisabled.Inc()
 	}
-	go DisablePoolKey(h.DB, cand.ChannelID, cand.KeyID, status)
+	go DisablePoolKey(h.DB, cand.VendorID, cand.VendorName, cand.KeyID, status)
 }
 
-// DisablePoolKey 把池内一把 Key 置 status=0 并写中文备注（数据面转发与渠道探测共用入口）：
-// 渠道列表「启 N」计数、Key 池红色标行与备注列都来自这次落库——管理员能看到是哪把 Key、为何被禁。
-// 401/403 = Key 失效（过期/被吊销）；402 = 余额不足（DeepSeek 等厂商的欠费口径）。
+// DisablePoolKey 把厂商池内一把 Key 置 status=0 并写中文备注（数据面转发与渠道探测共用
+// 入口）：厂商列表「启 N」计数、Key 池红色标行与备注列都来自这次落库——管理员能看到
+// 是哪把 Key、为何被禁。401/403 = Key 失效（过期/被吊销）；402 = 余额不足（欠费口径）。
 // 落库后同步对齐模型启用态：该 Key 是某模型最后一个可用上游时，模型随之自动停用
-func DisablePoolKey(db *gorm.DB, channelID, keyID int64, status int) {
+func DisablePoolKey(db *gorm.DB, vendorID int64, vendorName string, keyID int64, status int) {
 	ts := time.Now().Format("2006-01-02 15:04:05")
 	reason := fmt.Sprintf("上游 %d：Key 已失效（过期/被吊销），%s 自动禁用", status, ts)
 	if status == http.StatusPaymentRequired {
 		reason = fmt.Sprintf("上游 402：Key 余额不足（厂商侧欠费），%s 自动禁用", ts)
 	}
-	if err := db.Model(&model.ChannelKey{}).
+	if err := db.Model(&model.VendorKey{}).
 		Where("id = ? AND status = 1", keyID).
 		Updates(map[string]any{"status": 0, "remark": reason, "updated_at": time.Now().Unix()}).Error; err != nil {
-		slog.Error("自动禁用渠道 Key 失败", "channel_id", channelID, "key_id", keyID, "err", err)
+		slog.Error("自动禁用厂商 Key 失败", "vendor_id", vendorID, "key_id", keyID, "err", err)
 		return
 	}
-	slog.Warn("已自动禁用渠道 Key", "channel_id", channelID, "key_id", keyID, "status", status)
-	service.SyncModelsAndNotify(db, fmt.Sprintf("渠道 #%d 的 Key 被上游 %d 拒绝后自动禁用", channelID, status))
+	slog.Warn("已自动禁用厂商 Key", "vendor_id", vendorID, "vendor", vendorName, "key_id", keyID, "status", status)
+	service.SyncModelsAndNotify(db, fmt.Sprintf("厂商「%s」的 Key 被上游 %d 拒绝后自动禁用", vendorName, status))
 }
 
 // ListModels GET /v1/models：该 key 授权范围内、当前可路由的启用模型（OpenAI list 格式）。

@@ -88,7 +88,7 @@ type Gateway struct {
 	KeyCooldown           Duration `yaml:"key_cooldown"`            // 上游 429 后该 Key 的冷却时长
 	HarvestTimeout        Duration `yaml:"harvest_timeout"`        // 断连收割窗口：客户端断开后继续读上游收割 usage 的最长等待；<=0 默认 10m
 	// ---- 上游调度强化（对标 new-api 调研的四项改进）----
-	KeyCooldownScope  string   `yaml:"key_cooldown_scope"`  // 429 冷却粒度：channel=同渠道全部 Key 一起冷却（默认，适配厂商按账户限速）；key=仅当前 Key
+	KeyCooldownScope  string   `yaml:"key_cooldown_scope"`  // 429 冷却粒度：channel=同厂商全部 Key 一起冷却（默认，适配厂商按账户限速；历史值 channel 语义已演进为厂商级）；key=仅当前 Key
 	MaxCandidates     int      `yaml:"max_candidates"`      // 单请求最多尝试的候选数（渠道×Key）；0=不限
 	AutoProbeInterval Duration `yaml:"auto_probe_interval"` // 熔断渠道自动探测间隔，成功即自动启用；0=关闭。人工禁用的渠道永不探测
 	RetryKeyCodes     []string `yaml:"retry_key_codes"`     // 命中即冷却 Key 并同渠道换下一把；支持 429/5xx/500-504 写法

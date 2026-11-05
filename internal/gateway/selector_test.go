@@ -16,27 +16,27 @@ func mustExec(t *testing.T, f *dbFixture, sql string, args ...any) {
 	}
 }
 
-// seedChannel 建渠道+能力；keys 为池内明文 key（空 = legacy 单 key 模式）
-func seedChannel(t *testing.T, f *dbFixture, id int64, name, key string, poolKeys []string, priority int) {
+// seedChannel 建厂商 1 + 模型 m1（归属厂商 1）+ 渠道挂厂商 1 + 能力；keys 为厂商池明文 Key
+// （同厂商多渠道共享同一池——与生产行为一致）
+func seedChannel(t *testing.T, f *dbFixture, id int64, name string, poolKeys []string, priority int) {
 	t.Helper()
 	now := time.Now().Unix()
-	if len(poolKeys) > 0 {
-		mustExec(t, f, `INSERT INTO channels (id,name,base_url,path,weight,priority,status,created_at,updated_at)
-			VALUES (?,?, 'http://up.test', '/v1/chat/completions', 1, ?, 1, ?, ?)`, id, name, priority, now, now)
-		for i, k := range poolKeys {
-			mustExec(t, f, `INSERT INTO channel_keys (channel_id,key_enc,weight,status,created_at,updated_at)
-				VALUES (?,?,1,1,?,?)`, id, k, now+int64(i), now+int64(i))
-		}
-	} else {
-		mustExec(t, f, `INSERT INTO channels (id,name,base_url,path,upstream_key_enc,weight,priority,status,created_at,updated_at)
-			VALUES (?,?, 'http://up.test', '/v1/chat/completions', ?, 1, ?, 1, ?, ?)`, id, name, key, priority, now, now)
+	mustExec(t, f, `INSERT INTO vendors (id, name, status, created_at, updated_at)
+		SELECT 1, 'v1', 1, ?, ? WHERE NOT EXISTS (SELECT 1 FROM vendors WHERE id = 1)`, now, now)
+	mustExec(t, f, `INSERT INTO models (name, vendor_id, status, created_at, updated_at)
+		SELECT 'm1', 1, 1, ?, ? WHERE NOT EXISTS (SELECT 1 FROM models WHERE name = 'm1')`, now, now)
+	mustExec(t, f, `INSERT INTO channels (id,name,vendor_id,base_url,path,weight,priority,status,created_at,updated_at)
+		VALUES (?,?,1, 'http://up.test', '/v1/chat/completions', 1, ?, 1, ?, ?)`, id, name, priority, now, now)
+	for i, k := range poolKeys {
+		mustExec(t, f, `INSERT INTO vendor_keys (vendor_id,key_enc,weight,status,created_at,updated_at)
+			VALUES (1,?,1,1,?,?)`, k, now+int64(i), now+int64(i))
 	}
 	mustExec(t, f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (?, 'm1')`, id)
 }
 
 func TestSelectCandidatesPoolExpansion(t *testing.T) {
 	f := newTestDB(t)
-	seedChannel(t, f, 1, "ch1", "", []string{"k1", "k2", "k3"}, 10)
+	seedChannel(t, f, 1, "ch1", []string{"k1", "k2", "k3"}, 10)
 	cipher, _ := crypto.NewCipher("")
 	cd := coord.NewMem()
 
@@ -50,7 +50,7 @@ func TestSelectCandidatesPoolExpansion(t *testing.T) {
 			t.Fatalf("池内候选应有非零 KeyID: %+v", c)
 		}
 		if c.KeyScope() != fmt.Sprintf("ck:1:%d", c.KeyID) {
-			t.Fatalf("scope 格式错误: %s", c.KeyScope())
+			t.Fatalf("scope 应为厂商维度 ck:1:{keyID}，got %s", c.KeyScope())
 		}
 		seen[c.KeyID] = true
 	}
@@ -59,76 +59,55 @@ func TestSelectCandidatesPoolExpansion(t *testing.T) {
 	}
 }
 
-func TestSelectCandidatesCooldownFilter(t *testing.T) {
+// 同厂商两个端点共用一套池：候选 = 端点 × Key 的笛卡尔积，Key 冷却对全部端点生效
+func TestSelectCandidatesSharedPoolAcrossChannels(t *testing.T) {
 	f := newTestDB(t)
-	seedChannel(t, f, 1, "ch1", "", []string{"k1", "k2", "k3"}, 10)
+	seedChannel(t, f, 1, "ep1", []string{"k1", "k2"}, 10)
+	seedChannel(t, f, 2, "ep2", nil, 10) // 第二个端点不另带 Key（共用厂商池）
 	cipher, _ := crypto.NewCipher("")
 	cd := coord.NewMem()
-	cd.SetCooldown("ck:1:2", time.Minute) // 冷却中间那把
+	cd.SetCooldown("ck:1:2", time.Minute) // 冷却一把
 
 	cands, _, err := SelectCandidates(f.db, cipher, "m1", cd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cands) != 2 {
-		t.Fatalf("冷却 key 应被过滤，期望 2 个候选 got %d", len(cands))
+	if len(cands) != 2 { // k1 × {ep1, ep2}
+		t.Fatalf("共用池应展开 2 个候选（1 把可用 Key × 2 端点），got %d", len(cands))
 	}
+	chans := map[int64]bool{}
 	for _, c := range cands {
 		if c.KeyID == 2 {
 			t.Fatal("冷却中的 key 不应出现在候选里")
 		}
+		chans[c.ChannelID] = true
+	}
+	if len(chans) != 2 {
+		t.Fatalf("两个端点都应承接，got %v", chans)
 	}
 }
 
-func TestSelectCandidatesAllKeysCoolingSkipsChannel(t *testing.T) {
+func TestSelectCandidatesAllKeysCoolingSkipsChannels(t *testing.T) {
 	f := newTestDB(t)
-	seedChannel(t, f, 1, "ch1", "", []string{"k1"}, 10)
-	seedChannel(t, f, 2, "ch2", "", []string{"k2"}, 1)
+	seedChannel(t, f, 1, "ch1", []string{"k1", "k2"}, 10)
 	cipher, _ := crypto.NewCipher("")
 	cd := coord.NewMem()
-	cd.SetCooldown("ck:1:1", time.Minute) // 渠道 1 全部 key 冷却
+	cd.SetCooldown("ck:1:1", time.Minute)
+	cd.SetCooldown("ck:1:2", time.Minute) // 厂商池全部 key 冷却
 
-	cands, _, err := SelectCandidates(f.db, cipher, "m1", cd)
+	cands, stats, err := SelectCandidates(f.db, cipher, "m1", cd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cands) != 1 || cands[0].ChannelID != 2 {
-		t.Fatalf("渠道 1 应被整体跳过，got %+v", cands)
-	}
-}
-
-func TestSelectCandidatesLegacyFallbackAndScope(t *testing.T) {
-	f := newTestDB(t)
-	seedChannel(t, f, 1, "ch1", "legacy-key", nil, 10)
-	cipher, _ := crypto.NewCipher("")
-	cd := coord.NewMem()
-
-	cands, _, err := SelectCandidates(f.db, cipher, "m1", cd)
-	if err != nil || len(cands) != 1 {
-		t.Fatalf("legacy 应回退单 key，got %d err=%v", len(cands), err)
-	}
-	if cands[0].KeyID != 0 || cands[0].UpstreamKey != "legacy-key" {
-		t.Fatalf("legacy 候选字段错误: %+v", cands[0])
-	}
-	if cands[0].KeyScope() != "ck:1:legacy" {
-		t.Fatalf("legacy scope 应为 ck:1:legacy, got %s", cands[0].KeyScope())
-	}
-
-	// legacy 冷却 → 渠道跳过
-	cd.SetCooldown("ck:1:legacy", time.Minute)
-	cands, _, err = SelectCandidates(f.db, cipher, "m1", cd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(cands) != 0 {
-		t.Fatalf("legacy 冷却后应无候选，got %d", len(cands))
+	if len(cands) != 0 || stats.CoolingKeys != 2 {
+		t.Fatalf("全池冷却应无候选且 CoolingKeys=2，got cands=%d stats=%+v", len(cands), stats)
 	}
 }
 
 func TestSelectCandidatesDisabledKeyExcluded(t *testing.T) {
 	f := newTestDB(t)
-	seedChannel(t, f, 1, "ch1", "", []string{"k1", "k2"}, 10)
-	mustExec(t, f, "UPDATE channel_keys SET status = 0 WHERE channel_id = 1 AND key_enc = 'k1'")
+	seedChannel(t, f, 1, "ch1", []string{"k1", "k2"}, 10)
+	mustExec(t, f, "UPDATE vendor_keys SET status = 0 WHERE vendor_id = 1 AND key_enc = 'k1'")
 	cipher, _ := crypto.NewCipher("")
 
 	cands, _, err := SelectCandidates(f.db, cipher, "m1", coord.NewMem())
@@ -142,59 +121,76 @@ func TestSelectCandidatesDisabledKeyExcluded(t *testing.T) {
 
 func TestSelectCandidatesPriorityGroups(t *testing.T) {
 	f := newTestDB(t)
-	seedChannel(t, f, 1, "high", "", []string{"hk"}, 10)
-	seedChannel(t, f, 2, "low", "", []string{"lk"}, 1)
+	seedChannel(t, f, 1, "high", []string{"hk"}, 10)
+	seedChannel(t, f, 2, "low", []string{"lk"}, 1)
 	cipher, _ := crypto.NewCipher("")
 
 	cands, _, err := SelectCandidates(f.db, cipher, "m1", coord.NewMem())
-	if err != nil || len(cands) != 2 {
-		t.Fatalf("应有两个候选 got %d err=%v", len(cands), err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if cands[0].Priority < cands[1].Priority {
+	// 共享池：2 把 Key × 2 个端点 = 4 个候选；高优先级端点（priority 10）组排前面
+	if len(cands) != 4 {
+		t.Fatalf("共享池应展开 4 个候选（2 Key × 2 端点），got %d", len(cands))
+	}
+	if cands[0].Priority < cands[2].Priority {
 		t.Fatal("高优先级组的候选应排在前面（降级备用）")
 	}
 }
 
-// DecryptFailed 计数精确性：全部解密失败计满、正确 key 归零；
-// 冷却+解密失败混合时只计纯解密失败渠道（冷却渠道可恢复，整体保持 429 语义）
+// 模型归属与渠道厂商不一致时（多厂商模型未拆分的防御路径）：该厂商渠道不参与路由
+func TestSelectCandidatesVendorMismatchFiltered(t *testing.T) {
+	f := newTestDB(t)
+	now := time.Now().Unix()
+	seedChannel(t, f, 1, "v1-ep", []string{"k1"}, 10) // 厂商 1 承接 m1
+	// 厂商 2 也挂了 m1 能力，但 m1 归属厂商 1 → 渠道应被过滤
+	mustExec(t, f, `INSERT INTO vendors (id, name, status, created_at, updated_at) VALUES (2, 'v2', 1, ?, ?)`, now, now)
+	mustExec(t, f, `INSERT INTO channels (id,name,vendor_id,base_url,path,weight,priority,status,created_at,updated_at)
+		VALUES (2,'v2-ep',2,'http://up.test','/v1/chat/completions',1,99,1,?,?)`, now, now)
+	mustExec(t, f, `INSERT INTO vendor_keys (vendor_id,key_enc,weight,status,created_at,updated_at)
+		VALUES (2,'k2',1,1,?,?)`, now, now)
+	mustExec(t, f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (2, 'm1')`)
+	cipher, _ := crypto.NewCipher("")
+
+	cands, _, err := SelectCandidates(f.db, cipher, "m1", coord.NewMem())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cands) != 1 || cands[0].ChannelID != 1 {
+		t.Fatalf("非归属厂商的渠道应被过滤，got %+v", cands)
+	}
+}
+
+// DecryptFailed 计数（厂商维度）：全部解密失败计满、正确 key 归零；
+// 全冷却时不计解密失败（冷却可恢复，整体保持 429 语义）
 func TestSelectCandidatesDecryptFailedStats(t *testing.T) {
 	f := newTestDB(t)
-	store, _ := crypto.NewCipher(crypto.RandomKeyB64())  // 存库用的 key
+	store, _ := crypto.NewCipher(crypto.RandomKeyB64()) // 存库用的 key
 	wrong, _ := crypto.NewCipher(crypto.RandomKeyB64()) // 轮换后的 key
-	now := time.Now().Unix()
-	encPool1, _ := store.Encrypt("p1")
-	encPool2, _ := store.Encrypt("p2")
-	encLegacy, _ := store.Encrypt("legacy-plain")
-	mustExec(t, f, `INSERT INTO channels (id,name,base_url,path,weight,priority,status,created_at,updated_at)
-		VALUES (1,'c1','http://up.test','/v1/chat/completions',1,10,1,?,?)`, now, now)
-	mustExec(t, f, `INSERT INTO channel_keys (channel_id,key_enc,weight,status,created_at,updated_at)
-		VALUES (1,?,1,1,?,?)`, encPool1, now, now)
-	mustExec(t, f, `INSERT INTO channel_keys (channel_id,key_enc,weight,status,created_at,updated_at)
-		VALUES (1,?,1,1,?,?)`, encPool2, now+1, now+1)
-	mustExec(t, f, `INSERT INTO channels (id,name,base_url,path,upstream_key_enc,weight,priority,status,created_at,updated_at)
-		VALUES (2,'c2','http://up.test','/v1/chat/completions',?,1,1,1,?,?)`, encLegacy, now, now)
-	mustExec(t, f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (1,'m1')`)
-	mustExec(t, f, `INSERT INTO channel_abilities (channel_id, model_name) VALUES (2,'m1')`)
+	seedChannel(t, f, 1, "ch1", []string{"p1-enc", "p2-enc"}, 10)
+	// 覆写为不可解密文（seedChannel 存的是明文）
+	mustExec(t, f, `UPDATE vendor_keys SET key_enc = ? WHERE vendor_id = 1 AND key_enc = 'p1-enc'`, mustEnc(t, store, "p1"))
+	mustExec(t, f, `UPDATE vendor_keys SET key_enc = ? WHERE vendor_id = 1 AND key_enc = 'p2-enc'`, mustEnc(t, store, "p2"))
 
-	// 错误 key：候选空，两渠道均计解密失败
+	// 错误 key：候选空，该厂商计解密失败
 	cands, stats, err := SelectCandidates(f.db, wrong, "m1", coord.NewMem())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cands) != 0 || stats.Channels != 2 || stats.KeyedChannels != 2 || stats.DecryptFailed != 2 || stats.CoolingKeys != 0 {
+	if len(cands) != 0 || stats.Channels != 1 || stats.KeyedVendors != 1 || stats.DecryptFailed != 1 || stats.CoolingKeys != 0 {
 		t.Fatalf("全解密失败统计不符: cands=%d stats=%+v", len(cands), stats)
 	}
 
-	// 正确 key：池 2 + legacy 1 共 3 候选，解密失败归零
+	// 正确 key：2 候选，解密失败归零
 	cands, stats, err = SelectCandidates(f.db, store, "m1", coord.NewMem())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cands) != 3 || stats.DecryptFailed != 0 {
-		t.Fatalf("正确 key 应 3 候选且零解密失败: cands=%d stats=%+v", len(cands), stats)
+	if len(cands) != 2 || stats.DecryptFailed != 0 {
+		t.Fatalf("正确 key 应 2 候选且零解密失败: cands=%d stats=%+v", len(cands), stats)
 	}
 
-	// 混合：渠道 1 全冷却（先跳过不解密）、渠道 2 解密失败 → 只计 1，保留 429 语义
+	// 全冷却 + 错误 key：冷却优先（可恢复），不计解密失败
 	cd := coord.NewMem()
 	cd.SetCooldown("ck:1:1", time.Minute)
 	cd.SetCooldown("ck:1:2", time.Minute)
@@ -202,7 +198,16 @@ func TestSelectCandidatesDecryptFailedStats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cands) != 0 || stats.DecryptFailed != 1 || stats.KeyedChannels != 2 || stats.CoolingKeys != 2 {
-		t.Fatalf("混合场景统计不符: cands=%d stats=%+v", len(cands), stats)
+	if len(cands) != 0 || stats.DecryptFailed != 0 || stats.KeyedVendors != 1 || stats.CoolingKeys != 2 {
+		t.Fatalf("全冷却场景统计不符: cands=%d stats=%+v", len(cands), stats)
 	}
+}
+
+func mustEnc(t *testing.T, c *crypto.Cipher, s string) string {
+	t.Helper()
+	enc, err := c.Encrypt(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return enc
 }

@@ -31,8 +31,8 @@ func seedModelsForOrg(t *testing.T, db *gorm.DB, names ...string) {
 	t.Helper()
 	now := time.Now().Unix()
 	for _, n := range names {
-		if err := db.Exec(`INSERT INTO models (name, input_price, output_price, status, created_at, updated_at)
-			VALUES (?, 1000000, 1000000, 1, ?, ?)`, n, now, now).Error; err != nil {
+		if err := db.Exec(`INSERT INTO models (name, vendor_id, input_price, output_price, status, created_at, updated_at)
+			VALUES (?, 1, 1000000, 1000000, 1, ?, ?)`, n, now, now).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -45,11 +45,14 @@ func seedModelsForOrg(t *testing.T, db *gorm.DB, names ...string) {
 func seedLiveUpstreamForOrg(t *testing.T, db *gorm.DB, names ...string) {
 	t.Helper()
 	now := time.Now().Unix()
-	if err := db.Exec(`INSERT INTO channels (id, name, base_url, path, status, created_at, updated_at)
-		VALUES (1, 'live-ch', 'https://up.example', '/v1/chat/completions', 1, ?, ?)`, now, now).Error; err != nil {
+	if err := db.Exec(`INSERT INTO vendors (id, name, status, created_at, updated_at) VALUES (1, 'tv', 1, ?, ?)`, now, now).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Exec(`INSERT INTO channel_keys (channel_id, key_enc, status, created_at, updated_at)
+	if err := db.Exec(`INSERT INTO channels (id, name, vendor_id, base_url, path, status, created_at, updated_at)
+		VALUES (1, 'live-ch', 1, 'https://up.example', '/v1/chat/completions', 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO vendor_keys (vendor_id, key_enc, status, created_at, updated_at)
 		VALUES (1, 'seed-key', 1, ?, ?)`, now, now).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -199,11 +202,12 @@ func TestMemberModelsHideDeadUpstream(t *testing.T) {
 		t.Fatal(err)
 	}
 	// dead 挂到独立渠道，唯一 Key 已禁用；把 dead 从 live 渠道摘下
-	if err := e.db.Exec(`INSERT INTO channels (id, name, base_url, path, status, created_at, updated_at)
-		VALUES (2, 'dead-ch', 'https://up2.example', '/v1/chat/completions', 1, ?, ?)`, now, now).Error; err != nil {
+	_ = e.db.Exec(`INSERT INTO vendors (id, name, status, created_at, updated_at) VALUES (2, 'dead-v', 1, ?, ?)`, now, now).Error
+	if err := e.db.Exec(`INSERT INTO channels (id, name, vendor_id, base_url, path, status, created_at, updated_at)
+		VALUES (2, 'dead-ch', 2, 'https://up2.example', '/v1/chat/completions', 1, ?, ?)`, now, now).Error; err != nil {
 		t.Fatal(err)
 	}
-	_ = e.db.Exec(`INSERT INTO channel_keys (channel_id, key_enc, status, remark, created_at, updated_at)
+	_ = e.db.Exec(`INSERT INTO vendor_keys (vendor_id, key_enc, status, remark, created_at, updated_at)
 		VALUES (2, 'dead-key', 0, '上游 401', ?, ?)`, now, now).Error
 	_ = e.db.Exec(`INSERT INTO channel_abilities (channel_id, model_name) VALUES (2, 'dead')`).Error
 	_ = e.db.Exec(`DELETE FROM channel_abilities WHERE channel_id = 1 AND model_name = 'dead'`).Error
