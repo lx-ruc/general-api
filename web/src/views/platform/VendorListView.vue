@@ -7,7 +7,8 @@ import {
   apiUpdateVendorKeyStatus, apiClearVendorKeyCooldown,
   apiListChannels, apiCreateChannel, apiUpdateChannel, apiUpdateChannelStatus,
   apiDeleteChannel, apiFetchUpstreamModels, apiFetchUpstreamModelsByForm, apiListModels,
-  type Vendor, type ChannelKeyRow, type Channel, type ChannelTestResult,
+  apiListOrgs, apiListOrgVendorPrices, apiSetOrgVendorPrice, apiDeleteOrgVendorPrice,
+  type Vendor, type ChannelKeyRow, type Channel, type ChannelTestResult, type OrgVendorPriceRow,
 } from '../../api/platform'
 import MaskedKey from '../../components/MaskedKey.vue'
 import { fmtTime } from '../../utils/format'
@@ -93,6 +94,101 @@ async function removeVendor(v: Vendor) {
   ElMessage.success('已删除')
   load()
 }
+
+// ---- 厂商价（对该客户生效于组内全部模型；模型级覆盖优先） ----
+const priceVisible = ref(false)
+const priceVendor = ref<Vendor | null>(null)
+const priceRows = ref<OrgVendorPriceRow[]>([])
+const priceLoading = ref(false)
+const priceOrgs = ref<{ id: number; name: string }[]>([])
+const priceAddOrg = ref<number | undefined>(undefined)
+const priceSaving = ref(0)
+const priceUnit = ref<'1k' | '1m'>('1m')
+
+const priceUnitLabel = computed(() => (priceUnit.value === '1k' ? '1K' : '1M'))
+const priceUnitStep = computed(() => (priceUnit.value === '1k' ? 0.001 : 0.1))
+const priceUnitPrecision = computed(() => (priceUnit.value === '1k' ? 6 : 4))
+// 草稿三价按当前单位编辑；入库换算回点（存储口径点/百万 token）
+const drafts = reactive<Record<number, { in: number; out: number; cache: number }>>({})
+const snapshots = reactive<Record<number, { in: number; out: number; cache: number }>>({})
+
+async function openPrices(v: Vendor) {
+  priceVendor.value = v
+  priceUnit.value = '1m'
+  priceVisible.value = true
+  priceLoading.value = true
+  try {
+    if (priceOrgs.value.length === 0) {
+      const r = await apiListOrgs({ page: 1, page_size: 1000 })
+      priceOrgs.value = (r.list || []).map((o: any) => ({ id: o.id, name: o.name }))
+    }
+    await reloadPrices()
+  } finally {
+    priceLoading.value = false
+  }
+}
+async function reloadPrices() {
+  if (!priceVendor.value) return
+  priceRows.value = await apiListOrgVendorPrices(priceVendor.value.id)
+  for (const k of Object.keys(drafts)) delete drafts[Number(k)]
+  for (const k of Object.keys(snapshots)) delete snapshots[Number(k)]
+  for (const r of priceRows.value) {
+    drafts[r.org_id] = { in: toDisp(r.input_price), out: toDisp(r.output_price), cache: toDisp(r.input_cache_hit_price) }
+    snapshots[r.org_id] = { ...drafts[r.org_id] }
+  }
+}
+const toDisp = (points: number) => points / 1_000_000 // 点 → 元/1M token
+const fromDisp = (yuan: number) => Math.round(yuan * 1_000_000)
+function priceDirty(orgId: number): boolean {
+  const d = drafts[orgId], s = snapshots[orgId]
+  return !!d && !!s && (d.in !== s.in || d.out !== s.out || d.cache !== s.cache)
+}
+function onPriceUnitChange() {
+  // 单位切换：草稿与快照同乘换算，保持未保存编辑不丢
+  const factor = priceUnit.value === '1k' ? 1000 : 1 / 1000
+  for (const id of Object.keys(drafts)) {
+    const n = Number(id)
+    for (const f of ['in', 'out', 'cache'] as const) {
+      drafts[n][f] = round6(drafts[n][f] * factor)
+      snapshots[n][f] = round6(snapshots[n][f] * factor)
+    }
+  }
+}
+const round6 = (x: number) => Number(x.toFixed(6))
+async function addPriceRow() {
+  if (!priceAddOrg.value || !priceVendor.value) return
+  await apiSetOrgVendorPrice(priceVendor.value.id, {
+    org_id: priceAddOrg.value, input_price: 0, output_price: 0,
+  })
+  priceAddOrg.value = undefined
+  await reloadPrices()
+}
+async function savePriceRow(orgId: number) {
+  if (!priceVendor.value) return
+  const d = drafts[orgId]
+  priceSaving.value = orgId
+  try {
+    await apiSetOrgVendorPrice(priceVendor.value!.id, {
+      org_id: orgId,
+      input_price: fromDisp(d.in), output_price: fromDisp(d.out),
+      input_cache_hit_price: fromDisp(d.cache),
+    })
+    ElMessage.success('已保存')
+    await reloadPrices()
+  } finally {
+    priceSaving.value = 0
+  }
+}
+async function resetPriceRow(r: OrgVendorPriceRow) {
+  if (!priceVendor.value) return
+  await ElMessageBox.confirm(`恢复 ${r.org_name} 的组内模型走模型级价格（模型覆盖价 > 模型默认价）？`, '恢复', { type: 'warning' })
+  await apiDeleteOrgVendorPrice(priceVendor.value.id, r.org_id)
+  await reloadPrices()
+}
+const priceCandidates = computed(() => {
+  const has = new Set(priceRows.value.map((r) => r.org_id))
+  return priceOrgs.value.filter((o) => !has.has(o.id))
+})
 
 const testing = ref(0)
 function latencyNote(ms: number): string {
@@ -546,9 +642,10 @@ async function removeEp(ep: any, v: Vendor) {
           <span v-else class="dim">未测试</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="230" fixed="right">
+      <el-table-column label="操作" width="280" fixed="right">
         <template #default="{ row: v }">
           <el-button size="small" type="primary" :loading="testing === v.id" @click="testVendor(v)">测试</el-button>
+          <el-button size="small" @click="openPrices(v)">定价</el-button>
           <el-button size="small" @click="openVendorEdit(v)">编辑</el-button>
           <el-button size="small" :type="v.status === 1 ? 'warning' : 'success'" plain @click="toggleVendor(v)">
             {{ v.status === 1 ? '停用' : '启用' }}
@@ -557,6 +654,61 @@ async function removeEp(ep: any, v: Vendor) {
         </template>
       </el-table-column>
     </el-table>
+
+    <!-- 厂商价管理 -->
+    <el-dialog v-model="priceVisible" :title="`厂商价：${priceVendor?.display_name || priceVendor?.name || ''}（组内全部模型统一生效，模型级覆盖优先）`" width="900px" top="6vh">
+      <div class="section-title">
+        生效优先级：模型覆盖价 &gt; 厂商价 &gt; 模型默认价
+        <el-radio-group v-model="priceUnit" size="small" @change="onPriceUnitChange" style="margin-left: auto">
+          <el-radio-button value="1k">元 / 1K token</el-radio-button>
+          <el-radio-button value="1m">元 / 1M token</el-radio-button>
+        </el-radio-group>
+      </div>
+      <div v-if="priceCandidates.length > 0" class="keys-toolbar">
+        <el-select v-model="priceAddOrg" placeholder="选择客户" size="small" style="width: 200px" filterable>
+          <el-option v-for="o in priceCandidates" :key="o.id" :label="o.name" :value="o.id" />
+        </el-select>
+        <el-button size="small" @click="addPriceRow">添加客户厂商价</el-button>
+        <span class="dim">新客户默认 0 元（免费），保存前不影响计费</span>
+      </div>
+      <el-table :data="priceRows" v-loading="priceLoading" size="small" max-height="420"
+        empty-text="还没有客户设厂商价（未设价的客户按模型级价格计费）">
+        <el-table-column label="客户" min-width="130">
+          <template #default="{ row: r }">
+            <span :class="r.override ? '' : 'dim'">{{ r.org_name }}</span>
+            <el-tag v-if="!r.override" size="small" type="info" effect="plain" style="margin-left: 6px">未设价</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column width="190" align="center">
+          <template #header>输入单价<span class="dim">（元/{{ priceUnitLabel }}）</span></template>
+          <template #default="{ row: r }">
+            <el-input-number v-if="drafts[r.org_id]" v-model="drafts[r.org_id].in" size="small"
+              :min="0" :step="priceUnitStep" :precision="priceUnitPrecision" :controls="false" style="width: 140px" />
+          </template>
+        </el-table-column>
+        <el-table-column width="190" align="center">
+          <template #header>输出单价<span class="dim">（元/{{ priceUnitLabel }}）</span></template>
+          <template #default="{ row: r }">
+            <el-input-number v-if="drafts[r.org_id]" v-model="drafts[r.org_id].out" size="small"
+              :min="0" :step="priceUnitStep" :precision="priceUnitPrecision" :controls="false" style="width: 140px" />
+          </template>
+        </el-table-column>
+        <el-table-column width="210" align="center">
+          <template #header>缓存命中单价<span class="dim">（0=同输入）</span></template>
+          <template #default="{ row: r }">
+            <el-input-number v-if="drafts[r.org_id]" v-model="drafts[r.org_id].cache" size="small"
+              :min="0" :step="priceUnitStep" :precision="priceUnitPrecision" :controls="false" style="width: 140px" />
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="150" align="center">
+          <template #default="{ row: r }">
+            <el-button size="small" type="primary" :disabled="!priceDirty(r.org_id)"
+              :loading="priceSaving === r.org_id" @click="savePriceRow(r.org_id)">保存</el-button>
+            <el-button size="small" :disabled="!r.override" @click="resetPriceRow(r)">恢复</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+    </el-dialog>
 
     <!-- 厂商编辑 -->
     <el-dialog v-model="vEditVisible" :title="vIsEdit ? `编辑厂商：${vForm.name}` : '新建厂商'" width="520px">
