@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS channels (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
   name             TEXT    NOT NULL UNIQUE,
   vendor           TEXT    NOT NULL DEFAULT '',
+  vendor_id        INTEGER NOT NULL DEFAULT 0, -- 所属厂商（0=未挂，不可路由；存量迁移自 vendor 标签）
   base_url         TEXT    NOT NULL,
   path             TEXT    NOT NULL DEFAULT '/v1/chat/completions',
   upstream_key_enc TEXT    NOT NULL DEFAULT '',
@@ -87,6 +88,7 @@ CREATE TABLE IF NOT EXISTS models (
   name         TEXT    NOT NULL UNIQUE,
   display_name TEXT    NOT NULL DEFAULT '',
   vendor       TEXT    NOT NULL DEFAULT '',
+  vendor_id    INTEGER NOT NULL DEFAULT 0, -- 归属厂商（0=未挂；授权/厂商价按此展开）
   type         TEXT    NOT NULL DEFAULT 'chat', -- chat/embedding/video：决定端点路由与探测形态
   input_price  INTEGER NOT NULL DEFAULT 0,
   output_price INTEGER NOT NULL DEFAULT 0,
@@ -400,3 +402,69 @@ CREATE TABLE IF NOT EXISTS video_tasks (
   updated_at     INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_video_tasks_sweep ON video_tasks(billed, created_at);
+
+-- 厂商实体：Key 池 / 渠道(端点) / 模型 / 授权 / 定价的归属主体。
+-- status=0 主开关：该厂商全部端点视为不可路由
+CREATE TABLE IF NOT EXISTS vendors (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  name         TEXT    NOT NULL UNIQUE,      -- 厂商标识（迁移自 channels.vendor 标签，如 volces、volces/Thu）
+  display_name TEXT    NOT NULL DEFAULT '',  -- 展示名（空=用 name）
+  status       INTEGER NOT NULL DEFAULT 1,
+  remark       TEXT    NOT NULL DEFAULT '',
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL
+);
+
+-- 厂商 Key 池（channel_keys 上提）：厂商下全部端点共用，轮询/冷却/禁用同现有机制；
+-- key_enc 密文自 channel_keys 原样搬迁（AES-GCM，不经过加解密）
+CREATE TABLE IF NOT EXISTS vendor_keys (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  vendor_id  INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,
+  key_enc    TEXT    NOT NULL,
+  weight     INTEGER NOT NULL DEFAULT 1,
+  status     INTEGER NOT NULL DEFAULT 1, -- 0=禁用（401/402 自动禁用 / 手动）
+  remark     TEXT    NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_vendor_keys_vendor ON vendor_keys(vendor_id, status);
+
+-- 客户级厂商开通：授厂商 ⟺ 组内全部模型可用（组内新模型自动继承，数据面按
+-- models.vendor_id 展开判定）；回收=删行+级联子账号厂商授权
+CREATE TABLE IF NOT EXISTS org_vendor_grants (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id     INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  vendor_id  INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,
+  granted_by INTEGER,
+  source     TEXT    NOT NULL DEFAULT 'grant', -- grant=审批/手动 backfill=存量折算
+  created_at INTEGER NOT NULL,
+  UNIQUE(org_id, vendor_id)
+);
+CREATE INDEX IF NOT EXISTS idx_org_vendor_grants_org ON org_vendor_grants(org_id);
+
+-- 子账号级厂商授权（数据面放行主口径；user_model_grants 保留为模型级例外）
+CREATE TABLE IF NOT EXISTS user_vendor_grants (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  vendor_id  INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,
+  granted_by INTEGER,
+  created_at INTEGER NOT NULL,
+  UNIQUE(user_id, vendor_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_vendor_grants_user ON user_vendor_grants(user_id);
+
+-- 客户×厂商一套三价（组内模型统一生效；模型级覆盖 org_model_prices 优先级更高；
+-- 生效价 = 模型覆盖 > 客户厂商价 > 模型默认价）
+CREATE TABLE IF NOT EXISTS org_vendor_prices (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_id                INTEGER NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
+  vendor_id             INTEGER NOT NULL REFERENCES vendors(id) ON DELETE CASCADE,
+  input_price           INTEGER NOT NULL DEFAULT 0,
+  output_price          INTEGER NOT NULL DEFAULT 0,
+  input_cache_hit_price INTEGER NOT NULL DEFAULT 0, -- 0=同输入价（与 models 口径一致）
+  remark                TEXT    NOT NULL DEFAULT '',
+  created_at            INTEGER NOT NULL,
+  updated_at            INTEGER NOT NULL,
+  UNIQUE(org_id, vendor_id)
+);
+CREATE INDEX IF NOT EXISTS idx_org_vendor_prices_org ON org_vendor_prices(org_id);

@@ -1,10 +1,11 @@
 package model
 
-// Channel 上游渠道：任何 OpenAI 兼容厂商 = 一行配置
+// Channel 上游渠道（厂商下的端点）：任何 OpenAI 兼容厂商 = 一行配置
 type Channel struct {
 	ID              int64  `gorm:"primaryKey" json:"id"`
 	Name            string `json:"name"`
 	Vendor          string `json:"vendor"`
+	VendorID        int64  `json:"vendor_id"` // 所属厂商（0=未挂，不可路由）
 	BaseURL         string `json:"base_url"`
 	Path            string `json:"path"`
 	UpstreamKeyEnc  string `json:"-"` // AES-GCM b64 密文（未启用加密则明文）

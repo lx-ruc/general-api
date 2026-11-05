@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -104,6 +105,8 @@ func migrateAll(db *gorm.DB) error {
 		{"quota_requests", "model_names", "TEXT NOT NULL DEFAULT ''"},
 		{"users", "is_super", "INTEGER NOT NULL DEFAULT 0"},
 		{"models", "type", "TEXT NOT NULL DEFAULT 'chat'"},
+		{"channels", "vendor_id", "INTEGER NOT NULL DEFAULT 0"},
+		{"models", "vendor_id", "INTEGER NOT NULL DEFAULT 0"},
 	}
 	for _, a := range alters {
 		if !columnExists(db, a[0], a[1]) {
@@ -156,6 +159,117 @@ func migrateAll(db *gorm.DB) error {
 	if err := db.Exec(`UPDATE models SET type = 'embedding'
 		WHERE type = 'chat' AND lower(name) LIKE '%embedding%'`).Error; err != nil {
 		return fmt.Errorf("backfill models.type: %w", err)
+	}
+
+	// ---- 厂商实体化存量迁移（①-⑤，全部幂等；每步以「行内状态」为锚点，崩溃重跑收敛）----
+	if err := migrateVendors(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+// migrateVendors 厂商实体化存量迁移（C1：建实体/回填归属/拆分双厂商模型/折算授权）。
+// 每条语句幂等：①ON CONFLICT ②vendor_id=0 锚点 ③NOT EXISTS 锚点 ④vendor_id=0 锚点
+// ⑤ON CONFLICT。新库（无渠道/模型）全部自然 no-op
+func migrateVendors(db *gorm.DB) error {
+	now := time.Now().Unix()
+	// ① 非空 vendor 标签建厂商实体；空标签渠道归并到「未分类」（仅当存在时才建）
+	if err := db.Exec(`INSERT INTO vendors (name, display_name, status, remark, created_at, updated_at)
+		SELECT DISTINCT vendor, vendor, 1, '迁移自渠道厂商标签', ?, ? FROM channels
+		WHERE vendor <> '' ON CONFLICT(name) DO NOTHING`, now, now).Error; err != nil {
+		return fmt.Errorf("migrate vendors seed: %w", err)
+	}
+	if err := db.Exec(`INSERT INTO vendors (name, display_name, status, remark, created_at, updated_at)
+		SELECT DISTINCT 'uncategorized', '未分类', 1, '空厂商标签渠道归并', ?, ? FROM channels
+		WHERE vendor = '' ON CONFLICT(name) DO NOTHING`, now, now).Error; err != nil {
+		return fmt.Errorf("migrate vendors uncategorized: %w", err)
+	}
+	// ② 回填渠道归属（锚点 vendor_id=0）
+	if err := db.Exec(`UPDATE channels SET vendor_id = (
+			SELECT v.id FROM vendors v WHERE v.name = COALESCE(NULLIF(channels.vendor, ''), 'uncategorized'))
+		WHERE vendor_id = 0`).Error; err != nil {
+		return fmt.Errorf("migrate channels.vendor_id: %w", err)
+	}
+	// ③ 双厂商模型拆分（存量一次性动作）：原名留主厂商，-berry 副本带走 berry 渠道的
+	// 能力与全部价格/授权（客户用原名调用无感）。NOT EXISTS / 改写后 WHERE 不再命中 → 幂等
+	const (
+		splitSrc      = "deepseek-v4-1-flash-261017"
+		splitCopy     = "deepseek-v4-1-flash-261017-berry"
+		splitVendorTo = "volces/berry"
+	)
+	if err := db.Exec(`INSERT INTO models (name, display_name, vendor_id, type,
+			input_price, output_price, input_cache_hit_price,
+			cost_input_price, cost_output_price, cost_input_cache_hit_price,
+			status, remark, created_at, updated_at)
+		SELECT name || '-berry', display_name,
+			(SELECT id FROM vendors WHERE name = '`+splitVendorTo+`'),
+			type, input_price, output_price, input_cache_hit_price,
+			cost_input_price, cost_output_price, cost_input_cache_hit_price,
+			status, remark, created_at, updated_at
+		FROM models WHERE name = '`+splitSrc+`'
+			AND NOT EXISTS (SELECT 1 FROM models WHERE name = '`+splitCopy+`')`).Error; err != nil {
+		return fmt.Errorf("migrate split model: %w", err)
+	}
+	if err := db.Exec(`UPDATE channel_abilities SET model_name = '`+splitCopy+`'
+		WHERE model_name = '`+splitSrc+`'
+			AND channel_id IN (SELECT id FROM channels WHERE vendor = '`+splitVendorTo+`')`).Error; err != nil {
+		return fmt.Errorf("migrate split abilities: %w", err)
+	}
+	for _, stmt := range []string{
+		// 客户开通复制
+		`INSERT INTO org_model_grants (org_id, model_name, granted_by, source, created_at)
+		SELECT org_id, '` + splitCopy + `', granted_by, source, created_at FROM org_model_grants
+		WHERE model_name = '` + splitSrc + `' ON CONFLICT(org_id, model_name) DO NOTHING`,
+		// 子账号授权复制
+		`INSERT INTO user_model_grants (user_id, model_name, granted_by, created_at)
+		SELECT user_id, '` + splitCopy + `', granted_by, created_at FROM user_model_grants
+		WHERE model_name = '` + splitSrc + `' ON CONFLICT(user_id, model_name) DO NOTHING`,
+		// 客户覆盖价复制
+		`INSERT INTO org_model_prices (org_id, model_name, input_price, output_price,
+			input_cache_hit_price, remark, created_at, updated_at)
+		SELECT org_id, '` + splitCopy + `', input_price, output_price,
+			input_cache_hit_price, remark, created_at, updated_at FROM org_model_prices
+		WHERE model_name = '` + splitSrc + `' ON CONFLICT(org_id, model_name) DO NOTHING`,
+	} {
+		if err := db.Exec(stmt).Error; err != nil {
+			return fmt.Errorf("migrate split grants/prices: %w", err)
+		}
+	}
+	// ④ 模型归属回填：按承接渠道优先级确定性取一（拆分后每个模型只剩单厂商承接）
+	if err := db.Exec(`UPDATE models SET vendor_id = (
+			SELECT c.vendor_id FROM channel_abilities a JOIN channels c ON c.id = a.channel_id
+			WHERE a.model_name = models.name ORDER BY c.priority DESC, c.id LIMIT 1)
+		WHERE vendor_id = 0
+			AND EXISTS (SELECT 1 FROM channel_abilities a WHERE a.model_name = models.name)`).Error; err != nil {
+		return fmt.Errorf("migrate models.vendor_id: %w", err)
+	}
+	// 双保险：原名显式指向 volces/Thu（防 ③ 异常顺序下被 ④ 抢先归错）
+	if err := db.Exec(`UPDATE models SET vendor_id = (
+			SELECT id FROM vendors WHERE name = 'volces/Thu')
+		WHERE name = '` + splitSrc + `' AND vendor_id = 0`).Error; err != nil {
+		return fmt.Errorf("migrate split src vendor: %w", err)
+	}
+	// 多厂商残留核对（拆分后应为 0；有残留说明存在未知的双厂商模型，需要人工拆分）
+	var residual []string
+	if err := db.Raw(`SELECT models.name FROM models WHERE (
+			SELECT COUNT(DISTINCT c.vendor_id) FROM channel_abilities a
+			JOIN channels c ON c.id = a.channel_id WHERE a.model_name = models.name) > 1`).
+		Scan(&residual).Error; err == nil && len(residual) > 0 {
+		slog.Warn("存在多厂商承接的模型（需人工拆分成单厂商模型）", "models", strings.Join(residual, ","))
+	}
+	// ⑤ 存量授权折算成厂商级（DISTINCT 去重：同客户多模型同厂商只留一行；
+	// 模型级 org_model_grants/user_model_grants 行保留为例外，不删除）
+	if err := db.Exec(`INSERT INTO org_vendor_grants (org_id, vendor_id, source, created_at)
+		SELECT DISTINCT g.org_id, m.vendor_id, 'backfill', ? FROM org_model_grants g
+		JOIN models m ON m.name = g.model_name
+		WHERE m.vendor_id > 0 ON CONFLICT(org_id, vendor_id) DO NOTHING`, now).Error; err != nil {
+		return fmt.Errorf("migrate org_vendor_grants: %w", err)
+	}
+	if err := db.Exec(`INSERT INTO user_vendor_grants (user_id, vendor_id, created_at)
+		SELECT DISTINCT g.user_id, m.vendor_id, ? FROM user_model_grants g
+		JOIN models m ON m.name = g.model_name
+		WHERE m.vendor_id > 0 ON CONFLICT(user_id, vendor_id) DO NOTHING`, now).Error; err != nil {
+		return fmt.Errorf("migrate user_vendor_grants: %w", err)
 	}
 	return nil
 }
