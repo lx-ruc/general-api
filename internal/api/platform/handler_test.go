@@ -1262,3 +1262,49 @@ func TestKeyStatusDisablesChannelWithoutKeys(t *testing.T) {
 		t.Fatalf("备注应含原因，得 %q", st.Remark)
 	}
 }
+
+// 跨厂商挂模型拒绝：端点属厂商 B 但模型已归属厂商 A → 400 带指引（此前静默生成
+// 永远路由不到的能力，模型开通页也看不到该厂商下的模型）
+func TestChannelRejectsCrossVendorModel(t *testing.T) {
+	engine, db, token := newPlatformEnv(t)
+	cipher, _ := crypto.NewCipher("")
+	h := NewHandler(db, cipher, &http.Client{}, nil, nil)
+	g := engine.Group("/api/platform", middleware.JWTAuth("test-secret", db))
+	g.POST("/channels", h.CreateChannel)
+
+	now := time.Now().Unix()
+	if err := db.Exec(`INSERT INTO vendors (id, name, status, created_at, updated_at) VALUES (1, 'v1', 1, ?, ?), (2, 'v2', 1, ?, ?)`, now, now, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	// m1 已归属厂商 1；端点属厂商 2
+	if err := db.Exec(`INSERT INTO models (name, vendor_id, status, created_at, updated_at) VALUES ('m1', 1, 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/platform/channels", strings.NewReader(
+		`{"name":"cross-ch","vendor_id":2,"base_url":"https://up.example","upstream_key":"sk-1",
+		 "models":[{"model_name":"m1"}]}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("跨厂商挂模型应 400，got %d body=%s", w.Code, w.Body)
+	}
+	if !strings.Contains(w.Body.String(), "已归属厂商") || !strings.Contains(w.Body.String(), "模型副本") {
+		t.Fatalf("错误应指明归属冲突并给出副本指引: %s", w.Body)
+	}
+	// 同厂商正常路径不受影响：厂商 2 自己的模型可挂
+	if err := db.Exec(`INSERT INTO models (name, vendor_id, status, created_at, updated_at) VALUES ('m2', 2, 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
+	req2 := httptest.NewRequest(http.MethodPost, "/api/platform/channels", strings.NewReader(
+		`{"name":"ok-ch","vendor_id":2,"base_url":"https://up.example","upstream_key":"sk-2",
+		 "models":[{"model_name":"m2"}]}`))
+	req2.Header.Set("Authorization", "Bearer "+token)
+	req2.Header.Set("Content-Type", "application/json")
+	w2 := httptest.NewRecorder()
+	engine.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("同厂商挂模型应 200，got %d body=%s", w2.Code, w2.Body)
+	}
+}

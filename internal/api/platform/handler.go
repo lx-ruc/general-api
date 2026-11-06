@@ -489,9 +489,12 @@ func resolveVendorID(tx *gorm.DB, vendorID int64, vendorName string) (int64, err
 }
 
 // ensureModelsExist 渠道保存时兜底登记模型：模型未登记则建 models 行（启用、价格 0，
-// 需管理台「模型定价」定价）并挂到渠道所属厂商；已登记且未挂厂商的补挂（模型一律
-// 单厂商归属——双厂商承接应拆成两个模型行）——定价已收敛到模型定价页，渠道侧不碰价格
+// 需管理台「模型定价」定价）并挂到渠道所属厂商；已登记且未挂厂商的补挂；已登记且归属
+// 其它厂商 → 拒绝（模型一律单厂商归属——双厂商承接应拆成两个模型副本，跨厂姟挂数
+// 永远路由不到且界面上不可见）——定价已收敛到模型定价页，渠道侧不碰价格
 func ensureModelsExist(tx *gorm.DB, models []abilityReq, vendorID int64) error {
+	vendorName := ""
+	_ = tx.Raw("SELECT name FROM vendors WHERE id = ?", vendorID).Scan(&vendorName).Error
 	for _, m := range models {
 		name := strings.TrimSpace(m.ModelName)
 		if name == "" {
@@ -508,6 +511,11 @@ func ensureModelsExist(tx *gorm.DB, models []abilityReq, vendorID int64) error {
 				Update("vendor_id", vendorID).Error; err != nil {
 				return err
 			}
+		} else if ex.VendorID != vendorID {
+			var otherName string
+			_ = tx.Raw("SELECT name FROM vendors WHERE id = ?", ex.VendorID).Scan(&otherName).Error
+			return fmt.Errorf("模型 %s 已归属厂商「%s」，本端点属厂商「%s」——同一模型只能挂一个厂商；"+
+				"如需在本厂商提供同款模型，请在「模型定价」新建本厂商专属的模型副本", name, otherName, vendorName)
 		}
 	}
 	return nil
@@ -763,13 +771,11 @@ func (h *Handler) CreateChannel(c *gin.Context) {
 				return err
 			}
 		}
-		if err := ensureModelsExist(tx, req.Models, vendorID); err != nil {
-			return err
-		}
-		return nil
+		return ensureModelsExist(tx, req.Models, vendorID)
 	})
 	if err != nil {
-		httpx.Fail(c, http.StatusInternalServerError, "创建渠道失败: "+err.Error())
+		// 归属冲突是用户可修复的配置错误（指引拆副本），回 400 而非 500
+		httpx.Fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	// 新渠道可能以停用态创建（status=0）：其模型没有可用上游，同样对齐启用态
@@ -896,13 +902,10 @@ func (h *Handler) UpdateChannel(c *gin.Context) {
 				return err
 			}
 		}
-		if err := ensureModelsExist(tx, req.Models, vendorID); err != nil {
-			return err
-		}
-		return nil
+		return ensureModelsExist(tx, req.Models, vendorID)
 	})
 	if err != nil {
-		httpx.Fail(c, http.StatusInternalServerError, "更新渠道失败: "+err.Error())
+		httpx.Fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	// 密钥池/启停/能力/base_url 任一变化都可能改变模型可用上游 → 对齐模型启用态
