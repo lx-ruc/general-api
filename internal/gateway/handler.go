@@ -427,14 +427,15 @@ func (h *Handler) relay(c *gin.Context, spec relaySpec) {
 		}
 	}
 
-	// 模型授权（厂商授权自动继承 ∪ 模型级例外，单查询）：用户被授予模型所属厂商
-	// ⟹ 该厂商全部模型可用（组内新模型零配置继承）；或该模型被单独授权。
-	// 在线体验（Playground）由管理面按角色预授权，跳过此检查
+	// 模型授权（厂商授权自动继承 ∪ 模型级例外，单查询）：用户被授予该模型的任一
+	// 承接厂商 ⟹ 可用（同名模型可跨厂商承接，任一厂商已授权即放行）；或该模型被
+	// 单独授权。在线体验（Playground）由管理面按角色预授权，跳过此检查
 	if !ki.Playground {
 		var cnt int64
-		if err := h.DB.Raw(`SELECT COUNT(*) FROM models m2 WHERE m2.name = ? AND (
-			EXISTS (SELECT 1 FROM user_vendor_grants vg WHERE vg.user_id = ? AND vg.vendor_id = m2.vendor_id)
-			OR EXISTS (SELECT 1 FROM user_model_grants mg WHERE mg.user_id = ? AND mg.model_name = m2.name))`,
+		if err := h.DB.Raw(`SELECT COUNT(*) FROM models m WHERE m.name = ? AND (
+			EXISTS (SELECT 1 FROM user_vendor_grants vg WHERE vg.user_id = ?
+				AND vg.vendor_id IN (`+service.ModelServingVendors+`))
+			OR EXISTS (SELECT 1 FROM user_model_grants mg WHERE mg.user_id = ? AND mg.model_name = m.name))`,
 			modelName, ki.UserID, ki.UserID).Scan(&cnt).Error; err != nil || cnt == 0 {
 			rec.Status, rec.Error = http.StatusForbidden, "model not allowed: "+truncateStr(modelName, 100)
 			werr(c, http.StatusForbidden, "model_not_allowed",
@@ -1131,8 +1132,8 @@ func DisablePoolKey(db *gorm.DB, vendorID int64, vendorName string, keyID int64,
 }
 
 // ListModels GET /v1/models：该 key 授权范围内、当前可路由的启用模型（OpenAI list 格式）。
-// 授权 = 厂商授权展开（组内新模型自动继承）∪ 模型级例外；可路由 = 所属厂商有启用端点
-// 且厂商池有可用 Key——Key 全部失效的模型不再对外宣传，避免客户端照列表调用吃到 503
+// 授权 = 任一承接厂商的厂商授权（组内新模型自动继承）∪ 模型级例外；可路由 = 任一承接
+// 厂商有启用端点且厂商池有可用 Key——Key 全部失效的模型不再对外宣传
 func (h *Handler) ListModels(c *gin.Context) {
 	ki := middleware.GetKeyInfo(c)
 	var rows []struct {
@@ -1144,7 +1145,8 @@ func (h *Handler) ListModels(c *gin.Context) {
 		SELECT m.name, m.display_name, COALESCE(v.name, '') AS vendor
 		FROM models m LEFT JOIN vendors v ON v.id = m.vendor_id
 		WHERE m.status = 1 AND `+service.ModelHasLiveUpstream+`
-		  AND (EXISTS (SELECT 1 FROM user_vendor_grants vg WHERE vg.user_id = ? AND vg.vendor_id = m.vendor_id)
+		  AND (EXISTS (SELECT 1 FROM user_vendor_grants vg WHERE vg.user_id = ?
+				AND vg.vendor_id IN (`+service.ModelServingVendors+`))
 		    OR EXISTS (SELECT 1 FROM user_model_grants mg WHERE mg.user_id = ? AND mg.model_name = m.name))
 		ORDER BY m.name`, ki.UserID, ki.UserID).Scan(&rows).Error; err != nil {
 		openaiError(c, http.StatusInternalServerError, "internal_error", "failed to list models")

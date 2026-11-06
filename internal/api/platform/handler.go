@@ -489,12 +489,10 @@ func resolveVendorID(tx *gorm.DB, vendorID int64, vendorName string) (int64, err
 }
 
 // ensureModelsExist 渠道保存时兜底登记模型：模型未登记则建 models 行（启用、价格 0，
-// 需管理台「模型定价」定价）并挂到渠道所属厂商；已登记且未挂厂商的补挂；已登记且归属
-// 其它厂商 → 拒绝（模型一律单厂商归属——双厂商承接应拆成两个模型副本，跨厂姟挂数
-// 永远路由不到且界面上不可见）——定价已收敛到模型定价页，渠道侧不碰价格
+// 需管理台「模型定价」定价）并挂本厂商为主厂商；已登记的保留原主厂商不动——同一模型
+// 可跨厂商承接（各自 Key 池路由，主厂商决定厂商价层级与展示分组）。定价已收敛到
+// 模型定价页，渠道侧不碰价格
 func ensureModelsExist(tx *gorm.DB, models []abilityReq, vendorID int64) error {
-	vendorName := ""
-	_ = tx.Raw("SELECT name FROM vendors WHERE id = ?", vendorID).Scan(&vendorName).Error
 	for _, m := range models {
 		name := strings.TrimSpace(m.ModelName)
 		if name == "" {
@@ -511,11 +509,6 @@ func ensureModelsExist(tx *gorm.DB, models []abilityReq, vendorID int64) error {
 				Update("vendor_id", vendorID).Error; err != nil {
 				return err
 			}
-		} else if ex.VendorID != vendorID {
-			var otherName string
-			_ = tx.Raw("SELECT name FROM vendors WHERE id = ?", ex.VendorID).Scan(&otherName).Error
-			return fmt.Errorf("模型 %s 已归属厂商「%s」，本端点属厂商「%s」——同一模型只能挂一个厂商；"+
-				"如需在本厂商提供同款模型，请在「模型定价」新建本厂商专属的模型副本", name, otherName, vendorName)
 		}
 	}
 	return nil
@@ -1385,9 +1378,14 @@ func (h *Handler) ListModels(c *gin.Context) {
 	for _, m := range models {
 		names = append(names, m.Name)
 	}
+	serving := service.ServingVendorNames(h.DB, names)
 	vnames := vendorNameMap(h.DB)
 	list := make([]gin.H, 0, len(models))
 	for _, m := range models {
+		vs := serving[m.Name]
+		if vs == nil {
+			vs = vendorSingle(vnames[m.VendorID])
+		}
 		list = append(list, gin.H{
 			"id": m.ID, "name": m.Name, "display_name": m.DisplayName, "vendor": vnames[m.VendorID],
 			"type": m.Type,
@@ -1397,7 +1395,7 @@ func (h *Handler) ListModels(c *gin.Context) {
 			"cost_input_cache_hit_price": m.CostInputCacheHitPrice,
 			"status":                     m.Status, "remark": m.Remark,
 			"auto_disabled_at":           m.AutoDisabledAt,
-			"vendors":                    vendorSingle(vnames[m.VendorID]),
+			"vendors":                    vs,
 			"channel_count":              counts[m.Name],
 			"channel_names":              chNames[m.Name],
 			"org_price_count":            priceCnts[m.Name],
@@ -1880,8 +1878,17 @@ func (h *Handler) ListOrgModelPricesByOrg(c *gin.Context) {
 	if rows == nil {
 		rows = []orgModelPriceRow{}
 	}
+	pNames := make([]string, 0, len(rows))
+	for _, r := range rows {
+		pNames = append(pNames, r.ModelName)
+	}
+	servingMap := service.ServingVendorNames(h.DB, pNames)
 	for i := range rows {
-		rows[i].Vendors = vendorSingle(rows[i].Vendor)
+		if vs := servingMap[rows[i].ModelName]; len(vs) > 0 {
+			rows[i].Vendors = vs
+		} else {
+			rows[i].Vendors = vendorSingle(rows[i].Vendor)
+		}
 	}
 	httpx.OK(c, rows)
 }
@@ -2222,10 +2229,12 @@ func (h *Handler) GetOrgModels(c *gin.Context) {
 		WHERE g.org_id = ? ORDER BY v.name`, id).Scan(&vendors).Error
 	var modelExcept []string
 	_ = h.DB.Raw(`SELECT model_name FROM org_model_grants WHERE org_id = ? ORDER BY model_name`, id).Scan(&modelExcept).Error
-	// 候选模型附归属厂商名（前端「模型级例外」表格的厂商列；model.Model 无 vendor 文本列）
+	// 候选模型附主厂商名 + 承接厂商名列表（跨厂商模型在每个承接厂商组里出现）
 	var available []struct {
 		model.Model
-		Vendor string `json:"vendor"`
+		Vendor    string   `json:"vendor"`
+		Vendors   []string `json:"vendors"`
+		VendorIDs []int64  `json:"vendor_ids"`
 	}
 	_ = h.DB.Raw(`SELECT m.*, COALESCE(v.name, '') AS vendor
 		FROM models m LEFT JOIN vendors v ON v.id = m.vendor_id
@@ -2233,8 +2242,25 @@ func (h *Handler) GetOrgModels(c *gin.Context) {
 	if available == nil {
 		available = []struct {
 			model.Model
-			Vendor string `json:"vendor"`
+			Vendor    string   `json:"vendor"`
+			Vendors   []string `json:"vendors"`
+			VendorIDs []int64  `json:"vendor_ids"`
 		}{}
+	}
+	avNames := make([]string, 0, len(available))
+	for _, a := range available {
+		avNames = append(avNames, a.Name)
+	}
+	avServing := service.ServingVendorNames(h.DB, avNames)
+	avServingIDs := service.ServingVendorIDs(h.DB, avNames)
+	for i := range available {
+		if vs := avServing[available[i].Name]; len(vs) > 0 {
+			available[i].Vendors = vs
+			available[i].VendorIDs = avServingIDs[available[i].Name]
+		} else {
+			available[i].Vendors = vendorSingle(available[i].Vendor)
+			available[i].VendorIDs = []int64{available[i].VendorID}
+		}
 	}
 	if vendors == nil {
 		vendors = []struct {

@@ -169,14 +169,20 @@ func (h *Handler) ListModels(c *gin.Context) {
 		SELECT m.name, m.display_name, COALESCE(v.name, '') AS vendor, m.vendor_id, m.input_price, m.output_price
 		FROM models m LEFT JOIN vendors v ON v.id = m.vendor_id
 		WHERE m.status = 1
-		  AND (EXISTS (SELECT 1 FROM user_vendor_grants vg WHERE vg.user_id = ? AND vg.vendor_id = m.vendor_id)
+		  AND (EXISTS (SELECT 1 FROM user_vendor_grants vg WHERE vg.user_id = ?
+				AND vg.vendor_id IN (`+service.ModelServingVendors+`))
 		    OR EXISTS (SELECT 1 FROM user_model_grants mg WHERE mg.user_id = ? AND mg.model_name = m.name))
 		ORDER BY m.name`, uid(c), uid(c)).Scan(&models).Error
 	if models == nil {
 		models = []modelRow{}
 	}
+	names := make([]string, 0, len(models))
+	for _, m := range models {
+		names = append(names, m.Name)
+	}
+	serving := service.ServingVendorNames(h.DB, names)
 	for i := range models {
-		models[i].Vendors = service.VendorSingle(models[i].Vendor)
+		models[i].Vendors = serving[models[i].Name]
 	}
 	var u model.User
 	_ = h.DB.Where("id = ?", uid(c)).First(&u).Error

@@ -60,9 +60,10 @@ func BackfillOrgModelGrants(db *gorm.DB) error {
 // OrgGrantedModels 客户已开通的模型名集合（各 handler 白名单校验共用）
 func OrgGrantedModels(db *gorm.DB, orgID int64) []string {
 	var names []string
-	// 厂商授权自动继承（组内全部模型）∪ 模型级例外，单查询展开
+	// 厂商授权自动继承（任一承接厂商已开通即可）∪ 模型级例外，单查询展开
 	_ = db.Raw(`SELECT m.name FROM models m WHERE
-		EXISTS (SELECT 1 FROM org_vendor_grants vg WHERE vg.org_id = ? AND vg.vendor_id = m.vendor_id)
+		EXISTS (SELECT 1 FROM org_vendor_grants vg WHERE vg.org_id = ?
+			AND vg.vendor_id IN (`+ModelServingVendors+`))
 		OR EXISTS (SELECT 1 FROM org_model_grants og WHERE og.org_id = ? AND og.model_name = m.name)
 		ORDER BY m.name`, orgID, orgID).Scan(&names).Error
 	return names

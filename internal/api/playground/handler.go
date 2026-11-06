@@ -75,16 +75,20 @@ func (h *Handler) Models(c *gin.Context) {
 		// ∩ 平台已开通（同口径展开）。数据面（gateway）为性能不做 org 级复查，
 		// 此处与管理面一致收窄，堵回收级联遗漏时「下拉里出现已回收模型」的可见性漏洞
 		filter = ` AND (EXISTS (SELECT 1 FROM user_vendor_grants g
-			JOIN users u ON u.id = g.user_id AND u.org_id = ? WHERE g.vendor_id = m.vendor_id)
+			JOIN users u ON u.id = g.user_id AND u.org_id = ?
+			WHERE g.vendor_id IN (`+service.ModelServingVendors+`))
 			OR m.name IN (SELECT g2.model_name FROM user_model_grants g2
 			JOIN users u2 ON u2.id = g2.user_id AND u2.org_id = ?))
-			AND (m.vendor_id IN (SELECT vendor_id FROM org_vendor_grants WHERE org_id = ?)
+			AND (EXISTS (SELECT 1 FROM org_vendor_grants og WHERE og.org_id = ?
+				AND og.vendor_id IN (`+service.ModelServingVendors+`))
 			OR m.name IN (SELECT model_name FROM org_model_grants WHERE org_id = ?))`
 		args = append(args, *orgID, *orgID, *orgID, *orgID)
 	case model.RoleMember:
-		filter = ` AND (EXISTS (SELECT 1 FROM user_vendor_grants vg WHERE vg.user_id = ? AND vg.vendor_id = m.vendor_id)
+		filter = ` AND (EXISTS (SELECT 1 FROM user_vendor_grants vg WHERE vg.user_id = ?
+			AND vg.vendor_id IN (`+service.ModelServingVendors+`))
 			OR m.name IN (SELECT model_name FROM user_model_grants WHERE user_id = ?))
-			AND (m.vendor_id IN (SELECT vendor_id FROM org_vendor_grants WHERE org_id = ?)
+			AND (EXISTS (SELECT 1 FROM org_vendor_grants og WHERE og.org_id = ?
+				AND og.vendor_id IN (`+service.ModelServingVendors+`))
 			OR m.name IN (SELECT model_name FROM org_model_grants WHERE org_id = ?))`
 		args = append(args, uid, uid, *orgID, *orgID)
 	default:
@@ -195,21 +199,25 @@ func (h *Handler) modelAllowed(role string, uid int64, orgID *int64, modelName s
 		if orgID == nil {
 			return false
 		}
-		// 与 Models 列表同口径：并集（厂商展开 ∪ 模型例外）∩ 客户已开通（同口径展开）
+		// 与 Models 列表同口径：并集（任一承接厂商 ∪ 模型例外）∩ 客户已开通（同口径）
 		filter = ` AND (EXISTS (SELECT 1 FROM user_vendor_grants g
-			JOIN users u ON u.id = g.user_id AND u.org_id = ? WHERE g.vendor_id = m.vendor_id)
+			JOIN users u ON u.id = g.user_id AND u.org_id = ?
+			WHERE g.vendor_id IN (`+service.ModelServingVendors+`))
 			OR m.name IN (SELECT g2.model_name FROM user_model_grants g2
 			JOIN users u2 ON u2.id = g2.user_id AND u2.org_id = ?))
-			AND (m.vendor_id IN (SELECT vendor_id FROM org_vendor_grants WHERE org_id = ?)
+			AND (EXISTS (SELECT 1 FROM org_vendor_grants og WHERE og.org_id = ?
+				AND og.vendor_id IN (`+service.ModelServingVendors+`))
 			OR m.name IN (SELECT model_name FROM org_model_grants WHERE org_id = ?))`
 		args = append(args, *orgID, *orgID, *orgID, *orgID)
 	case model.RoleMember:
 		if orgID == nil {
 			return false
 		}
-		filter = ` AND (EXISTS (SELECT 1 FROM user_vendor_grants vg WHERE vg.user_id = ? AND vg.vendor_id = m.vendor_id)
+		filter = ` AND (EXISTS (SELECT 1 FROM user_vendor_grants vg WHERE vg.user_id = ?
+			AND vg.vendor_id IN (`+service.ModelServingVendors+`))
 			OR m.name IN (SELECT model_name FROM user_model_grants WHERE user_id = ?))
-			AND (m.vendor_id IN (SELECT vendor_id FROM org_vendor_grants WHERE org_id = ?)
+			AND (EXISTS (SELECT 1 FROM org_vendor_grants og WHERE og.org_id = ?
+				AND og.vendor_id IN (`+service.ModelServingVendors+`))
 			OR m.name IN (SELECT model_name FROM org_model_grants WHERE org_id = ?))`
 		args = append(args, uid, uid, *orgID, *orgID)
 	default:

@@ -1,6 +1,7 @@
 package database
 
 import (
+	"strconv"
 	"testing"
 
 	"gorm.io/gorm"
@@ -89,37 +90,40 @@ func TestMigrateVendorsFull(t *testing.T) {
 		t.Fatalf("空标签渠道应归未分类，got vendor_id=%d", chNoneVID)
 	}
 
-	// ③ 拆分：-berry 存在、berry 渠道能力改指 -berry、原名能力只剩 Thu
-	var copyVID, srcVID int64
-	_ = gdb.Raw("SELECT vendor_id FROM models WHERE name = 'deepseek-v4-1-flash-261017-berry'").Scan(&copyVID).Error
-	_ = gdb.Raw("SELECT vendor_id FROM models WHERE name = 'deepseek-v4-1-flash-261017'").Scan(&srcVID).Error
-	if copyVID != vendorIDOf(t, gdb, "volces/berry") {
-		t.Fatalf("-berry 应归 volces/berry，got %d", copyVID)
-	}
-	if srcVID != vendorIDOf(t, gdb, "volces/Thu") {
-		t.Fatalf("原名应归 volces/Thu，got %d", srcVID)
-	}
+	// ③ 不拆分：同名模型跨厂商承接——原名能力同时挂在 Thu 与 berry 渠道，无 -berry 副本
 	var srcAbCh []int64
-	_ = gdb.Raw("SELECT channel_id FROM channel_abilities WHERE model_name = 'deepseek-v4-1-flash-261017'").Scan(&srcAbCh).Error
-	if len(srcAbCh) != 1 || srcAbCh[0] != 1 {
-		t.Fatalf("原名能力应只剩 Thu 渠道，got %v", srcAbCh)
+	_ = gdb.Raw("SELECT channel_id FROM channel_abilities WHERE model_name = 'deepseek-v4-1-flash-261017' ORDER BY channel_id").Scan(&srcAbCh).Error
+	if len(srcAbCh) != 2 || srcAbCh[0] != 1 || srcAbCh[1] != 2 {
+		t.Fatalf("原名能力应同时挂 Thu(1) 与 berry(2) 渠道，got %v", srcAbCh)
 	}
-	var copyAbCh []int64
-	_ = gdb.Raw("SELECT channel_id FROM channel_abilities WHERE model_name = 'deepseek-v4-1-flash-261017-berry'").Scan(&copyAbCh).Error
-	if len(copyAbCh) != 1 || copyAbCh[0] != 2 {
-		t.Fatalf("-berry 能力应在 berry 渠道，got %v", copyAbCh)
+	var copyCnt int64
+	_ = gdb.Raw("SELECT COUNT(*) FROM models WHERE name = 'deepseek-v4-1-flash-261017-berry'").Scan(&copyCnt).Error
+	if copyCnt != 0 {
+		t.Fatal("不应存在 -berry 副本（跨厂商承接政策）")
 	}
-	// 复制：客户开通/子账号授权/覆盖价
-	for _, q := range []string{
-		`SELECT COUNT(*) FROM org_model_grants WHERE model_name = 'deepseek-v4-1-flash-261017-berry' AND org_id = 1`,
-		`SELECT COUNT(*) FROM user_model_grants WHERE model_name = 'deepseek-v4-1-flash-261017-berry' AND user_id = 1`,
-		`SELECT COUNT(*) FROM org_model_prices WHERE model_name = 'deepseek-v4-1-flash-261017-berry' AND org_id = 1 AND output_price = 900000`,
-	} {
-		var n int64
-		_ = gdb.Raw(q).Scan(&n).Error
-		if n != 1 {
-			t.Fatalf("拆分复制缺失: %s → %d", q, n)
-		}
+	// 迁移后手动造一个副本（模拟批一已拆分的库）再跑迁移 → 合并回原名
+	mustExecVendor(t, gdb, `INSERT INTO models (name, vendor_id, status, created_at, updated_at)
+		VALUES ('deepseek-v4-1-flash-261017-berry', `+itoa(vendorIDOf(t, gdb, "volces/berry"))+`, 1, 0, 0)`)
+	mustExecVendor(t, gdb, `UPDATE channel_abilities SET model_name = 'deepseek-v4-1-flash-261017-berry' WHERE channel_id = 2`)
+	mustExecVendor(t, gdb, `INSERT INTO org_model_prices (org_id, model_name, input_price, output_price, created_at, updated_at)
+		VALUES (1, 'deepseek-v4-1-flash-261017-berry', 700, 800, 0, 0)`)
+	if err := Migrate(gdb); err != nil {
+		t.Fatalf("合并迁移失败: %v", err)
+	}
+	var mergedCnt int64
+	_ = gdb.Raw("SELECT COUNT(*) FROM models WHERE name = 'deepseek-v4-1-flash-261017-berry'").Scan(&mergedCnt).Error
+	if mergedCnt != 0 {
+		t.Fatal("合并迁移应删除 -berry 副本")
+	}
+	var backAb []int64
+	_ = gdb.Raw("SELECT channel_id FROM channel_abilities WHERE model_name = 'deepseek-v4-1-flash-261017' ORDER BY channel_id").Scan(&backAb).Error
+	if len(backAb) != 2 {
+		t.Fatalf("合并后原名能力应挂两渠道，got %v", backAb)
+	}
+	var mergedPrice int64
+	_ = gdb.Raw(`SELECT COUNT(*) FROM org_model_prices WHERE model_name = 'deepseek-v4-1-flash-261017' AND org_id = 1`).Scan(&mergedPrice).Error
+	if mergedPrice != 1 {
+		t.Fatalf("副本覆盖价应并回原名（原名已有的保留），got %d 行", mergedPrice)
 	}
 
 	// ④ glm 归属按优先级取 volces（priority 5 > 空标签渠道 1）
@@ -129,17 +133,17 @@ func TestMigrateVendorsFull(t *testing.T) {
 		t.Fatalf("glm 应归 volces（按渠道优先级），got %d", glmVID)
 	}
 
-	// ⑤ 折算去重：org 1 模型授权 = glm(volces) + 261017(Thu) + 拆分复制 -berry(berry)
-	// → 三个厂商各一行（原 261017 授权覆盖两组池，折算后三厂商齐全，符合既定折算语义）
+	// ⑤ 折算去重（按主厂商）：glm→volces + 261017→Thu = 两行（261017 跨厂商承接，
+	// Thu 已授权即可用，berry 无需单独授权行）
 	var orgVG int64
 	_ = gdb.Raw("SELECT COUNT(*) FROM org_vendor_grants WHERE org_id = 1").Scan(&orgVG).Error
-	if orgVG != 3 {
-		t.Fatalf("客户厂商授权应为 3 行（volces/Thu/berry），got %d", orgVG)
+	if orgVG != 2 {
+		t.Fatalf("客户厂商授权应为 2 行（volces/Thu），got %d", orgVG)
 	}
 	var userVG int64
 	_ = gdb.Raw("SELECT COUNT(*) FROM user_vendor_grants WHERE user_id = 1").Scan(&userVG).Error
-	if userVG != 3 {
-		t.Fatalf("子账号厂商授权应为 3 行，got %d", userVG)
+	if userVG != 2 {
+		t.Fatalf("子账号厂商授权应为 2 行，got %d", userVG)
 	}
 
 	// 幂等：再跑两遍，全部行数不变
@@ -188,6 +192,8 @@ func TestMigrateVendorsOrphanModel(t *testing.T) {
 		t.Fatalf("孤儿模型不应折算出厂商授权，got %d", vg)
 	}
 }
+
+func itoa(n int64) string { return strconv.FormatInt(n, 10) }
 
 func mustExecVendor(t *testing.T, gdb *gorm.DB, q string, args ...any) {
 	t.Helper()

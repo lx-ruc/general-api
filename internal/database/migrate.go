@@ -186,13 +186,51 @@ func migrateAll(db *gorm.DB) error {
 	return nil
 }
 
-// migrateVendors 厂商实体化存量迁移（C1：建实体/回填归属/拆分双厂商模型/折算授权）。
+// migrateVendors 厂商实体化存量迁移（建实体/回填归属/合并拆分副本/折算授权）。
 // 每条语句幂等：①ON CONFLICT ②vendor_id=0 锚点 ③NOT EXISTS 锚点 ④vendor_id=0 锚点
 // ⑤ON CONFLICT。新库（无渠道/模型）全部自然 no-op
 func migrateVendors(db *gorm.DB) error {
 	now := time.Now().Unix()
+	// ③（政策修正）：合并批一拆分的 -berry 副本回原名——同一模型现可跨厂商承接
+	// （各自 Key 池路由、主厂商定价）。仅当副本存在时执行；合并后副本消失即幂等锚点
+	const (
+		mergeBase = "deepseek-v4-1-flash-261017"
+		mergeCopy = "deepseek-v4-1-flash-261017-berry"
+	)
+	var hasCopy int64
+	_ = db.Raw(`SELECT COUNT(*) FROM models WHERE name = '`+mergeCopy+`'`).Scan(&hasCopy).Error
+	if hasCopy > 0 {
+		// 副本端点能力改回原名（原名的同渠道能力不存在——拆分时是整体挪移）
+		if err := db.Exec(`UPDATE channel_abilities SET model_name = '`+mergeBase+`'
+			WHERE model_name = '`+mergeCopy+`'`).Error; err != nil {
+			return fmt.Errorf("merge abilities back: %w", err)
+		}
+		// 客户开通/子账号例外/覆盖价：并回原名（原名已有的保留原名值），残留行删除
+		for _, stmt := range []string{
+			`INSERT INTO org_model_grants (org_id, model_name, granted_by, source, created_at)
+			SELECT org_id, '` + mergeBase + `', granted_by, source, created_at FROM org_model_grants
+			WHERE model_name = '` + mergeCopy + `' ON CONFLICT(org_id, model_name) DO NOTHING`,
+			`DELETE FROM org_model_grants WHERE model_name = '` + mergeCopy + `'`,
+			`INSERT INTO user_model_grants (user_id, model_name, granted_by, created_at)
+			SELECT user_id, '` + mergeBase + `', granted_by, created_at FROM user_model_grants
+			WHERE model_name = '` + mergeCopy + `' ON CONFLICT(user_id, model_name) DO NOTHING`,
+			`DELETE FROM user_model_grants WHERE model_name = '` + mergeCopy + `'`,
+			`INSERT INTO org_model_prices (org_id, model_name, input_price, output_price,
+				input_cache_hit_price, remark, created_at, updated_at)
+			SELECT org_id, '` + mergeBase + `', input_price, output_price,
+				input_cache_hit_price, remark, created_at, updated_at FROM org_model_prices
+			WHERE model_name = '` + mergeCopy + `' ON CONFLICT(org_id, model_name) DO NOTHING`,
+			`DELETE FROM org_model_prices WHERE model_name = '` + mergeCopy + `'`,
+			`DELETE FROM models WHERE name = '` + mergeCopy + `'`,
+		} {
+			if err := db.Exec(stmt).Error; err != nil {
+				return fmt.Errorf("merge copy back: %w", err)
+			}
+		}
+		slog.Info("已合并拆分副本回原名（同名模型跨厂商承接）", "copy", mergeCopy, "base", mergeBase)
+	}
 	// 新库/已迁移库：channels.vendor 文本列已不存在（新库 schema 无此列，存量库上方已删）
-	// → ①②③ 的文本标签消费天然 no-op，跳过
+	// → ①②④⑤ 的文本标签消费天然 no-op，跳过（③ 合并在列守卫之前，始终有机会执行）
 	if !columnExists(db, "channels", "vendor") {
 		return nil
 	}
@@ -213,52 +251,8 @@ func migrateVendors(db *gorm.DB) error {
 		WHERE vendor_id = 0`).Error; err != nil {
 		return fmt.Errorf("migrate channels.vendor_id: %w", err)
 	}
-	// ③ 双厂商模型拆分（一次性动作，仅在文本列仍存在时执行）：原名留主厂商，-berry
-	// 副本带走 berry 渠道的能力与全部价格/授权（客户用原名调用无感）
-	const (
-		splitSrc      = "deepseek-v4-1-flash-261017"
-		splitCopy     = "deepseek-v4-1-flash-261017-berry"
-		splitVendorTo = "volces/berry"
-	)
-	if err := db.Exec(`INSERT INTO models (name, display_name, vendor_id, type,
-			input_price, output_price, input_cache_hit_price,
-			cost_input_price, cost_output_price, cost_input_cache_hit_price,
-			status, remark, created_at, updated_at)
-		SELECT name || '-berry', display_name,
-			(SELECT id FROM vendors WHERE name = '`+splitVendorTo+`'),
-			type, input_price, output_price, input_cache_hit_price,
-			cost_input_price, cost_output_price, cost_input_cache_hit_price,
-			status, remark, created_at, updated_at
-		FROM models WHERE name = '`+splitSrc+`'
-			AND NOT EXISTS (SELECT 1 FROM models WHERE name = '`+splitCopy+`')`).Error; err != nil {
-		return fmt.Errorf("migrate split model: %w", err)
-	}
-	if err := db.Exec(`UPDATE channel_abilities SET model_name = '`+splitCopy+`'
-		WHERE model_name = '`+splitSrc+`'
-			AND channel_id IN (SELECT id FROM channels WHERE vendor = '`+splitVendorTo+`')`).Error; err != nil {
-		return fmt.Errorf("migrate split abilities: %w", err)
-	}
-	for _, stmt := range []string{
-		// 客户开通复制
-		`INSERT INTO org_model_grants (org_id, model_name, granted_by, source, created_at)
-		SELECT org_id, '` + splitCopy + `', granted_by, source, created_at FROM org_model_grants
-		WHERE model_name = '` + splitSrc + `' ON CONFLICT(org_id, model_name) DO NOTHING`,
-		// 子账号授权复制
-		`INSERT INTO user_model_grants (user_id, model_name, granted_by, created_at)
-		SELECT user_id, '` + splitCopy + `', granted_by, created_at FROM user_model_grants
-		WHERE model_name = '` + splitSrc + `' ON CONFLICT(user_id, model_name) DO NOTHING`,
-		// 客户覆盖价复制
-		`INSERT INTO org_model_prices (org_id, model_name, input_price, output_price,
-			input_cache_hit_price, remark, created_at, updated_at)
-		SELECT org_id, '` + splitCopy + `', input_price, output_price,
-			input_cache_hit_price, remark, created_at, updated_at FROM org_model_prices
-		WHERE model_name = '` + splitSrc + `' ON CONFLICT(org_id, model_name) DO NOTHING`,
-	} {
-		if err := db.Exec(stmt).Error; err != nil {
-			return fmt.Errorf("migrate split grants/prices: %w", err)
-		}
-	}
-	// ④ 模型归属回填：按承接渠道优先级确定性取一（拆分后每个模型只剩单厂商承接）
+	// ④ 模型主厂商回填：按承接渠道优先级确定性取一（跨厂商模型的主厂商=优先级最高
+	// 的承接厂商，用于厂商价层级与展示分组）
 	if err := db.Exec(`UPDATE models SET vendor_id = (
 			SELECT c.vendor_id FROM channel_abilities a JOIN channels c ON c.id = a.channel_id
 			WHERE a.model_name = models.name ORDER BY c.priority DESC, c.id LIMIT 1)
@@ -266,21 +260,7 @@ func migrateVendors(db *gorm.DB) error {
 			AND EXISTS (SELECT 1 FROM channel_abilities a WHERE a.model_name = models.name)`).Error; err != nil {
 		return fmt.Errorf("migrate models.vendor_id: %w", err)
 	}
-	// 双保险：原名显式指向 volces/Thu（防 ③ 异常顺序下被 ④ 抢先归错）
-	if err := db.Exec(`UPDATE models SET vendor_id = (
-			SELECT id FROM vendors WHERE name = 'volces/Thu')
-		WHERE name = '` + splitSrc + `' AND vendor_id = 0`).Error; err != nil {
-		return fmt.Errorf("migrate split src vendor: %w", err)
-	}
-	// 多厂商残留核对（拆分后应为 0；有残留说明存在未知的双厂商模型，需要人工拆分）
-	var residual []string
-	if err := db.Raw(`SELECT models.name FROM models WHERE (
-			SELECT COUNT(DISTINCT c.vendor_id) FROM channel_abilities a
-			JOIN channels c ON c.id = a.channel_id WHERE a.model_name = models.name) > 1`).
-		Scan(&residual).Error; err == nil && len(residual) > 0 {
-		slog.Warn("存在多厂商承接的模型（需人工拆分成单厂商模型）", "models", strings.Join(residual, ","))
-	}
-	// ⑤ 存量授权折算成厂商级（DISTINCT 去重：同客户多模型同厂商只留一行；
+		// ⑤ 存量授权折算成厂商级（DISTINCT 去重：同客户多模型同厂商只留一行；
 	// 模型级 org_model_grants/user_model_grants 行保留为例外，不删除）
 	if err := db.Exec(`INSERT INTO org_vendor_grants (org_id, vendor_id, source, created_at)
 		SELECT DISTINCT g.org_id, m.vendor_id, 'backfill', CAST(? AS INTEGER) FROM org_model_grants g

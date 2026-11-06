@@ -770,7 +770,7 @@ async function removeEp(ep: any, v: Vendor) {
         </el-form-item>
         <el-form-item>
           <el-button size="small" @click="addModelRow">+ 添加模型</el-button>
-          <span class="dim" style="margin-left: 8px">模型保存后自动登记到「模型定价」（价格 0，需定价）并归属本厂商</span>
+          <span class="dim" style="margin-left: 8px">新模型自动登记并归属本厂商；已登记的模型保留原主厂商，跨厂商承接同名模型 = 多一份 Key 池</span>
         </el-form-item>
         <el-form-item label="状态">
           <el-switch v-model="epForm.status" :active-value="1" :inactive-value="0" active-text="启用" inactive-text="停用" />

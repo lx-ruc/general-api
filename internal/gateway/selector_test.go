@@ -138,12 +138,12 @@ func TestSelectCandidatesPriorityGroups(t *testing.T) {
 	}
 }
 
-// 模型归属与渠道厂商不一致时（多厂商模型未拆分的防御路径）：该厂商渠道不参与路由
-func TestSelectCandidatesVendorMismatchFiltered(t *testing.T) {
+// 同名模型跨厂商承接：两个厂商的端点都参与候选（各自厂商 Key 池；高优先级组在前）
+func TestSelectCandidatesCrossVendorServing(t *testing.T) {
 	f := newTestDB(t)
 	now := time.Now().Unix()
 	seedChannel(t, f, 1, "v1-ep", []string{"k1"}, 10) // 厂商 1 承接 m1
-	// 厂商 2 也挂了 m1 能力，但 m1 归属厂商 1 → 渠道应被过滤
+	// 厂商 2 也挂 m1 能力（优先级更高）——跨厂商承接，两渠道都应参与
 	mustExec(t, f, `INSERT INTO vendors (id, name, status, created_at, updated_at) VALUES (2, 'v2', 1, ?, ?)`, now, now)
 	mustExec(t, f, `INSERT INTO channels (id,name,vendor_id,base_url,path,weight,priority,status,created_at,updated_at)
 		VALUES (2,'v2-ep',2,'http://up.test','/v1/chat/completions',1,99,1,?,?)`, now, now)
@@ -156,8 +156,15 @@ func TestSelectCandidatesVendorMismatchFiltered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cands) != 1 || cands[0].ChannelID != 1 {
-		t.Fatalf("非归属厂商的渠道应被过滤，got %+v", cands)
+	if len(cands) != 2 {
+		t.Fatalf("两厂商端点都应参与候选，got %+v", cands)
+	}
+	// 高优先级厂商 2 的候选排前（降级备用语义），各自带各自厂商的 Key
+	if cands[0].ChannelID != 2 || cands[0].UpstreamKey != "k2" {
+		t.Fatalf("优先厂商候选不符: %+v", cands[0])
+	}
+	if cands[1].ChannelID != 1 || cands[1].UpstreamKey != "k1" {
+		t.Fatalf("次优厂商候选不符: %+v", cands[1])
 	}
 }
 

@@ -71,19 +71,13 @@ type SelectStats struct {
 }
 
 // SelectCandidates 查询模型的路由候选（渠道 × 厂商 Key）：
-// 只取模型所属厂商（models.vendor_id）的承接渠道；最高 priority 组内按 weight 加权随机
-// （负载均衡），其余组按优先级顺序 appended 作为降级备用。渠道内：厂商 Key 池
-// （vendor_keys）过滤禁用与冷却后按权重洗牌——同厂商全部端点共用同一套池。
+// 同名模型可被多个厂商承接——全部启用端点参与（各端点配其所属厂商 Key 池）；
+// 最高 priority 组内按 weight 加权随机（负载均衡），其余组按优先级顺序 appended
+// 作为降级备用（跨厂商自动切换）。渠道内：厂商 Key 池过滤禁用与冷却后按权重洗牌——
+// 同厂商全部端点共用同一套池。
 func SelectCandidates(db *gorm.DB, cipher *crypto.Cipher, modelName string, cd coord.Coordinator) ([]Candidate, SelectStats, error) {
 	var stats SelectStats
-	// 模型归属厂商（0=未挂厂商 → 不可路由）
-	var modelVendor int64
-	if err := db.Raw("SELECT vendor_id FROM models WHERE name = ?", modelName).Scan(&modelVendor).Error; err != nil {
-		return nil, stats, err
-	}
-	if modelVendor == 0 {
-		return nil, stats, nil
-	}
+	// 同名模型可跨厂商承接：全部启用端点参与候选（各端点用其所属厂商的 Key 池）
 	var rows []candRow
 	err := db.Raw(`
 		SELECT c.id AS channel_id, c.name, c.vendor_id, v.name AS vendor_name,
@@ -91,8 +85,8 @@ func SelectCandidates(db *gorm.DB, cipher *crypto.Cipher, modelName string, cd c
 		FROM channels c
 		JOIN channel_abilities a ON a.channel_id = c.id
 		JOIN vendors v ON v.id = c.vendor_id
-		WHERE a.model_name = ? AND c.status = 1 AND c.vendor_id = ?
-		ORDER BY c.priority DESC`, modelName, modelVendor).Scan(&rows).Error
+		WHERE a.model_name = ? AND c.status = 1
+		ORDER BY c.priority DESC`, modelName).Scan(&rows).Error
 	if err != nil {
 		return nil, stats, err
 	}

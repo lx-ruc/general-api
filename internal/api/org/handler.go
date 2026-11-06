@@ -368,12 +368,15 @@ func (h *Handler) GetMemberModels(c *gin.Context) {
 	// 上游已死的模型只会换来调用 503；附归属厂商名（授权弹窗厂商分组/标签用）
 	var available []struct {
 		model.Model
-		Vendor string `json:"vendor"`
+		Vendor    string   `json:"vendor"`
+		Vendors   []string `json:"vendors"`
+		VendorIDs []int64  `json:"vendor_ids"`
 	}
 	_ = h.DB.Raw(`SELECT m.*, COALESCE(v.name, '') AS vendor FROM models m
 		LEFT JOIN vendors v ON v.id = m.vendor_id
 		WHERE m.status = 1
-		  AND (m.vendor_id IN (SELECT vendor_id FROM org_vendor_grants WHERE org_id = ?)
+		  AND (EXISTS (SELECT 1 FROM org_vendor_grants og WHERE og.org_id = ?
+				AND og.vendor_id IN (`+service.ModelServingVendors+`))
 		    OR m.name IN (SELECT model_name FROM org_model_grants WHERE org_id = ?))
 		  AND `+service.ModelHasLiveUpstream+`
 		ORDER BY m.name`, oid, oid).Scan(&available).Error
@@ -382,6 +385,21 @@ func (h *Handler) GetMemberModels(c *gin.Context) {
 	}
 	if modelExcept == nil {
 		modelExcept = []string{}
+	}
+	avNames := make([]string, 0, len(available))
+	for _, a := range available {
+		avNames = append(avNames, a.Name)
+	}
+	avServing := service.ServingVendorNames(h.DB, avNames)
+	avServingIDs := service.ServingVendorIDs(h.DB, avNames)
+	for i := range available {
+		if vs := avServing[available[i].Name]; len(vs) > 0 {
+			available[i].Vendors = vs
+			available[i].VendorIDs = avServingIDs[available[i].Name]
+		} else {
+			available[i].Vendors = service.VendorSingle(available[i].Vendor)
+			available[i].VendorIDs = []int64{available[i].VendorID}
+		}
 	}
 	granted := map[string]any{"vendors": vendorIDs, "models": modelExcept}
 	httpx.OK(c, gin.H{"granted": granted, "available": available})
@@ -519,8 +537,8 @@ func (h *Handler) ListModelRequestCandidates(c *gin.Context) {
 	var rows []row
 	_ = h.DB.Raw(`
 		SELECT m.name, m.display_name, COALESCE(v.name, '') AS vendor,
-		       CASE WHEN (EXISTS (SELECT 1 FROM org_vendor_grants vg
-		                             WHERE vg.org_id = ? AND vg.vendor_id = m.vendor_id)
+		       CASE WHEN (EXISTS (SELECT 1 FROM org_vendor_grants vg WHERE vg.org_id = ?
+				AND vg.vendor_id IN (`+service.ModelServingVendors+`))
 		              OR EXISTS (SELECT 1 FROM org_model_grants og
 		                          WHERE og.org_id = ? AND og.model_name = m.name))
 		         THEN 1 ELSE 0 END AS granted,

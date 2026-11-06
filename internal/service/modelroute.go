@@ -25,8 +25,12 @@ const ModelHasLiveUpstream = `EXISTS (
 	JOIN vendors rv ON rv.id = rc.vendor_id
 	WHERE ra.model_name = m.name
 	  AND rc.status = 1 AND rv.status = 1 AND rc.base_url <> '' AND rc.path <> ''
-	  AND rc.vendor_id = m.vendor_id
 	  AND EXISTS (SELECT 1 FROM vendor_keys rk WHERE rk.vendor_id = rc.vendor_id AND rk.status = 1))`
+
+// ModelServingVendors 模型 → 承接厂商 id 集合的子查询（任意状态端点，授权判定用：
+// 端点启停不应悄悄改变授权面）。谓词引用模型别名 m
+const ModelServingVendors = `SELECT DISTINCT c.vendor_id FROM channel_abilities sa
+	JOIN channels c ON c.id = sa.channel_id WHERE sa.model_name = m.name`
 
 // VendorNameMap 厂商 id → 名称（各列表装配厂商标签用）
 func VendorNameMap(db *gorm.DB) map[int64]string {
@@ -40,6 +44,83 @@ func VendorNameMap(db *gorm.DB) map[int64]string {
 		m[r.ID] = r.Name
 	}
 	return m
+}
+
+// ServingVendorNames 模型 → 承接厂商名列表（主厂商优先，其余按名序；展示标签用）
+func ServingVendorNames(db *gorm.DB, names []string) map[string][]string {
+	out := map[string][]string{}
+	if len(names) == 0 {
+		return out
+	}
+	var rows []struct {
+		ModelName string
+		VendorID  int64
+		Name      string
+	}
+	if err := db.Raw(`SELECT a.model_name, v.id AS vendor_id, v.name
+		FROM channel_abilities a JOIN channels c ON c.id = a.channel_id
+		JOIN vendors v ON v.id = c.vendor_id
+		WHERE a.model_name IN ? ORDER BY v.name`, names).Scan(&rows).Error; err != nil {
+		return out
+	}
+	primary := VendorNameMap(db)
+	seen := map[string]map[int64]bool{}
+	for _, r := range rows {
+		if seen[r.ModelName] == nil {
+			seen[r.ModelName] = map[int64]bool{}
+		}
+		if seen[r.ModelName][r.VendorID] {
+			continue
+		}
+		seen[r.ModelName][r.VendorID] = true
+		out[r.ModelName] = append(out[r.ModelName], r.Name)
+	}
+	// 主厂商排首位（分组与展示锚点稳定）
+	for mn, vs := range out {
+		if p := primary[modelPrimaryVendor(db, mn)]; p != "" && p != vs[0] {
+			for i, v := range vs {
+				if v == p {
+					out[mn] = append([]string{p}, append(vs[:i:i], vs[i+1:]...)...)
+					break
+				}
+			}
+		}
+	}
+	return out
+}
+
+func modelPrimaryVendor(db *gorm.DB, modelName string) int64 {
+	var vid int64
+	_ = db.Raw("SELECT vendor_id FROM models WHERE name = ?", modelName).Scan(&vid).Error
+	return vid
+}
+
+// ServingVendorIDs 模型 → 承接厂商 id 列表（与 ServingVendorNames 同序：主厂商优先）
+func ServingVendorIDs(db *gorm.DB, names []string) map[string][]int64 {
+	out := map[string][]int64{}
+	if len(names) == 0 {
+		return out
+	}
+	named := ServingVendorNames(db, names)
+	var rows []struct {
+		Name string
+		ID   int64
+	}
+	_ = db.Raw("SELECT name, id FROM vendors").Scan(&rows).Error
+	byName := map[string]int64{}
+	for _, r := range rows {
+		byName[r.Name] = r.ID
+	}
+	for mn, vs := range named {
+		ids := make([]int64, 0, len(vs))
+		for _, v := range vs {
+			if id, ok := byName[v]; ok {
+				ids = append(ids, id)
+			}
+		}
+		out[mn] = ids
+	}
+	return out
 }
 
 // VendorSingle 单元素标签数组（空厂商给空数组，前端 VendorTags 回退逻辑兼容）

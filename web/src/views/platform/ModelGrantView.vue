@@ -59,23 +59,28 @@ const grantedVendorNames = ref<string[]>([]) // 已开通但候选里没出现�
 const available = ref<{ name: string; display_name: string; vendor: string; vendor_id: number }[]>([])
 const grantSaving = ref(false)
 
-// 候选厂商 = 可用模型的厂商去重 ∪ 已开通厂商
+// 候选厂商 = 可用模型的承接厂商去重（跨厂商模型计入每个承接厂商组）∪ 已开通厂商
 interface VendorOpt { id: number; name: string; modelCount: number }
 const vendorOptions = computed<VendorOpt[]>(() => {
   const map = new Map<number, VendorOpt>()
-  for (const m of available.value) {
-    if (!m.vendor_id) continue
-    const cur = map.get(m.vendor_id)
-    if (cur) cur.modelCount++
-    else map.set(m.vendor_id, { id: m.vendor_id, name: m.vendor || `厂商#${m.vendor_id}`, modelCount: 1 })
+  for (const m of available.value as any[]) {
+    const names: string[] = m.vendors && m.vendors.length ? m.vendors : [m.vendor || `厂商#${m.vendor_id}`]
+    const ids: number[] = m.vendor_ids && m.vendor_ids.length ? m.vendor_ids : [m.vendor_id]
+    names.forEach((v, i) => {
+      const id = ids[i]
+      if (!id) return
+      const cur = map.get(id)
+      if (cur) cur.modelCount++
+      else map.set(id, { id, name: v, modelCount: 1 })
+    })
   }
-  // 已开通但无在列模型的厂商也保留（可勾选/取消）
-  availableVendorNames.value.forEach((name, i) => {
-    const id = grantedVendors.value[i]
+  // 已开通但无在列模型的厂商也保留（可勾选/取消）：id 由 granted 双段回传，名称取 granted 名
+  grantedVendorPairs.value.forEach(({ id, name }) => {
     if (!map.has(id)) map.set(id, { id, name, modelCount: 0 })
   })
   return [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
 })
+const grantedVendorPairs = ref<{ id: number; name: string }[]>([])
 const availableVendorNames = ref<string[]>([])
 
 function toggleVendor(id: number, checked: boolean) {
@@ -84,15 +89,17 @@ function toggleVendor(id: number, checked: boolean) {
 function toggleModel(name: string, checked: boolean) {
   grantedModels.value = checked ? [...grantedModels.value, name] : grantedModels.value.filter((n) => n !== name)
 }
-// 组内厂商已勾选时模型例外勾选不产生额外效果（展示为已覆盖）
-function coveredByVendor(m: { vendor_id: number }): boolean {
-  return grantedVendors.value.includes(m.vendor_id)
+// 任一承接厂商已勾选时模型例外勾选不产生额外效果（展示为已覆盖）
+function coveredByVendor(m: any): boolean {
+  const ids: number[] = m.vendor_ids && m.vendor_ids.length ? m.vendor_ids : [m.vendor_id]
+  return ids.some((id) => grantedVendors.value.includes(id))
 }
 
 async function loadOrgModels() {
   if (!orgId.value) return
   const r = await apiGetOrgModels(orgId.value)
   const g = r.granted as any
+  grantedVendorPairs.value = g?.vendors || []
   grantedVendors.value = (g?.vendors || []).map((v: any) => v.id)
   grantedVendorNames.value = (g?.vendors || []).map((v: any) => v.name)
   availableVendorNames.value = grantedVendorNames.value
@@ -102,6 +109,7 @@ async function loadOrgModels() {
 
 async function onOrgChange() {
   grantedVendors.value = []
+  grantedVendorPairs.value = []
   grantedModels.value = []
   available.value = []
   loadOrgModels()

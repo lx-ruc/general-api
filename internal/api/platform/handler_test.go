@@ -1263,9 +1263,8 @@ func TestKeyStatusDisablesChannelWithoutKeys(t *testing.T) {
 	}
 }
 
-// 跨厂商挂模型拒绝：端点属厂商 B 但模型已归属厂商 A → 400 带指引（此前静默生成
-// 永远路由不到的能力，模型开通页也看不到该厂商下的模型）
-func TestChannelRejectsCrossVendorModel(t *testing.T) {
+// 跨厂商承接同一模型：允许（各自 Key 池路由，模型保留原主厂商）
+func TestChannelAllowsCrossVendorModel(t *testing.T) {
 	engine, db, token := newPlatformEnv(t)
 	cipher, _ := crypto.NewCipher("")
 	h := NewHandler(db, cipher, &http.Client{}, nil, nil)
@@ -1276,7 +1275,7 @@ func TestChannelRejectsCrossVendorModel(t *testing.T) {
 	if err := db.Exec(`INSERT INTO vendors (id, name, status, created_at, updated_at) VALUES (1, 'v1', 1, ?, ?), (2, 'v2', 1, ?, ?)`, now, now, now, now).Error; err != nil {
 		t.Fatal(err)
 	}
-	// m1 已归属厂商 1；端点属厂商 2
+	// m1 主厂商=1；厂商 2 的端点挂同名模型 → 200，模型主厂商不变
 	if err := db.Exec(`INSERT INTO models (name, vendor_id, status, created_at, updated_at) VALUES ('m1', 1, 1, ?, ?)`, now, now).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -1287,24 +1286,18 @@ func TestChannelRejectsCrossVendorModel(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	engine.ServeHTTP(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("跨厂商挂模型应 400，got %d body=%s", w.Code, w.Body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("跨厂商承接应 200，got %d body=%s", w.Code, w.Body)
 	}
-	if !strings.Contains(w.Body.String(), "已归属厂商") || !strings.Contains(w.Body.String(), "模型副本") {
-		t.Fatalf("错误应指明归属冲突并给出副本指引: %s", w.Body)
+	var vid int64
+	_ = db.Raw("SELECT vendor_id FROM models WHERE name = 'm1'").Scan(&vid).Error
+	if vid != 1 {
+		t.Fatalf("模型主厂商应保持原值 1，got %d", vid)
 	}
-	// 同厂商正常路径不受影响：厂商 2 自己的模型可挂
-	if err := db.Exec(`INSERT INTO models (name, vendor_id, status, created_at, updated_at) VALUES ('m2', 2, 1, ?, ?)`, now, now).Error; err != nil {
-		t.Fatal(err)
-	}
-	req2 := httptest.NewRequest(http.MethodPost, "/api/platform/channels", strings.NewReader(
-		`{"name":"ok-ch","vendor_id":2,"base_url":"https://up.example","upstream_key":"sk-2",
-		 "models":[{"model_name":"m2"}]}`))
-	req2.Header.Set("Authorization", "Bearer "+token)
-	req2.Header.Set("Content-Type", "application/json")
-	w2 := httptest.NewRecorder()
-	engine.ServeHTTP(w2, req2)
-	if w2.Code != http.StatusOK {
-		t.Fatalf("同厂商挂模型应 200，got %d body=%s", w2.Code, w2.Body)
+	var abCnt int64
+	_ = db.Raw(`SELECT COUNT(*) FROM channel_abilities a JOIN channels c ON c.id = a.channel_id
+		WHERE a.model_name = 'm1' AND c.vendor_id = 2`).Scan(&abCnt).Error
+	if abCnt != 1 {
+		t.Fatalf("厂商 2 端点应挂上同名模型能力，got %d", abCnt)
 	}
 }

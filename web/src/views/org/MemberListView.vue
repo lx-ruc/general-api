@@ -87,16 +87,22 @@ function toggleModel(name: string, checked: boolean) {
   grantedModels.value = checked ? [...grantedModels.value, name] : grantedModels.value.filter((n) => n !== name)
 }
 function coveredByVendor(m: any): boolean {
-  return grantedVendors.value.includes(m.vendor_id)
+  const ids: number[] = m.vendor_ids && m.vendor_ids.length ? m.vendor_ids : [m.vendor_id]
+  return ids.some((id) => grantedVendors.value.includes(id))
 }
-// 候选厂商 = 可用模型的厂商去重
+// 候选厂商 = 可用模型的承接厂商去重（跨厂商模型计入每个承接厂商组）
 const grantVendorOptions = computed(() => {
   const map = new Map<number, { id: number; name: string; modelCount: number }>()
-  for (const m of availableModels.value) {
-    if (!m.vendor_id) continue
-    const cur = map.get(m.vendor_id)
-    if (cur) cur.modelCount++
-    else map.set(m.vendor_id, { id: m.vendor_id, name: m.vendor || `厂商#${m.vendor_id}`, modelCount: 1 })
+  for (const m of availableModels.value as any[]) {
+    const names: string[] = m.vendors && m.vendors.length ? m.vendors : [m.vendor || `厂商#${m.vendor_id}`]
+    const ids: number[] = m.vendor_ids && m.vendor_ids.length ? m.vendor_ids : [m.vendor_id]
+    names.forEach((v, i) => {
+      const id = ids[i]
+      if (!id) return
+      const cur = map.get(id)
+      if (cur) cur.modelCount++
+      else map.set(id, { id, name: v, modelCount: 1 })
+    })
   }
   return [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
 })
