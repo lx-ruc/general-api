@@ -303,15 +303,16 @@ func migrateVendors(db *gorm.DB) error {
 // channel_keys 表与 upstream_key_enc 列的物理删除在 C5 drops 统一执行（过渡期双写兼容）
 func migrateVendorKeys(db *gorm.DB) error {
 	now := time.Now().Unix()
-	// 新库/已迁移库：channel_keys 已不存在（新库 schema 无此表，存量库上方已删）→ no-op
+	// 新库/已迁移库：channel_keys 已不存在（新库 schema 无此表，存量库上方已删）→ no-op。
+	// 方言必须分流后查询——PG 上跑 sqlite_master 会报错并毒死迁移事务（25P02 连坐）
 	var hasTable bool
-	_ = db.Raw("SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = 'channel_keys'").Scan(&hasTable).Error
+	if Dialect == "postgres" {
+		_ = db.Raw(`SELECT COUNT(*) > 0 FROM information_schema.tables WHERE table_name = 'channel_keys'`).Scan(&hasTable).Error
+	} else {
+		_ = db.Raw("SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = 'channel_keys'").Scan(&hasTable).Error
+	}
 	if !hasTable {
-		var hasPG bool
-		_ = db.Raw(`SELECT COUNT(*) > 0 FROM information_schema.tables WHERE table_name = 'channel_keys'`).Scan(&hasPG).Error
-		if Dialect != "postgres" || !hasPG {
-			return nil
-		}
+		return nil
 	}
 	if err := db.Exec(`INSERT INTO vendor_keys (id, vendor_id, key_enc, weight, status, remark, created_at, updated_at)
 		SELECT k.id, c.vendor_id, k.key_enc, k.weight, k.status,
