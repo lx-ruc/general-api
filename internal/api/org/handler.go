@@ -365,9 +365,13 @@ func (h *Handler) GetMemberModels(c *gin.Context) {
 	var modelExcept []string
 	_ = h.DB.Raw(`SELECT model_name FROM user_model_grants WHERE user_id = ? ORDER BY model_name`, id).Scan(&modelExcept).Error
 	// 候选收窄为客户已开通厂商/模型（平台级白名单）且当前可路由——给成员授权一个
-	// 上游已死的模型只会换来调用 503
-	var available []model.Model
-	_ = h.DB.Raw(`SELECT m.* FROM models m
+	// 上游已死的模型只会换来调用 503；附归属厂商名（授权弹窗厂商分组/标签用）
+	var available []struct {
+		model.Model
+		Vendor string `json:"vendor"`
+	}
+	_ = h.DB.Raw(`SELECT m.*, COALESCE(v.name, '') AS vendor FROM models m
+		LEFT JOIN vendors v ON v.id = m.vendor_id
 		WHERE m.status = 1
 		  AND (m.vendor_id IN (SELECT vendor_id FROM org_vendor_grants WHERE org_id = ?)
 		    OR m.name IN (SELECT model_name FROM org_model_grants WHERE org_id = ?))

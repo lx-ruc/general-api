@@ -2219,8 +2219,20 @@ func (h *Handler) GetOrgModels(c *gin.Context) {
 		WHERE g.org_id = ? ORDER BY v.name`, id).Scan(&vendors).Error
 	var modelExcept []string
 	_ = h.DB.Raw(`SELECT model_name FROM org_model_grants WHERE org_id = ? ORDER BY model_name`, id).Scan(&modelExcept).Error
-	var available []model.Model
-	_ = h.DB.Where("status = 1").Order("name").Find(&available).Error
+	// 候选模型附归属厂商名（前端「模型级例外」表格的厂商列；model.Model 无 vendor 文本列）
+	var available []struct {
+		model.Model
+		Vendor string `json:"vendor"`
+	}
+	_ = h.DB.Raw(`SELECT m.*, COALESCE(v.name, '') AS vendor
+		FROM models m LEFT JOIN vendors v ON v.id = m.vendor_id
+		WHERE m.status = 1 ORDER BY m.name`).Scan(&available).Error
+	if available == nil {
+		available = []struct {
+			model.Model
+			Vendor string `json:"vendor"`
+		}{}
+	}
 	if vendors == nil {
 		vendors = []struct {
 			ID   int64  `json:"id"`

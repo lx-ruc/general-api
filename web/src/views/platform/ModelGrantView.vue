@@ -6,6 +6,7 @@ import {
   type ModelRequestRow,
 } from '../../api/platform'
 import { fmtTime } from '../../utils/format'
+import VendorTags from '../../components/VendorTags.vue'
 
 // 厂商开通：① 审批客户提交的开通申请（批准=写入客户厂商白名单，组内全部模型可用、
 // 新增模型自动继承）；② 手动直接调整某客户的开通范围（回收级联移除子账号授权）。
@@ -232,7 +233,9 @@ onMounted(async () => {
             <template #default="{ row }"><code>{{ row.name }}</code></template>
           </el-table-column>
           <el-table-column prop="display_name" label="说明" min-width="140" />
-          <el-table-column prop="vendor" label="厂商" width="120" />
+          <el-table-column label="厂商" width="140">
+            <template #default="{ row }"><VendorTags :vendors="row.vendors" :vendor="row.vendor" /></template>
+          </el-table-column>
         </el-table>
         <el-button type="primary" style="margin-top: 12px" :loading="grantSaving" @click="saveGrant">保存</el-button>
       </template>

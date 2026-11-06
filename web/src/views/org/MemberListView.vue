@@ -309,6 +309,7 @@ function remove(m: Member) {
         @change="(val: any) => toggleModel(m.name, !!val)">
         <code>{{ m.name }}</code>
         <span v-if="m.display_name" class="grant-price">{{ m.display_name }}</span>
+        <VendorTags :vendors="m.vendors" :vendor="m.vendor" class="grant-price" />
       </el-checkbox>
     </el-checkbox-group>
     <template #footer>

@@ -16,7 +16,8 @@ const loading = ref(false)
 const saving = ref(false)
 
 // 授权模型候选（仅启用中的模型）
-const modelOptions = ref<string[]>([])
+// 选项附厂商名（label 显示「模型（厂商）」，提交值仍是模型名）
+const modelOptions = ref<{ name: string; vendor: string }[]>([])
 
 // 有效期表单：永久 / 30 天 / 90 天 / 自定义天数（保存时从当前时刻起算）
 const expiryMode = ref<'never' | '30' | '90' | 'custom'>('never')
@@ -63,7 +64,8 @@ async function load() {
 async function loadModels() {
   try {
     const list = await apiListModels()
-    modelOptions.value = list.filter((m) => m.status === 1).map((m) => m.name)
+    modelOptions.value = list.filter((m) => m.status === 1)
+      .map((m) => ({ name: m.name, vendor: m.vendor || (m.vendors && m.vendors[0]) || '' }))
   } catch {
     modelOptions.value = [] // 候选拉失败不阻塞页面；保存时后端仍会校验
   }
@@ -203,7 +205,8 @@ async function save() {
         <el-form-item label="授权模型">
           <el-select v-model="selectedModels" multiple filterable collapse-tags collapse-tags-tooltip
             placeholder="选择体验密钥可用的模型" style="width: 420px">
-            <el-option v-for="m in modelOptions" :key="m" :label="m" :value="m" />
+            <el-option v-for="m in modelOptions" :key="m.name"
+              :label="m.vendor ? `${m.name}（${m.vendor}）` : m.name" :value="m.name" />
           </el-select>
           <div class="hint">访客可见且可调用的模型范围；消耗按各模型定价计量</div>
         </el-form-item>
