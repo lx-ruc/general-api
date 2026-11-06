@@ -28,8 +28,6 @@ func ReencryptPlaintextKeys(db *gorm.DB, c *crypto.Cipher) {
 	// channels.upstream_key_enc/channel_keys 为搬迁过渡期兼容（C5 移除）；
 	// api_keys/access_tokens 兜底曾以空 aes_key 运行过又补配 key 的部署
 	targets := []struct{ table, col string }{
-		{"channels", "upstream_key_enc"},
-		{"channel_keys", "key_enc"},
 		{"vendor_keys", "key_enc"},
 		{"api_keys", "key_enc"},
 		{"access_tokens", "token_enc"},

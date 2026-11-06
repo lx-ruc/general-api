@@ -266,8 +266,8 @@ def main():
     # SetMemberModels 要求模型启用中；数据面 A6/A7 的 404 由模型状态前置检查保证，与授权无关
     member_models = [m for m in granted if m not in (m_noch, m_nokey)]
 
-    def mk_channel(name, keys, models, priority=10):
-        payload = {'name': name, 'vendor': 'e2e', 'base_url': mock, 'priority': priority,
+    def mk_channel(name, keys, models, priority=10, vendor=None):
+        payload = {'name': name, 'vendor': vendor or f'e2e-{name}', 'base_url': mock, 'priority': priority,
                    'models': [{'model_name': m} for m in models]}
         if keys:
             payload['upstream_key'] = '\n'.join(keys)
@@ -278,7 +278,7 @@ def main():
     ch_ok = mk_channel(f'e2e-ok-{TS}', ['k-ok-1', 'k-ok-2'], [m_free, m_priced, m_nogrant])
     # 无密钥渠道已不可创建（模型一律经配 key 的渠道从上游登记）——创建即拒
     st_nk, _, _ = call('POST', '/api/platform/channels', admin, {
-        'name': f'e2e-nokey-rej-{TS}', 'vendor': 'e2e', 'base_url': mock,
+        'name': f'e2e-nokey-rej-{TS}', 'vendor': f'e2e-nk-{TS}', 'base_url': mock,
         'models': [{'model_name': m_nokey}]})
     check('A0 无密钥渠道创建被拒 → 400', st_nk == 400, f'got {st_nk}')
     # channel_key_missing 路径：带 key 建渠道后把池内 key 全部停用
@@ -287,8 +287,10 @@ def main():
     kid = keys[0]['id'] if isinstance(keys, list) else keys['list'][0]['id']
     st, _, r = call('PUT', f'/api/platform/channels/{ch_nokey}/keys/{kid}/status', admin, {'status': 0})
     assert st == 200, (kid, st, r)
-    ch_500 = mk_channel(f'e2e-500-{TS}', ['k-ok-9'], [m_fail], priority=10)
-    ch_ok2 = mk_channel(f'e2e-ok2-{TS}', ['k-ok-5'], [m_fail], priority=5)
+    # A13 降级场景：同一厂商两个端点（模型单厂商归属，跨厂商不作 fallback；共享 Key 池）
+    fail_vendor = f'e2e-fail-{TS}'
+    ch_500 = mk_channel(f'e2e-500-{TS}', ['k-ok-9'], [m_fail], priority=10, vendor=fail_vendor)
+    ch_ok2 = mk_channel(f'e2e-ok2-{TS}', ['k-ok-5'], [m_fail], priority=5, vendor=fail_vendor)
     ch_rot = mk_channel(f'e2e-rot-{TS}', ['k429-a', 'k-ok-3'], [m_rot])
     ch_dis = mk_channel(f'e2e-dis-{TS}', ['k401-x'], [m_dis])
 

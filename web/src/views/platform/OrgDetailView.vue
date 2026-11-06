@@ -182,6 +182,22 @@ async function loadPricing() {
 }
 onMounted(loadPricing)
 
+// 定价卡厂商分组：面板=厂商（组首行显示归属），组内=模型行
+const pricingOpenGroups = ref<string[]>([])
+const pricingGroups = computed(() => {
+  const rows = filteredPricing.value
+  const map = new Map<string, { name: string; rows: typeof rows }>()
+  for (const r of rows) {
+    const g = (r.vendors && r.vendors[0]) || '未挂厂商'
+    if (!map.has(g)) map.set(g, { name: g, rows: [] as typeof rows })
+    map.get(g)!.rows.push(r)
+  }
+  const groups = [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
+  const names = groups.map((x) => x.name)
+  if (pricingOpenGroups.value.length === 0 && names.length > 0) pricingOpenGroups.value = names
+  return groups
+})
+
 const filteredPricing = computed(() => {
   const q = pricingSearch.value.trim().toLowerCase()
   if (!q) return orgPricing.value
@@ -350,8 +366,15 @@ async function exportStatementCSV() {
         <el-input v-model="pricingSearch" placeholder="按模型名搜索" size="small" clearable style="width: 220px" />
         <span class="dim">缓存命中价 0 = 同输入价；停用模型仅在有单独价时列出</span>
       </div>
-      <el-table :data="filteredPricing" v-loading="pricingLoading" size="small" max-height="420"
-        empty-text="暂无模型（先在渠道接入模型）">
+      <el-collapse v-model="pricingOpenGroups" v-loading="pricingLoading" v-if="pricingGroups.length > 0">
+        <el-collapse-item v-for="g in pricingGroups" :key="g.name" :name="g.name">
+          <template #title>
+            <span class="group-title"><el-tag size="small" effect="dark" type="info">{{ g.name }}</el-tag>
+              <span class="dim">{{ g.rows.length }} 个模型</span>
+            </span>
+          </template>
+      <el-table :data="g.rows" size="small" max-height="420"
+        empty-text="暂无模型（先在厂商管理接入模型）">
         <el-table-column label="模型" min-width="210">
           <template #default="{ row: r }">
             <div class="model-cell" :class="{ 'model-off': r.model_status === 0 }">
@@ -406,6 +429,10 @@ async function exportStatementCSV() {
           </template>
         </el-table-column>
       </el-table>
+        </el-collapse-item>
+      </el-collapse>
+      <el-table v-else :data="filteredPricing" v-loading="pricingLoading" size="small"
+        empty-text="暂无模型（先在厂商管理接入模型）" />
       <div class="pricing-actions">
         <span v-if="dirtyCount > 0" class="dim">{{ dirtyCount }} 个模型未保存</span>
         <el-button type="primary" size="small" :loading="pricingSaving" :disabled="dirtyCount === 0" @click="savePricing">
@@ -648,6 +675,7 @@ async function exportStatementCSV() {
 .reset-hint { margin: 0 0 14px; font-size: 12.5px; color: var(--tg-graphite); line-height: 1.8; }
 .unit { font-size: 12px; color: var(--tg-muted); font-weight: 400; margin-left: 4px; }
 .ml { margin-left: 6px; }
+.group-title { display: inline-flex; align-items: center; gap: 8px; }
 .dim { color: var(--tg-muted); font-size: 12px; }
 .green { color: var(--tg-green-ink); }
 .red { color: var(--tg-red); }

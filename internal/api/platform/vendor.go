@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 
 	"token-gateway/internal/gateway"
 	"token-gateway/internal/httpx"
@@ -15,6 +16,28 @@ import (
 	"token-gateway/internal/model"
 	"token-gateway/internal/service"
 )
+
+// vendorNameMap 厂商 id → 名称（列表装配用）
+func vendorNameMap(db *gorm.DB) map[int64]string {
+	var rows []struct {
+		ID   int64
+		Name string
+	}
+	_ = db.Raw("SELECT id, name FROM vendors").Scan(&rows).Error
+	m := make(map[int64]string, len(rows))
+	for _, r := range rows {
+		m[r.ID] = r.Name
+	}
+	return m
+}
+
+// vendorSingle 单元素标签数组（空厂商给空数组，前端 VendorTags 回退逻辑兼容）
+func vendorSingle(name string) []string {
+	if name == "" {
+		return []string{}
+	}
+	return []string{name}
+}
 
 // displayNameOf 展示名（空=用标识名）
 func displayNameOf(v model.Vendor) string {

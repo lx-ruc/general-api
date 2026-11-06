@@ -54,11 +54,9 @@ CREATE INDEX IF NOT EXISTS idx_users_org ON users(org_id);
 CREATE TABLE IF NOT EXISTS channels (
   id               INTEGER PRIMARY KEY AUTOINCREMENT,
   name             TEXT    NOT NULL UNIQUE,
-  vendor           TEXT    NOT NULL DEFAULT '',
-  vendor_id        INTEGER NOT NULL DEFAULT 0, -- 所属厂商（0=未挂，不可路由；存量迁移自 vendor 标签）
+  vendor_id        INTEGER NOT NULL DEFAULT 0, -- 所属厂商（0=未挂，不可路由）
   base_url         TEXT    NOT NULL,
   path             TEXT    NOT NULL DEFAULT '/v1/chat/completions',
-  upstream_key_enc TEXT    NOT NULL DEFAULT '',
   weight           INTEGER NOT NULL DEFAULT 1,
   priority         INTEGER NOT NULL DEFAULT 0,
   status           INTEGER NOT NULL DEFAULT 1,
@@ -71,23 +69,10 @@ CREATE TABLE IF NOT EXISTS channels (
   updated_at       INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS channel_keys (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
-  key_enc    TEXT    NOT NULL,               -- AES-GCM 密文（未启用加密则明文）
-  weight     INTEGER NOT NULL DEFAULT 1,     -- 池内调度权重
-  status     INTEGER NOT NULL DEFAULT 1,     -- 0=禁用（401 自动禁用 / 管理员手动）
-  remark     TEXT    NOT NULL DEFAULT '',
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_channel_keys_channel ON channel_keys(channel_id, status);
-
 CREATE TABLE IF NOT EXISTS models (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   name         TEXT    NOT NULL UNIQUE,
   display_name TEXT    NOT NULL DEFAULT '',
-  vendor       TEXT    NOT NULL DEFAULT '',
   vendor_id    INTEGER NOT NULL DEFAULT 0, -- 归属厂商（0=未挂；授权/厂商价按此展开）
   type         TEXT    NOT NULL DEFAULT 'chat', -- chat/embedding/video：决定端点路由与探测形态
   input_price  INTEGER NOT NULL DEFAULT 0,

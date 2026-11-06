@@ -28,34 +28,26 @@ const ModelHasLiveUpstream = `EXISTS (
 	  AND rc.vendor_id = m.vendor_id
 	  AND EXISTS (SELECT 1 FROM vendor_keys rk WHERE rk.vendor_id = rc.vendor_id AND rk.status = 1))`
 
-// ChannelVendorsByModel 模型 → 承接渠道厂商标签去重列表（按字母序稳定输出）。
-// 标签与渠道管理页同源（channels.vendor，管理员在渠道上打的分组标记如 volces、
-// volces/Thu）——模型列表/二级账号/申请候选等展示面统一用它区分模型来源，
-// 渠道挂上标签模型侧自动亮，无需在 models.vendor 再手工维护一遍。
-// 渠道停用不摘标签（分组归属不随上游可用性抖动）；无承接渠道返回空列表，
-// 由调用方回退 models.vendor 手工值展示
-func ChannelVendorsByModel(db *gorm.DB, names []string) map[string][]string {
-	out := map[string][]string{}
-	if len(names) == 0 {
-		return out
-	}
+// VendorNameMap 厂商 id → 名称（各列表装配厂商标签用）
+func VendorNameMap(db *gorm.DB) map[int64]string {
 	var rows []struct {
-		ModelName string
-		Vendor    string
+		ID   int64
+		Name string
 	}
-	if err := db.Raw(`SELECT a.model_name, c.vendor FROM channel_abilities a
-		JOIN channels c ON c.id = a.channel_id
-		WHERE a.model_name IN ? AND c.vendor <> '' ORDER BY c.vendor`, names).
-		Scan(&rows).Error; err != nil {
-		return out
-	}
+	_ = db.Raw("SELECT id, name FROM vendors").Scan(&rows).Error
+	m := make(map[int64]string, len(rows))
 	for _, r := range rows {
-		vs := out[r.ModelName]
-		if len(vs) == 0 || vs[len(vs)-1] != r.Vendor { // ORDER BY 保证同标签相邻
-			out[r.ModelName] = append(vs, r.Vendor)
-		}
+		m[r.ID] = r.Name
 	}
-	return out
+	return m
+}
+
+// VendorSingle 单元素标签数组（空厂商给空数组，前端 VendorTags 回退逻辑兼容）
+func VendorSingle(name string) []string {
+	if name == "" {
+		return []string{}
+	}
+	return []string{name}
 }
 
 // SyncModelRoutableStatus 把模型启用态与上游可用性对齐（幂等，可重复调用）：

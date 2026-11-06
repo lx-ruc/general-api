@@ -168,6 +168,21 @@ func migrateAll(db *gorm.DB) error {
 	if err := migrateVendorKeys(db); err != nil {
 		return err
 	}
+	// ---- 厂商化遗留列/表清理（必须在迁移序列之后：①还读 channels.vendor 建实体）----
+	for _, d := range [][2]string{
+		{"channels", "upstream_key_enc"}, // legacy 单 Key 已迁入厂商池（⑦）
+		{"channels", "vendor"},           // 渠道归属以 vendor_id 为准（①已消费完文本标签）
+		{"models", "vendor"},             // 模型归属以 vendor_id 为准
+	} {
+		if columnExists(db, d[0], d[1]) {
+			if err := db.Exec(fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", d[0], d[1])).Error; err != nil {
+				return fmt.Errorf("drop %s.%s: %w", d[0], d[1], err)
+			}
+		}
+	}
+	if err := db.Exec("DROP TABLE IF EXISTS channel_keys").Error; err != nil { // Key 池已上提厂商（⑥）
+		return fmt.Errorf("drop channel_keys: %w", err)
+	}
 	return nil
 }
 
@@ -176,6 +191,11 @@ func migrateAll(db *gorm.DB) error {
 // ⑤ON CONFLICT。新库（无渠道/模型）全部自然 no-op
 func migrateVendors(db *gorm.DB) error {
 	now := time.Now().Unix()
+	// 新库/已迁移库：channels.vendor 文本列已不存在（新库 schema 无此列，存量库上方已删）
+	// → ①②③ 的文本标签消费天然 no-op，跳过
+	if !columnExists(db, "channels", "vendor") {
+		return nil
+	}
 	// ① 非空 vendor 标签建厂商实体；空标签渠道归并到「未分类」（仅当存在时才建）
 	if err := db.Exec(`INSERT INTO vendors (name, display_name, status, remark, created_at, updated_at)
 		SELECT DISTINCT vendor, vendor, 1, '迁移自渠道厂商标签', CAST(? AS INTEGER), CAST(? AS INTEGER) FROM channels
@@ -193,8 +213,8 @@ func migrateVendors(db *gorm.DB) error {
 		WHERE vendor_id = 0`).Error; err != nil {
 		return fmt.Errorf("migrate channels.vendor_id: %w", err)
 	}
-	// ③ 双厂商模型拆分（存量一次性动作）：原名留主厂商，-berry 副本带走 berry 渠道的
-	// 能力与全部价格/授权（客户用原名调用无感）。NOT EXISTS / 改写后 WHERE 不再命中 → 幂等
+	// ③ 双厂商模型拆分（一次性动作，仅在文本列仍存在时执行）：原名留主厂商，-berry
+	// 副本带走 berry 渠道的能力与全部价格/授权（客户用原名调用无感）
 	const (
 		splitSrc      = "deepseek-v4-1-flash-261017"
 		splitCopy     = "deepseek-v4-1-flash-261017-berry"
@@ -283,6 +303,16 @@ func migrateVendors(db *gorm.DB) error {
 // channel_keys 表与 upstream_key_enc 列的物理删除在 C5 drops 统一执行（过渡期双写兼容）
 func migrateVendorKeys(db *gorm.DB) error {
 	now := time.Now().Unix()
+	// 新库/已迁移库：channel_keys 已不存在（新库 schema 无此表，存量库上方已删）→ no-op
+	var hasTable bool
+	_ = db.Raw("SELECT COUNT(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = 'channel_keys'").Scan(&hasTable).Error
+	if !hasTable {
+		var hasPG bool
+		_ = db.Raw(`SELECT COUNT(*) > 0 FROM information_schema.tables WHERE table_name = 'channel_keys'`).Scan(&hasPG).Error
+		if Dialect != "postgres" || !hasPG {
+			return nil
+		}
+	}
 	if err := db.Exec(`INSERT INTO vendor_keys (id, vendor_id, key_enc, weight, status, remark, created_at, updated_at)
 		SELECT k.id, c.vendor_id, k.key_enc, k.weight, k.status,
 			COALESCE(NULLIF(k.remark, ''), '迁移自渠道「' || c.name || '」Key 池'), k.created_at, k.updated_at

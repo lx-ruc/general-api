@@ -58,21 +58,17 @@ func TestReencryptPlaintextKeys(t *testing.T) {
 	encCur, _ := cipher.Encrypt(cipherKey)
 	encOld, _ := oldCipher.Encrypt(rotatedKey)
 
-	// 渠道三行（明文/已密文/疑似旧密文）+ 一行空值；另三张表各放一行明文验证同构收敛
-	mustExec(t, db, `INSERT INTO channels (id, name, vendor, base_url, path, weight, priority, status,
-		upstream_key_enc, created_at, updated_at) VALUES
-		(1, 'c1', 'v', 'https://a', '/v1', 1, 0, 1, ?, 0, 0),
-		(2, 'c2', 'v', 'https://b', '/v1', 1, 0, 1, ?, 0, 0),
-		(3, 'c3', 'v', 'https://c', '/v1', 1, 0, 1, ?, 0, 0),
-		(4, 'c4', 'v', 'https://d', '/v1', 1, 0, 1, '', 0, 0)`,
-		plainKey, encCur, encOld)
-	// 父行（api_keys 有 org/user 外键）
+	// 厂商池三行（明文/已密文/疑似旧密文）+ 一行空值；另两张表各放一行明文验证同构收敛
 	mustExec(t, db, `INSERT INTO orgs (id, name, created_at, updated_at) VALUES (1, 'o1', 0, 0)`)
 	mustExec(t, db, `INSERT INTO users (id, org_id, username, password_hash, role, created_at, updated_at)
 		VALUES (1, 1, 'u1', 'x', 'member', 0, 0)`)
-
-	mustExec(t, db, `INSERT INTO channel_keys (id, channel_id, key_enc, weight, status, created_at, updated_at)
-		VALUES (1, 1, ?, 1, 1, 0, 0)`, plainKey+"-pool")
+	mustExec(t, db, `INSERT INTO vendors (id, name, status, created_at, updated_at) VALUES (1, 'v1', 1, 0, 0)`)
+	mustExec(t, db, `INSERT INTO vendor_keys (id, vendor_id, key_enc, weight, status, created_at, updated_at) VALUES
+		(1, 1, ?, 1, 1, 0, 0),
+		(2, 1, ?, 1, 1, 0, 0),
+		(3, 1, ?, 1, 1, 0, 0),
+		(4, 1, '', 1, 1, 0, 0)`,
+		plainKey, encCur, encOld)
 	mustExec(t, db, `INSERT INTO api_keys (id, org_id, user_id, name, key_prefix, key_hash, key_enc, status, created_at)
 		VALUES (1, 1, 1, 'k', 'sk-abcd', 'x', ?, 1, 0)`, plainKey+"-api")
 	mustExec(t, db, `INSERT INTO access_tokens (id, user_id, name, token_hash, token_enc, status, created_at)
@@ -82,8 +78,7 @@ func TestReencryptPlaintextKeys(t *testing.T) {
 
 	// 明文行 → 密文（值不再是明文，且可解密还原）
 	for _, tc := range []struct{ table, col, want string }{
-		{"channels", "upstream_key_enc", plainKey},
-		{"channel_keys", "key_enc", plainKey + "-pool"},
+		{"vendor_keys", "key_enc", plainKey},
 		{"api_keys", "key_enc", plainKey + "-api"},
 		{"access_tokens", "token_enc", plainKey + "-token"},
 	} {
@@ -98,19 +93,19 @@ func TestReencryptPlaintextKeys(t *testing.T) {
 	}
 
 	// 已密文行逐字节不动；疑似旧密钥密文不动（轮换场景自动再加密会毁数据）；空值保持空
-	if got := scanString(t, db, "SELECT upstream_key_enc FROM channels WHERE id = 2"); got != encCur {
+	if got := scanString(t, db, "SELECT key_enc FROM vendor_keys WHERE id = 2"); got != encCur {
 		t.Fatal("已加密行被改动")
 	}
-	if got := scanString(t, db, "SELECT upstream_key_enc FROM channels WHERE id = 3"); got != encOld {
+	if got := scanString(t, db, "SELECT key_enc FROM vendor_keys WHERE id = 3"); got != encOld {
 		t.Fatal("疑似旧密钥密文被误加密")
 	}
-	if got := scanString(t, db, "SELECT upstream_key_enc FROM channels WHERE id = 4"); got != "" {
+	if got := scanString(t, db, "SELECT key_enc FROM vendor_keys WHERE id = 4"); got != "" {
 		t.Fatal("空值行被改动")
 	}
 
 	// 幂等：二次对账不破坏密文
 	ReencryptPlaintextKeys(db, cipher)
-	got := scanString(t, db, "SELECT upstream_key_enc FROM channels WHERE id = 1")
+	got := scanString(t, db, "SELECT key_enc FROM vendor_keys WHERE id = 1")
 	if plain, err := cipher.Decrypt(got); err != nil || plain != plainKey {
 		t.Fatalf("二次对账破坏了密文: err=%v plain=%q", err, plain)
 	}
@@ -120,11 +115,11 @@ func TestReencryptPlaintextKeys(t *testing.T) {
 func TestReencryptDisabledCipherNoop(t *testing.T) {
 	db := newKeyEncTestDB(t)
 	disabled, _ := crypto.NewCipher("")
-	mustExec(t, db, `INSERT INTO channels (id, name, vendor, base_url, path, weight, priority, status,
-		upstream_key_enc, created_at, updated_at) VALUES
-		(1, 'c1', 'v', 'https://a', '/v1', 1, 0, 1, 'sk-plain', 0, 0)`)
+	mustExec(t, db, `INSERT INTO vendors (id, name, status, created_at, updated_at) VALUES (1, 'v1', 1, 0, 0)`)
+	mustExec(t, db, `INSERT INTO vendor_keys (id, vendor_id, key_enc, weight, status, created_at, updated_at)
+		VALUES (1, 1, 'sk-plain', 1, 1, 0, 0)`)
 	ReencryptPlaintextKeys(db, disabled)
-	if got := scanString(t, db, "SELECT upstream_key_enc FROM channels WHERE id = 1"); got != "sk-plain" {
+	if got := scanString(t, db, "SELECT key_enc FROM vendor_keys WHERE id = 1"); got != "sk-plain" {
 		t.Fatalf("禁用加密器不应改动数据, got %q", got)
 	}
 }

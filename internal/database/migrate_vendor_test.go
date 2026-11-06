@@ -21,6 +21,15 @@ func newVendorMigrateDB(t *testing.T) *gorm.DB {
 	if err := Migrate(gdb); err != nil {
 		t.Fatalf("首次迁移失败: %v", err)
 	}
+	// 模拟未迁移存量库：手工补回 vendor 文本列与 channel_keys 表（drops 已在批二移除）
+	mustExecVendor(t, gdb, `ALTER TABLE channels ADD COLUMN vendor TEXT NOT NULL DEFAULT ''`)
+	mustExecVendor(t, gdb, `ALTER TABLE models ADD COLUMN vendor TEXT NOT NULL DEFAULT ''`)
+	mustExecVendor(t, gdb, `CREATE TABLE IF NOT EXISTS channel_keys (
+		id INTEGER PRIMARY KEY AUTOINCREMENT, channel_id INTEGER NOT NULL,
+		key_enc TEXT NOT NULL, weight INTEGER NOT NULL DEFAULT 1,
+		status INTEGER NOT NULL DEFAULT 1, remark TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`)
+	mustExecVendor(t, gdb, `ALTER TABLE channels ADD COLUMN upstream_key_enc TEXT NOT NULL DEFAULT ''`)
 	return gdb
 }
 

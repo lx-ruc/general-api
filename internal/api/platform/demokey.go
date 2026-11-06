@@ -141,8 +141,12 @@ func (h *Handler) demoSnapshot(c *gin.Context, uid, orgID int64) {
 	}
 	var used int64
 	_ = h.DB.Raw("SELECT quota_used FROM users WHERE id = ?", uid).Scan(&used).Error
+	// 已授权模型 = 厂商授权展开 ∪ 模型例外（与数据面判定同口径）
 	var models []string
-	_ = h.DB.Raw("SELECT model_name FROM user_model_grants WHERE user_id = ? ORDER BY model_name", uid).Scan(&models).Error
+	_ = h.DB.Raw(`SELECT m.name FROM models m WHERE
+		EXISTS (SELECT 1 FROM user_vendor_grants vg WHERE vg.user_id = ? AND vg.vendor_id = m.vendor_id)
+		OR EXISTS (SELECT 1 FROM user_model_grants mg WHERE mg.user_id = ? AND mg.model_name = m.name)
+		ORDER BY m.name`, uid, uid).Scan(&models).Error
 	if models == nil {
 		models = []string{}
 	}
@@ -197,7 +201,7 @@ func (h *Handler) ConfigureDemoKey(c *gin.Context) {
 		Enabled     *bool    `json:"enabled"`              // 密钥启停（false=立即失效）
 		ExpiresAt   *int64   `json:"expires_at"`           // unix 秒；0=永久
 		QuotaPoints *int64   `json:"quota_points"`         // 体验总额度（点）：体验客户 quota_limit 目标值
-		Models      []string `json:"models"`               // 授权模型全量替换；nil=不修改
+		Models      []string `json:"models"`               // 授权范围（模型名归并所属厂商，厂商化兼容口径）；nil=不修改
 	}
 	if !httpx.BindJSON(c, &req) {
 		return
@@ -232,7 +236,9 @@ func (h *Handler) ConfigureDemoKey(c *gin.Context) {
 		}
 	}
 
-	// 2）模型授权：全量替换（与子账号授权同范式）
+	// 2）模型授权：全量替换（与子账号授权同范式）。提交模型名自动归并到所属厂商
+	// 写厂商授权（组内全部模型可用，新模型自动继承；体验账号走模型例外通道的旧数据
+	// 在首次保存时被替换为厂商授权）
 	if req.Models != nil {
 		dedup := map[string]bool{}
 		list := make([]string, 0, len(req.Models))
@@ -253,9 +259,19 @@ func (h *Handler) ConfigureDemoKey(c *gin.Context) {
 			if err := tx.Where("user_id = ?", uid).Delete(&model.UserModelGrant{}).Error; err != nil {
 				return err
 			}
-			for _, name := range list {
-				if err := tx.Create(&model.UserModelGrant{
-					UserID: uid, ModelName: name, GrantedBy: &operator,
+			// 归并厂商：模型名 → DISTINCT vendor_id
+			var vids []int64
+			if err := tx.Raw(`SELECT DISTINCT m.vendor_id FROM models m WHERE m.name IN ? AND m.vendor_id > 0`,
+				list).Scan(&vids).Error; err != nil {
+				return err
+			}
+			if err := tx.Where("user_id = ?", uid).Delete(&model.UserVendorGrant{}).Error; err != nil {
+				return err
+			}
+			for _, vid := range vids {
+				g := vid
+				if err := tx.Create(&model.UserVendorGrant{
+					UserID: uid, VendorID: g, GrantedBy: &operator,
 				}).Error; err != nil {
 					return err
 				}

@@ -5,7 +5,6 @@ type Model struct {
 	ID          int64  `gorm:"primaryKey" json:"id"`
 	Name        string `json:"name"`
 	DisplayName string `json:"display_name"`
-	Vendor      string `json:"vendor"`
 	VendorID    int64  `json:"vendor_id"` // 归属厂商（0=未挂；授权/厂商价按此展开）
 	Type        string `json:"type"` // chat/embedding/video：决定端点路由（视频走任务式端点）与探测形态
 	InputPrice  int64  `json:"input_price"`  // 售卖价 / 1M prompt tokens（客户扣减）

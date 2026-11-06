@@ -60,6 +60,23 @@ const liveCount = computed(() => list.value.filter((m) => (m.channel_count ?? 0)
 const filteredList = computed(() =>
   onlyLive.value ? list.value.filter((m) => (m.channel_count ?? 0) > 0) : list.value,
 )
+// 厂商分组折叠：面板=厂商，组内=模型行（原表格列不变）；默认全展开
+const openGroups = ref<string[]>([])
+const vendorGroups = computed(() => {
+  const rows = filteredList.value
+  const map = new Map<string, { name: string; models: MModel[]; liveCount: number }>()
+  for (const m of rows) {
+    const g = (m.vendors && m.vendors[0]) || m.vendor || '未挂厂商'
+    if (!map.has(g)) map.set(g, { name: g, models: [], liveCount: 0 })
+    const grp = map.get(g)!
+    grp.models.push(m)
+    if (m.routable) grp.liveCount++
+  }
+  const groups = [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
+  const names = groups.map((g2) => g2.name)
+  if (openGroups.value.length === 0 && names.length > 0) openGroups.value = names
+  return groups
+})
 const emptyText = computed(() =>
   onlyLive.value
     ? `没有已接通的模型（${liveCount.value}/${list.value.length} 个模型接通了启用渠道＋密钥）。取消右上角「只看已接通」可查看全部。`
@@ -264,15 +281,20 @@ async function resetOrgPrice(row: OrgModelPriceRow) {
       </div>
     </template>
 
-    <el-table :data="filteredList" v-loading="loading" :empty-text="emptyText">
-      <el-table-column prop="name" label="模型名" min-width="150">
-        <template #default="{ row }"><code>{{ row.name }}</code></template>
-      </el-table-column>
-      <el-table-column prop="display_name" label="显示名" min-width="140" />
-      <el-table-column label="厂商" width="150">
-        <template #default="{ row }"><VendorTags :vendors="row.vendors" :vendor="row.vendor" /></template>
-      </el-table-column>
-      <el-table-column label="类型" width="80" align="center">
+    <el-collapse v-model="openGroups" v-loading="loading" v-if="vendorGroups.length > 0">
+      <el-collapse-item v-for="g in vendorGroups" :key="g.name" :name="g.name">
+        <template #title>
+          <span class="group-title"><el-tag size="small" effect="dark" type="info">{{ g.name }}</el-tag>
+            <span class="dim">{{ g.models.length }} 个模型</span>
+            <span v-if="g.liveCount < g.models.length" class="dim">（已接通 {{ g.liveCount }}）</span>
+          </span>
+        </template>
+        <el-table :data="g.models" size="small" :empty-text="emptyText">
+          <el-table-column prop="name" label="模型名" min-width="150">
+            <template #default="{ row }"><code>{{ row.name }}</code></template>
+          </el-table-column>
+          <el-table-column prop="display_name" label="显示名" min-width="140" />
+          <el-table-column label="类型" width="80" align="center">
         <template #default="{ row }">
           <el-tag size="small" :type="typeOf(row.type).tag" effect="plain">{{ typeOf(row.type).label }}</el-tag>
         </template>
@@ -308,14 +330,17 @@ async function resetOrgPrice(row: OrgModelPriceRow) {
           <el-tag v-else type="success" effect="plain" size="small">可用</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="remark" label="备注" min-width="120" show-overflow-tooltip />
-      <el-table-column label="操作" width="140" fixed="right">
-        <template #default="{ row }">
-          <el-button size="small" type="primary" @click="openPricing(row)">定价</el-button>
-          <el-button size="small" type="danger" @click="remove(row)">删除</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+          <el-table-column prop="remark" label="备注" min-width="120" show-overflow-tooltip />
+          <el-table-column label="操作" width="140" fixed="right">
+            <template #default="{ row }">
+              <el-button size="small" type="primary" @click="openPricing(row)">定价</el-button>
+              <el-button size="small" type="danger" @click="remove(row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-collapse-item>
+    </el-collapse>
+    <el-table v-else :data="filteredList" v-loading="loading" :empty-text="emptyText" />
   </el-card>
 
   <el-dialog v-model="pricingVisible" :title="`定价：${form.name}`" width="1120px" top="6vh">
@@ -431,6 +456,11 @@ async function resetOrgPrice(row: OrgModelPriceRow) {
     </div>
   </el-dialog>
 </template>
+
+<style scoped>
+.group-title { display: inline-flex; align-items: center; gap: 8px; }
+.dim { color: var(--tg-muted); font-size: 12px; margin-left: 4px; }
+</style>
 
 <style scoped>
 .card-header { display: flex; justify-content: space-between; align-items: center; }

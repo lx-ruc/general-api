@@ -17,7 +17,7 @@ import (
 // 清单外，切 PG 静默丢数据——清单必须与 schema.sql 的业务表保持一致，漏表由下方
 // 源表差集守卫兜底报错，不允许静默。
 var migrateTables = []string{
-	"orgs", "users", "channels", "channel_keys", "models", "channel_abilities",
+	"orgs", "users", "channels", "models", "channel_abilities",
 	"user_model_grants", "cost_centers", "api_keys", "access_tokens", "usage_logs",
 	"quota_grants", "quota_requests", "recharge_requests",
 	"org_model_prices", "org_model_grants", "org_model_requests", "notifications",

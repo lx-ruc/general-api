@@ -159,14 +159,15 @@ func (h *Handler) ListModels(c *gin.Context) {
 		Name        string   `json:"name"`
 		DisplayName string   `json:"display_name"`
 		Vendor      string   `json:"vendor"`
-		Vendors     []string `json:"vendors"` // 承接渠道厂商标签（与渠道管理页同源）；空=回退 vendor
+		VendorID    int64    `json:"vendor_id"`
+		Vendors     []string `json:"vendors"` // 归属厂商标签；空=回退 vendor
 		InputPrice  int64    `json:"input_price"`
 		OutputPrice int64    `json:"output_price"`
 	}
 	var models []modelRow
 	_ = h.DB.Raw(`
-		SELECT m.name, m.display_name, m.vendor, m.input_price, m.output_price
-		FROM models m
+		SELECT m.name, m.display_name, COALESCE(v.name, '') AS vendor, m.vendor_id, m.input_price, m.output_price
+		FROM models m LEFT JOIN vendors v ON v.id = m.vendor_id
 		WHERE m.status = 1
 		  AND (EXISTS (SELECT 1 FROM user_vendor_grants vg WHERE vg.user_id = ? AND vg.vendor_id = m.vendor_id)
 		    OR EXISTS (SELECT 1 FROM user_model_grants mg WHERE mg.user_id = ? AND mg.model_name = m.name))
@@ -174,17 +175,8 @@ func (h *Handler) ListModels(c *gin.Context) {
 	if models == nil {
 		models = []modelRow{}
 	}
-	names := make([]string, 0, len(models))
-	for _, m := range models {
-		names = append(names, m.Name)
-	}
-	vendorMap := service.ChannelVendorsByModel(h.DB, names)
 	for i := range models {
-		if vs := vendorMap[models[i].Name]; len(vs) > 0 {
-			models[i].Vendors = vs
-		} else {
-			models[i].Vendors = []string{}
-		}
+		models[i].Vendors = service.VendorSingle(models[i].Vendor)
 	}
 	var u model.User
 	_ = h.DB.Where("id = ?", uid(c)).First(&u).Error
@@ -376,18 +368,18 @@ func (h *Handler) ListAvailableModels(c *gin.Context) {
 		Name        string   `json:"name"`
 		DisplayName string   `json:"display_name"`
 		Vendor      string   `json:"vendor"`
-		Vendors     []string `json:"vendors"` // 承接渠道厂商标签；空=回退 vendor
+		Vendors     []string `json:"vendors"` // 归属厂商标签；空=回退 vendor
 		Granted     bool     `json:"granted"`
 	}
 	var rows []row
 	_ = h.DB.Raw(`
-		SELECT m.name, m.display_name, m.vendor,
+		SELECT m.name, m.display_name, COALESCE(v.name, '') AS vendor,
 		       CASE WHEN (EXISTS (SELECT 1 FROM user_vendor_grants vg
 		                            WHERE vg.user_id = ? AND vg.vendor_id = m.vendor_id)
 		              OR EXISTS (SELECT 1 FROM user_model_grants mg
 		                          WHERE mg.user_id = ? AND mg.model_name = m.name))
 		         THEN 1 ELSE 0 END AS granted
-		FROM models m
+		FROM models m LEFT JOIN vendors v ON v.id = m.vendor_id
 		WHERE m.status = 1
 		  AND (m.vendor_id IN (SELECT vendor_id FROM org_vendor_grants WHERE org_id = ?)
 		    OR m.name IN (SELECT model_name FROM org_model_grants WHERE org_id = ?))
@@ -400,13 +392,8 @@ func (h *Handler) ListAvailableModels(c *gin.Context) {
 	for _, r := range rows {
 		names = append(names, r.Name)
 	}
-	vendorMap := service.ChannelVendorsByModel(h.DB, names)
 	for i := range rows {
-		if vs := vendorMap[rows[i].Name]; len(vs) > 0 {
-			rows[i].Vendors = vs
-		} else {
-			rows[i].Vendors = []string{}
-		}
+		rows[i].Vendors = service.VendorSingle(rows[i].Vendor)
 	}
 	httpx.OK(c, rows)
 }

@@ -504,7 +504,7 @@ func (h *Handler) ListModelRequestCandidates(c *gin.Context) {
 		Name        string   `json:"name"`
 		DisplayName string   `json:"display_name"`
 		Vendor      string   `json:"vendor"`
-		Vendors     []string `json:"vendors"` // 承接渠道厂商标签；空=回退 vendor
+		Vendors     []string `json:"vendors"` // 归属厂商标签；空=回退 vendor
 		Granted     bool     `json:"granted"`
 		Pending     bool     `json:"pending"`
 		// Routable=false 表示该模型当前没有可用上游 Key（如渠道 Key 因上游 401
@@ -514,7 +514,7 @@ func (h *Handler) ListModelRequestCandidates(c *gin.Context) {
 	}
 	var rows []row
 	_ = h.DB.Raw(`
-		SELECT m.name, m.display_name, COALESCE(v.name, m.vendor) AS vendor,
+		SELECT m.name, m.display_name, COALESCE(v.name, '') AS vendor,
 		       CASE WHEN (EXISTS (SELECT 1 FROM org_vendor_grants vg
 		                             WHERE vg.org_id = ? AND vg.vendor_id = m.vendor_id)
 		              OR EXISTS (SELECT 1 FROM org_model_grants og
@@ -534,13 +534,8 @@ func (h *Handler) ListModelRequestCandidates(c *gin.Context) {
 	for _, r := range rows {
 		names = append(names, r.Name)
 	}
-	vendorMap := service.ChannelVendorsByModel(h.DB, names)
 	for i := range rows {
-		if vs := vendorMap[rows[i].Name]; len(vs) > 0 {
-			rows[i].Vendors = vs
-		} else {
-			rows[i].Vendors = []string{}
-		}
+		rows[i].Vendors = service.VendorSingle(rows[i].Vendor)
 	}
 	httpx.OK(c, rows)
 }

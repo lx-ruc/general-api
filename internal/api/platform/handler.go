@@ -672,13 +672,14 @@ func (h *Handler) ListChannels(c *gin.Context) {
 	for _, a := range abilities {
 		byChannel[a.ChannelID] = append(byChannel[a.ChannelID], a)
 	}
+	vnames := vendorNameMap(h.DB)
 	list := make([]gin.H, 0, len(channels))
 	counts := h.vendorKeyCounts()
 	cooling := h.vendorKeyCoolingCounts()
 	for _, ch := range channels {
 		kc := counts[ch.VendorID] // Key 池在厂商维度（同厂商端点共享同一套数字）
 		list = append(list, gin.H{
-			"id": ch.ID, "name": ch.Name, "vendor": ch.Vendor, "vendor_id": ch.VendorID,
+			"id": ch.ID, "name": ch.Name, "vendor": vnames[ch.VendorID], "vendor_id": ch.VendorID,
 			"base_url": ch.BaseURL, "path": ch.Path,
 			"has_key":   kc.Active > 0,
 			"key_count": kc.Total, "key_active_count": kc.Active,
@@ -741,7 +742,7 @@ func (h *Handler) CreateChannel(c *gin.Context) {
 		return
 	}
 	ch := model.Channel{
-		Name: req.Name, Vendor: req.Vendor, VendorID: vendorID, BaseURL: req.BaseURL,
+		Name: req.Name, VendorID: vendorID, BaseURL: req.BaseURL,
 		Path:   req.pathOrDefault(),
 		Weight: maxInt(req.Weight, 1), Priority: req.Priority,
 		Status: status, Remark: req.Remark,
@@ -794,7 +795,7 @@ func (h *Handler) GetChannel(c *gin.Context) {
 	}
 	kc := h.vendorKeyCounts()[ch.VendorID]
 	httpx.OK(c, gin.H{
-		"id": ch.ID, "name": ch.Name, "vendor": ch.Vendor, "vendor_id": ch.VendorID,
+		"id": ch.ID, "name": ch.Name, "vendor": vendorNameMap(h.DB)[ch.VendorID], "vendor_id": ch.VendorID,
 		"base_url": ch.BaseURL, "path": ch.Path,
 		"has_key":   kc.Active > 0,
 		"key_count": kc.Total, "key_active_count": kc.Active,
@@ -869,7 +870,7 @@ func (h *Handler) UpdateChannel(c *gin.Context) {
 		return
 	}
 	updates := map[string]any{
-		"name": req.Name, "vendor": req.Vendor, "vendor_id": vendorID, "base_url": req.BaseURL,
+		"name": req.Name, "vendor_id": vendorID, "base_url": req.BaseURL,
 		"path": req.pathOrDefault(), "weight": maxInt(req.Weight, 1),
 		"priority": req.Priority, "remark": req.Remark, "updated_at": time.Now().Unix(),
 	}
@@ -1338,7 +1339,6 @@ func (h *Handler) UpstreamModelsByForm(c *gin.Context) {
 type modelReq struct {
 	Name                   string `json:"name" binding:"required"`
 	DisplayName            string `json:"display_name"`
-	Vendor                 string `json:"vendor"`
 	Type                   string `json:"type"` // chat/embedding/video；缺省 chat
 	InputPrice             int64  `json:"input_price"`
 	OutputPrice            int64  `json:"output_price"`
@@ -1382,11 +1382,11 @@ func (h *Handler) ListModels(c *gin.Context) {
 	for _, m := range models {
 		names = append(names, m.Name)
 	}
-	vendors := service.ChannelVendorsByModel(h.DB, names)
+	vnames := vendorNameMap(h.DB)
 	list := make([]gin.H, 0, len(models))
 	for _, m := range models {
 		list = append(list, gin.H{
-			"id": m.ID, "name": m.Name, "display_name": m.DisplayName, "vendor": m.Vendor,
+			"id": m.ID, "name": m.Name, "display_name": m.DisplayName, "vendor": vnames[m.VendorID],
 			"type": m.Type,
 			"input_price": m.InputPrice, "output_price": m.OutputPrice,
 			"input_cache_hit_price": m.InputCacheHitPrice,
@@ -1394,7 +1394,7 @@ func (h *Handler) ListModels(c *gin.Context) {
 			"cost_input_cache_hit_price": m.CostInputCacheHitPrice,
 			"status":                     m.Status, "remark": m.Remark,
 			"auto_disabled_at":           m.AutoDisabledAt,
-			"vendors":                    vendors[m.Name],
+			"vendors":                    vendorSingle(vnames[m.VendorID]),
 			"channel_count":              counts[m.Name],
 			"channel_names":              chNames[m.Name],
 			"org_price_count":            priceCnts[m.Name],
@@ -1461,7 +1461,7 @@ func (h *Handler) CreateModel(c *gin.Context) {
 		status = *req.Status
 	}
 	m := model.Model{
-		Name: req.Name, DisplayName: req.DisplayName, Vendor: req.Vendor, Type: req.Type,
+		Name: req.Name, DisplayName: req.DisplayName, Type: req.Type,
 		InputPrice: req.InputPrice, OutputPrice: req.OutputPrice,
 		InputCacheHitPrice: req.InputCacheHitPrice,
 		CostInputPrice:     req.CostInputPrice, CostOutputPrice: req.CostOutputPrice,
@@ -1488,7 +1488,6 @@ func (h *Handler) UpdateModel(c *gin.Context) {
 	}
 	var req struct {
 		DisplayName            *string `json:"display_name"`
-		Vendor                 *string `json:"vendor"`
 		Type                   *string `json:"type"`
 		InputPrice             *int64  `json:"input_price" binding:"required,min=0"`
 		OutputPrice            *int64  `json:"output_price" binding:"required,min=0"`
@@ -1513,9 +1512,6 @@ func (h *Handler) UpdateModel(c *gin.Context) {
 	}
 	if req.DisplayName != nil {
 		updates["display_name"] = *req.DisplayName
-	}
-	if req.Vendor != nil {
-		updates["vendor"] = *req.Vendor
 	}
 	if req.Type != nil {
 		updates["type"] = *req.Type
@@ -1831,7 +1827,8 @@ func (h *Handler) DeleteOrgVendorPrice(c *gin.Context) {
 type orgModelPriceRow struct {
 	ModelName               string   `json:"model_name"`
 	DisplayName             string   `json:"display_name"`
-	Vendors                 []string `json:"vendors"` // 承接渠道厂商标签（与渠道管理页同源）
+	Vendor                  string   `json:"vendor"` // 归属厂商标签（定价卡按它分组）
+	Vendors                 []string `json:"vendors"`
 	ModelStatus             int      `json:"model_status"` // 1启用 0停用（停用但有覆盖价的仍返回，供管理/清除）
 	Override                bool     `json:"override"`
 	DefInputPrice           int64    `json:"def_input_price"`
@@ -1859,6 +1856,7 @@ func (h *Handler) ListOrgModelPricesByOrg(c *gin.Context) {
 	var rows []orgModelPriceRow
 	if err := h.DB.Raw(`
 		SELECT m.name AS model_name, COALESCE(m.display_name, '') AS display_name,
+		       COALESCE(v.name, '') AS vendor,
 		       m.status AS model_status,
 		       CASE WHEN p.id IS NULL THEN 0 ELSE 1 END AS override,
 		       m.input_price AS def_input_price, m.output_price AS def_output_price,
@@ -1868,6 +1866,7 @@ func (h *Handler) ListOrgModelPricesByOrg(c *gin.Context) {
 		       COALESCE(p.input_cache_hit_price, m.input_price) AS input_cache_hit_price,
 		       COALESCE(p.remark, '') AS remark
 		FROM models m
+		LEFT JOIN vendors v ON v.id = m.vendor_id
 		LEFT JOIN org_model_prices p ON p.model_name = m.name AND p.org_id = ?
 		WHERE m.status = 1 OR p.id IS NOT NULL
 		ORDER BY m.name`, orgID).
@@ -1878,14 +1877,8 @@ func (h *Handler) ListOrgModelPricesByOrg(c *gin.Context) {
 	if rows == nil {
 		rows = []orgModelPriceRow{}
 	}
-	// 承接渠道厂商标签（与模型列表同源），定价卡片按它区分模型分组
-	names := make([]string, 0, len(rows))
-	for _, r := range rows {
-		names = append(names, r.ModelName)
-	}
-	vendorMap := service.ChannelVendorsByModel(h.DB, names)
 	for i := range rows {
-		rows[i].Vendors = vendorMap[rows[i].ModelName]
+		rows[i].Vendors = vendorSingle(rows[i].Vendor)
 	}
 	httpx.OK(c, rows)
 }

@@ -1141,7 +1141,7 @@ func (h *Handler) ListModels(c *gin.Context) {
 		Vendor      string
 	}
 	if err := h.DB.Raw(`
-		SELECT m.name, m.display_name, COALESCE(v.name, m.vendor) AS vendor
+		SELECT m.name, m.display_name, COALESCE(v.name, '') AS vendor
 		FROM models m LEFT JOIN vendors v ON v.id = m.vendor_id
 		WHERE m.status = 1 AND `+service.ModelHasLiveUpstream+`
 		  AND (EXISTS (SELECT 1 FROM user_vendor_grants vg WHERE vg.user_id = ? AND vg.vendor_id = m.vendor_id)

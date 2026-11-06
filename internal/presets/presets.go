@@ -24,18 +24,32 @@ var Presets = []ChannelPreset{
 	{Name: "Kimi", Vendor: "moonshot", BaseURL: "https://api.moonshot.cn", Path: "/v1/chat/completions"},
 }
 
-// Seed 启动时确保预置渠道存在（幂等；已有同名记录不覆盖，管理员改动得以保留）。
-// 渠道初始 status=0（需填入上游密钥后启用），不含任何模型能力。
+// Seed 启动时确保预置厂商与端点存在（幂等；已有同名记录不覆盖，管理员改动得以保留）。
+// 端点初始 status=0（需在厂商 Key 池填入上游密钥后启用），不含任何模型能力。
 func Seed(db *gorm.DB) error {
 	now := time.Now().Unix()
 	for _, p := range Presets {
-		res := db.Exec(`INSERT INTO channels (name, vendor, base_url, path, upstream_key_enc, weight, priority, status, remark, created_at, updated_at)
-			VALUES (?, ?, ?, ?, '', 1, 0, 0, '预置渠道，请填入上游密钥后启用', ?, ?)
-			ON CONFLICT(name) DO NOTHING`, p.Name, p.Vendor, p.BaseURL, p.Path, now, now)
+		// 厂商实体 find-or-create
+		var vid int64
+		if err := db.Raw("SELECT id FROM vendors WHERE name = ?", p.Vendor).Scan(&vid).Error; err != nil {
+			return err
+		}
+		if vid == 0 {
+			if err := db.Exec(`INSERT INTO vendors (name, display_name, status, remark, created_at, updated_at)
+				VALUES (?, ?, 1, '预置厂商', ?, ?)`, p.Vendor, p.Vendor, now, now).Error; err != nil {
+				return err
+			}
+			if err := db.Raw("SELECT id FROM vendors WHERE name = ?", p.Vendor).Scan(&vid).Error; err != nil {
+				return err
+			}
+		}
+		res := db.Exec(`INSERT INTO channels (name, vendor_id, base_url, path, weight, priority, status, remark, created_at, updated_at)
+			VALUES (?, ?, ?, ?, 1, 0, 0, '预置端点，请在厂商 Key 池填入上游密钥后启用', ?, ?)
+			ON CONFLICT(name) DO NOTHING`, p.Name, vid, p.BaseURL, p.Path, now, now)
 		if res.Error != nil {
 			return res.Error
 		}
 	}
-	slog.Info("presets seeded", "channels", len(Presets))
+	slog.Info("presets seeded", "endpoints", len(Presets))
 	return nil
 }

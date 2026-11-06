@@ -93,7 +93,8 @@ func (h *Handler) Models(c *gin.Context) {
 	}
 
 	var models []pgModel
-	if err := h.DB.Raw(`SELECT DISTINCT m.id, m.name, m.display_name, m.vendor`+
+	if err := h.DB.Raw(`SELECT DISTINCT m.id, m.name, m.display_name,
+		(SELECT name FROM vendors WHERE id = m.vendor_id) AS vendor`+
 		routableJoin+filter+` ORDER BY m.name`, args...).Scan(&models).Error; err != nil {
 		httpx.Fail(c, http.StatusInternalServerError, "查询模型失败")
 		return

@@ -160,9 +160,12 @@ func TestDemoKeyRotateAndRevoke(t *testing.T) {
 func TestDemoKeyConfigure(t *testing.T) {
 	engine, db, token := newDemoEnv(t)
 	now := time.Now().Unix()
+	if err := db.Exec(`INSERT INTO vendors (id, name, status, created_at, updated_at) VALUES (1, 'tv', 1, ?, ?)`, now, now).Error; err != nil {
+		t.Fatal(err)
+	}
 	for _, m := range []string{"glm-4", "deepseek-chat"} {
-		if err := db.Exec(`INSERT INTO models (name, status, created_at, updated_at)
-			VALUES (?, 1, ?, ?)`, m, now, now).Error; err != nil {
+		if err := db.Exec(`INSERT INTO models (name, vendor_id, status, created_at, updated_at)
+			VALUES (?, 1, 1, ?, ?)`, m, now, now).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -200,12 +203,12 @@ func TestDemoKeyConfigure(t *testing.T) {
 		t.Fatalf("追加后 Σgrants 应 == quota_limit，得 %d", sum)
 	}
 
-	// 模型授权：全量替换 + 授权人落 operator
-	if n := qInt64(t, db, "SELECT COUNT(*) FROM user_model_grants WHERE user_id = ?", uid); n != 2 {
-		t.Fatalf("应授权 2 个模型，得 %d", n)
+	// 模型授权：模型名归并厂商后写厂商授权（组内全部模型可用）+ 授权人落 operator
+	if n := qInt64(t, db, "SELECT COUNT(*) FROM user_vendor_grants WHERE user_id = ?", uid); n != 1 {
+		t.Fatalf("应授权 1 个厂商（两模型同厂商归并），得 %d", n)
 	}
 	var grantor *int64
-	_ = db.Raw("SELECT granted_by FROM user_model_grants WHERE user_id = ? AND model_name='glm-4'", uid).Scan(&grantor).Error
+	_ = db.Raw("SELECT granted_by FROM user_vendor_grants WHERE user_id = ? AND vendor_id = 1", uid).Scan(&grantor).Error
 	if grantor == nil || *grantor != 1 {
 		t.Fatalf("授权人应为系统管理员(1)，得 %v", grantor)
 	}

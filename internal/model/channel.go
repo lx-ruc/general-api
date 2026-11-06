@@ -1,14 +1,13 @@
 package model
 
-// Channel 上游渠道（厂商下的端点）：任何 OpenAI 兼容厂商 = 一行配置
+// Channel 上游渠道（厂商下的端点）：任何 OpenAI 兼容厂商 = 一行配置。
+// Key 在厂商池（vendor_keys），渠道只承载接入地址与模型映射
 type Channel struct {
 	ID              int64  `gorm:"primaryKey" json:"id"`
 	Name            string `json:"name"`
-	Vendor          string `json:"vendor"`
 	VendorID        int64  `json:"vendor_id"` // 所属厂商（0=未挂，不可路由）
 	BaseURL         string `json:"base_url"`
 	Path            string `json:"path"`
-	UpstreamKeyEnc  string `json:"-"` // AES-GCM b64 密文（未启用加密则明文）
 	Weight          int    `json:"weight"`
 	Priority        int    `json:"priority"` // 大者优先，同优先级按 weight 加权
 	Status          int    `json:"status"`
@@ -23,20 +22,7 @@ type Channel struct {
 
 func (Channel) TableName() string { return "channels" }
 
-// ChannelKey 渠道 Key 池：一把渠道可挂多把上游 Key（加权调度、429 冷却、401 自动禁用）。
-// 渠道无池内 Key 时回退 channels.upstream_key_enc（单 Key 兼容模式）。
-type ChannelKey struct {
-	ID        int64  `gorm:"primaryKey" json:"id"`
-	ChannelID int64  `json:"channel_id"`
-	KeyEnc    string `json:"-"` // AES-GCM b64 密文（未启用加密则明文）
-	Weight    int    `json:"weight"`
-	Status    int    `json:"status"`
-	Remark    string `json:"remark"`
-	CreatedAt int64  `gorm:"autoCreateTime" json:"created_at"`
-	UpdatedAt int64  `gorm:"autoUpdateTime" json:"updated_at"`
-}
-
-func (ChannelKey) TableName() string { return "channel_keys" }
+// ChannelAbility 渠道能力（渠道 × 模型；路由依据）
 
 // ChannelAbility 渠道能力（渠道 × 模型；路由依据）
 type ChannelAbility struct {
